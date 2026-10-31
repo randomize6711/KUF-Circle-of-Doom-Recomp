@@ -1,0 +1,11 @@
+# M6D K44 (docs/HIGH_FPS.md section 18): six minutes at --kuf_frame_rate=60 from a new game through the tutorial fight
+# (presentation/objects_route.kufscript), no tick held on purpose: before K44 every such run locked at 30 frames per
+# second within 80-240 s (the host's load made the late tick). k44_check.py --summary-only: at most 2 % of the ticks
+# dropped a frame step as late, no 30 s at 30 frames per second, 30 ticks per second.
+[scenario]
+description = "M6D K44: six minutes at 60 fps through the tutorial fight, the frame rate never locks at 30"
+seconds = 360
+script_file = "../presentation/objects_route.kufscript"
+args = ["--kuf_frame_rate=60"]
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay"]

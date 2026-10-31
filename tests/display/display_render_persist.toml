@@ -1,0 +1,30 @@
+# The Render setting saved by display_render_menu (3x) is used at the next start (M6C follow-up): the log shows it
+# read and the frame rendered at 3x3 (3840x2160) for the simulated 2560x1440 output (more than the output: the
+# presenter filters it down). Title screen only.
+
+[scenario]
+description = "Saved Render setting applied at the next start"
+seconds = 45
+pc_settings_from_run = "display_render_menu"
+args = ["--kuf_display_size=2560x1440"]
+script = """
+600 capture title
+"""
+capture_frames = []
+pc_settings_expect = { "display.render_scale" = 3 }
+log_sequence = [
+    "[kuf-settings] display: borderless desktop size refresh desktop monitor primary widescreen true render 3x",
+    "render scale 3x3 (frame 3840x2160); Render 3x",
+]
+
+[format]
+render_scale = [3, 3]
+guest_coordinates = true
+
+# "Press START" at its place on the title screen (frame pixels).
+[[region]]
+name = "Press START on the title"
+capture = "title"
+rect = [520, 500, 760, 560]
+metric = "text"
+mean = [3.0, 255.0]

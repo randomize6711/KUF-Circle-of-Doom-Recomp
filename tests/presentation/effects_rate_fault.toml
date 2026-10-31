@@ -1,0 +1,12 @@
+# M6D D4b-4 fault test (docs/HIGH_FPS.md 20): the walk route at 120 fps with the frame timer's rate, changed for a
+# frame's effect clock, not put back (--kuf_debug_effect_rate_kept). effect_check.py --expect-leak requires the run
+# summary to count the rate found changed at a tick's start: the isolation check catches a rate left changed.
+[scenario]
+description = "M6D D4b-4 fault test: the effect clock's rate left changed (the isolation check must see it)"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script_file = "presentation_route.kufscript"
+args = ["--kuf_frame_rate=120", "--kuf_debug_effect_rate_kept=true"]
+capture_frames = []
+expect_saves_unchanged = true
+log_expect = ["[kuf-input] context: gameplay"]

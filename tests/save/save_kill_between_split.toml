@@ -1,0 +1,25 @@
+# Control for save_kill_between.toml (K22): the same kill with --kuf_atomic_saves=false, i.e. a commit at
+# each of the game's flushes, as on the console. The first flush (character file) is committed before the
+# kill at the second, so the package holds the new character file: the save's first step survived alone.
+# This shows that the test above sees the boundary and that the grouping is what keeps the package whole.
+
+[scenario]
+description = "control: the same kill with per-flush commits (console behaviour) commits the first step"
+seconds = 240
+script_file = "save_continue.kufscript"
+saves_from_run = "save_new"
+args = ["--content_test_kill=flush:2", "--kuf_atomic_saves=false"]
+expect_exit = 137
+log_sequence = ["(type 00000001): committed (2 files", "[content] TEST: killing the process at flush 2"]
+log_absent = ["held until the end of save message"]
+rules_from = "save_continue.toml"
+
+[[scenario.files]]
+a = "saves:B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/KD_*"
+b = "input:B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/KD_*"
+same = false
+
+[[scenario.files]]
+a = "saves:B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/GlobalSetting"
+b = "input:B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/GlobalSetting"
+same = true

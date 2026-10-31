@@ -1,0 +1,16 @@
+# Script for camera_fov_min.toml / camera_fov_max.toml (see there).
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 capture start
+@gameplay+330 look 900 0
+@gameplay+380 capture turned
+@gameplay+400 look 0 -300
+@gameplay+450 capture up
+@gameplay+470 look 0 700
+@gameplay+520 capture down
+@gameplay+540 look 0 -400
+@gameplay+600 log mark end

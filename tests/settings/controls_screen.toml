@@ -1,0 +1,63 @@
+# The in-game Controls page for the device in use (M7 UI polish, src/runtime/controls_screen.cpp; the player's
+# screenshot "Fix the text and make it change the picture"). CONTINUE from build/m6-saves/celine-shadows-depths-1;
+# options menu, Controls. Keyboard: no controller picture, each action with its gameplay keys in front ("[Mouse R]  Use
+# X Weapon"), the Target Ally block on the right, "[Esc] Back". A virtual pad's right stick pushed: the game's page as
+# it was (the picture, the button icons). F12 (a key): the keyboard list again. The picture's area differs between the
+# two (region checks).
+
+[scenario]
+description = "Controls page: keyboard list and the controller picture, switching with the device in use"
+seconds = 100
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_input_script_pad=xbox360"]
+script = """
+100 pad connect
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 press Escape
+@gameplay+400 press Down
+@gameplay+450 press Down
+@gameplay+500 press Down
+@gameplay+600 press Return
+@gameplay+750 capture controls_keyboard
+@gameplay+800 pad axis rightx 25000
+@gameplay+830 pad axis rightx 0
+@gameplay+900 capture controls_controller
+@gameplay+950 press F12
+@gameplay+1000 capture controls_keyboard_again
+@gameplay+1050 press Escape
+@gameplay+1150 press Escape
+"""
+capture_frames = []
+expect_saves_unchanged = true
+log_sequence = [
+    "[kuf-controls] Controls page: keyboard and mouse (list of the bound keys)",
+    "[kuf-controls] Controls page: controller (the game's picture)",
+    "[kuf-controls] Controls page: keyboard and mouse (list of the bound keys)",
+]
+log_absent = ["the Controls page is not as expected"]
+
+[format]
+width = 1280
+height = 720
+
+# The controller picture's area (the left half): the picture shows with the controller only.
+[[region_diff]]
+name = "picture shown for the controller"
+a = "controls_keyboard"
+b = "controls_controller"
+rect = [200, 150, 600, 400]
+metric = "text"
+min_mean_diff = 10.0
+
+[[region_diff]]
+name = "the keyboard list again"
+a = "controls_keyboard"
+b = "controls_keyboard_again"
+rect = [140, 80, 700, 620]
+metric = "text"
+max_mean_diff = 2.0

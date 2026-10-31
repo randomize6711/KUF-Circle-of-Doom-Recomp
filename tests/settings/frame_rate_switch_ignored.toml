@@ -1,0 +1,101 @@
+# M6D D5 runtime switching (docs/HIGH_FPS.md 21.4): CONTINUE from the Shadow Depths fixture, the frame-rate page
+# (as frame_rate_menu): 30 -> 60 -> 90 -> 120 -> 90 -> 60 -> 30 -> ... -> 120 -> 144 -> 165 -> 240 -> Unlimited ->
+# ... -> 60, Interpolation Off and On, each advanced row Off and On; back to the game, a walk with turns. The game's
+# state traced per tick (--kuf_trace_game_state, --kuf_trace_camera_orbit). With --kuf_debug_frame_rate_ignored the menu's changes are dropped before the frame scheduler: the game stays at 30 fps (frame_rate_check.py --expect-not-applied must see it; the reference for state_compare.py).
+
+[scenario]
+description = "Fault test: frame-rate changes made in the menu dropped before the scheduler (stays at 30)"
+seconds = 313
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_profile=true", "--kuf_trace_game_state=true", "--kuf_trace_camera_orbit=true", "--kuf_debug_frame_rate_ignored=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 press Escape
+@gameplay+400 press Down
+@gameplay+450 press Down
+@gameplay+500 press Down
+@gameplay+550 press Down
+@gameplay+650 press Return
+@gameplay+800 press Down
+@gameplay+830 press Down
+@gameplay+860 press Down
+@gameplay+890 press Down
+@gameplay+920 press Down
+@gameplay+950 press Down
+@gameplay+980 press Down
+@gameplay+1010 press Down
+@gameplay+1110 press Return
+@gameplay+1260 press Down
+@gameplay+1290 press Down
+@gameplay+1320 press Return
+@gameplay+1420 press Down
+@gameplay+1450 press Down
+@gameplay+1480 press Down
+@gameplay+1510 press Down
+@gameplay+1540 press Down
+@gameplay+1610 capture fps_row
+@gameplay+1640 press Right
+@gameplay+1670 log mark at_60
+@gameplay+1970 press Right
+@gameplay+2000 press Right
+@gameplay+2030 log mark at_120
+@gameplay+2330 press Left
+@gameplay+2360 press Left
+@gameplay+2390 press Left
+@gameplay+2420 log mark at_30
+@gameplay+2720 press Right
+@gameplay+2750 press Right
+@gameplay+2780 press Right
+@gameplay+2810 log mark at_120b
+@gameplay+3110 press Right
+@gameplay+3140 press Right
+@gameplay+3170 press Right
+@gameplay+3200 press Right
+@gameplay+3230 log mark at_unlimited
+@gameplay+3530 press Left
+@gameplay+3560 press Left
+@gameplay+3590 press Left
+@gameplay+3620 press Left
+@gameplay+3650 press Left
+@gameplay+3680 press Left
+@gameplay+3710 log mark at_60b
+@gameplay+4010 press Down
+@gameplay+4040 press Right
+@gameplay+4340 press Left
+@gameplay+4400 press Down
+@gameplay+4460 press Right
+@gameplay+4610 press Left
+@gameplay+4670 press Down
+@gameplay+4730 press Right
+@gameplay+4880 press Left
+@gameplay+4940 press Down
+@gameplay+5000 press Right
+@gameplay+5150 press Left
+@gameplay+5210 press Down
+@gameplay+5270 press Escape
+@gameplay+5370 press Escape
+@gameplay+5470 press Escape
+@gameplay+5570 press Escape
+@gameplay+5770 log mark walk
+@gameplay+5780 down W
+@gameplay+5980 look 120 0
+@gameplay+6080 up W
+@gameplay+6110 down D
+@gameplay+6260 up D
+@gameplay+6320 look -200 40
+@gameplay+6440 down W
+@gameplay+6640 up W
+@gameplay+6700 log mark end
+"""
+capture_frames = []
+expect_saves_unchanged = true
+log_expect = ["[kuf-input] context: gameplay", "[kuf-pc-menu] display page"]
+
+[format]
+width = 1280
+height = 720

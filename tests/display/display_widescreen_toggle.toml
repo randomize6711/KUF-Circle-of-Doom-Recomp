@@ -1,0 +1,73 @@
+# Widescreen toggled in the in-game display page at 21:9 (3440x1440, simulated): Off presents the original 16:9
+# frame at once (pillarboxed), On stretches the widened frame to the output again, without a resize or restart.
+# Same navigation as display_menu (options menu, Settings, PC Settings, Down to the display page), then Down to
+# Widescreen, Right (Off), Left (On), Back out. CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only).
+# Render 1x (the 1280x720 frame scaled to the output, as these checks are written for); the native rendering
+# of this shape is tested by the render_* scenarios.
+
+[scenario]
+description = "Widescreen toggle at 21:9: the presenter follows at once"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_size=3440x1440", "--kuf_display_modes=3440x1440@100,1920x1080@60", "--kuf_pc_settings=display.render_scale=1"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 press Escape
+@gameplay+400 press Down
+@gameplay+450 press Down
+@gameplay+500 press Down
+@gameplay+550 press Down
+@gameplay+650 press Return
+@gameplay+800 press Down
+@gameplay+830 press Down
+@gameplay+860 press Down
+@gameplay+890 press Down
+@gameplay+920 press Down
+@gameplay+950 press Down
+@gameplay+980 press Down
+@gameplay+1010 press Down
+@gameplay+1110 press Return
+@gameplay+1230 press Down
+@gameplay+1260 press Down
+@gameplay+1290 press Return
+@gameplay+1760 press Down
+@gameplay+1790 press Down
+@gameplay+1820 press Down
+@gameplay+1900 press Right
+@gameplay+1960 capture widescreen_off
+@gameplay+2000 press Left
+@gameplay+2060 capture widescreen_on
+@gameplay+2100 press Escape
+@gameplay+2150 press Escape
+@gameplay+2200 press Escape
+@gameplay+2300 press Escape
+"""
+capture_frames = []
+expect_saves_unchanged = true
+log_sequence = [
+    "[kuf-display] output 3440x1440 (21:9), drawn for aspect 2.3889",
+    "[kuf-pc-menu] display page",
+    "[kuf-display] presented at 16:9",
+    "[kuf-pc-menu] widescreen off",
+    "[kuf-display] presented stretched to the output",
+    "[kuf-pc-menu] widescreen on",
+    "[kuf-pc-menu] PC Settings closed",
+]
+
+[format]
+width = 1280
+height = 720
+
+# Off draws the original frame (HUD box off): the page's text moves out of the band it occupies when On.
+[[region_diff]]
+name = "the page is drawn differently with Widescreen Off and On"
+a = "widescreen_off"
+b = "widescreen_on"
+rect = [0, 0, 1280, 720]
+metric = "text"
+min_mean_diff = 2.0

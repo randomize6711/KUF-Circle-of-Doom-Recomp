@@ -1,0 +1,32 @@
+# M6D K46 (docs/HIGH_FPS.md 14.8): CONTINUE from the Shadow Depths fixture, walk, the game's Quit save (options menu
+# > Quit > save and return to the Title Screen > Yes), then a new game from the title (its first autosaves).
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+200 down W
+@gameplay+400 capture walk
+@gameplay+500 up W
+@gameplay+520 look 60 0
+@gameplay+540 down W
+@gameplay+700 up W
+@gameplay+800 tap Escape
+@gameplay+900 tap Down
+@gameplay+930 tap Down
+@gameplay+960 tap Down
+@gameplay+990 tap Down
+@gameplay+1020 tap Down
+@gameplay+1100 press Return
+@gameplay+1220 press Return
+@prompt#2+100 capture title_after_save
+@prompt#2+200 tap Return
+@prompt#2+400 press Return
+@prompt#2+550 press Return
+@prompt#2+700 press Down
+@prompt#2+800 press Return
+@prompt#2+1000 repeat 60 until gameplay#2 press Return
+@gameplay#2+200 down W
+@gameplay#2+400 capture new_game
+@gameplay#2+500 up W

@@ -1,0 +1,42 @@
+# Native rendering (M6C follow-up) at 3440x1440 (21:9): Render Native renders the game's frame at 3x2, i.e.
+# 3840x1440, at least the output on each axis (the presenter filters it down to 3440x1440): the 3D scene, its
+# post-processing, the HUD and the menus are drawn at that resolution. Checks: the captured frame is 3840x1440;
+# reduced to 1280x720 (capture_check guest_coordinates) the HUD and the pause menu are where they belong;
+# tests/display/render_compare.py then compares it with render_ref_21_9 (Render 1x, same output): colours and
+# post-processing, every resolve 3x2 times larger, the lighting cube maps identical (KNOWN_ISSUES K31). CONTINUE
+# from build/m6-saves/celine-shadows-depths-1 (read only).
+
+[scenario]
+description = "Render Native at 3440x1440 (21:9): frame 3840x1440"
+seconds = 120
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_size=3440x1440", "--gpu_trace_frame=2000000000", "--gpu_trace_dir=/run-data/user"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+250 log mark hud
+@gameplay+300 capture hud
+@gameplay+330 capture scene
+@gameplay+340 trace
+@gameplay+400 press Escape
+@gameplay+500 capture pause
+@gameplay+560 press Escape
+@gameplay+700 log mark end
+"""
+capture_frames = []
+expect_saves_unchanged = true
+# The HUD box: the rules of display_ultrawide.toml (the frame is reduced to 1280x720 first).
+rules_from = "display_ultrawide.toml"
+log_expect = [
+    "render scale 3x2 (frame 3840x1440); Render Native",
+    "[kuf-display] output 3440x1440 (21:9), drawn for aspect 2.3889",
+]
+
+[format]
+render_scale = [3, 2]
+guest_coordinates = true
+

@@ -1,0 +1,26 @@
+# M6D D2: a 240 Hz guest vblank (--video_mode_refresh_rate=240) made the original game 3.9 times as fast
+# (docs/HIGH_FPS.md section 3). With the fixed tick it stays at 30 ticks per real second, and after the same number of
+# ticks the character stands where the default run's does (the walk's end compared with tick_rate_fixed).
+[scenario]
+description = "M6D fixed tick at a 240 Hz guest vblank: still 30 game ticks per real second"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+compare_run = "tick_rate_fixed"
+script_file = "tick_route.txt"
+args = ["--video_mode_refresh_rate=240"]
+
+[scenario.timing]
+from = "start"
+to = "idle_1200"
+min_ticks_per_second = 24.0
+max_ticks_per_second = 30.6
+expect_mode = "fixed_tick"
+max_frames_per_tick = 1.01
+game_counter_matches = true
+
+[[region_diff]]
+name = "the walk ends where the default run's does (same ticks, same distance)"
+a = "prev:walk_180"
+b = "walk_180"
+rect = [0, 0, 1280, 720]
+max_mean_diff = 6.0

@@ -1,0 +1,51 @@
+# Script for camera_sensitivity_max.toml / camera_sensitivity_min.toml (see there).
+100 pad connect
+500 pad press start
+700 pad press a
+850 pad press a
+1000 pad press down
+1100 pad press a
+1300 repeat 60 until gameplay pad press a
+@gameplay+290 capture start
+@gameplay+300 log mark start
+@gameplay+330 look 100 0
+@gameplay+360 log mark mouse_right
+@gameplay+390 look 0 -40
+@gameplay+420 log mark mouse_up
+@gameplay+450 look 0 40
+@gameplay+480 log mark level
+@gameplay+490 pad axis rightx 16384
+@gameplay+520 pad axis rightx 0
+@gameplay+540 log mark stick_half
+@gameplay+545 pad axis rightx 32767
+@gameplay+553 pad axis rightx 0
+@gameplay+565 log mark stick_right
+@gameplay+570 log mark steady
+@gameplay+571 look 10 0
+@gameplay+572 look 10 0
+@gameplay+573 look 10 0
+@gameplay+574 look 10 0
+@gameplay+575 look 10 0
+@gameplay+576 look 10 0
+@gameplay+577 look 10 0
+@gameplay+578 look 10 0
+@gameplay+579 look 10 0
+@gameplay+580 look 10 0
+@gameplay+581 look 10 0
+@gameplay+582 look 10 0
+@gameplay+583 look 10 0
+@gameplay+584 look 10 0
+@gameplay+585 look 10 0
+@gameplay+586 log mark steady_mid
+@gameplay+586 look 10 0
+@gameplay+587 look 10 0
+@gameplay+588 look 10 0
+@gameplay+589 look 10 0
+@gameplay+590 look 10 0
+@gameplay+591 look 10 0
+@gameplay+592 look 10 0
+@gameplay+593 look 10 0
+@gameplay+594 log mark steady_last
+@gameplay+594 look 10 0
+@gameplay+610 log mark steady_done
+@gameplay+640 log mark end

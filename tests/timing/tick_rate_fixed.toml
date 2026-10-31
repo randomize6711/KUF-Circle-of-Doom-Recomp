@@ -1,0 +1,19 @@
+# M6D D2: with the fixed tick (the default) the game runs 30 ticks per real second. 1,200 ticks of play (walking,
+# a camera turn, standing) must take 40 s of real time; the original pacing took the same at a 60 Hz guest vblank,
+# and its speed followed the vblank rate (tick_rate_original_vsync_off). The lower bound only catches a run that
+# fell far behind (the suite runs several games at once). Each tick is drawn once; the game's own tick counter
+# (0x82ABB740) advances with the ticks counted by the runtime.
+[scenario]
+description = "M6D fixed tick: 30 game ticks per real second (default guest vblank)"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script_file = "tick_route.txt"
+
+[scenario.timing]
+from = "start"
+to = "idle_1200"
+min_ticks_per_second = 24.0
+max_ticks_per_second = 30.6
+expect_mode = "fixed_tick"
+max_frames_per_tick = 1.01
+game_counter_matches = true

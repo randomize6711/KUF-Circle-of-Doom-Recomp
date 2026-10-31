@@ -1,0 +1,45 @@
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index a744375..2e979d7 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -1594,11 +1594,11 @@ bool CommandProcessor::ExecutePacketType3_VIZ_QUERY(memory::RingBuffer* reader,
+     // On hardware this clears the internal state of the scan converter (which
+     // is different to the register)
+     WriteRegister(XE_GPU_REG_VGT_EVENT_INITIATOR, VIZQUERY_START);
+-    REXGPU_INFO("Begin viz query ID {:02X}", id);
++    REXGPU_DEBUG("Begin viz query ID {:02X}", id);
+   } else {
+     // end the viz query
+     WriteRegister(XE_GPU_REG_VGT_EVENT_INITIATOR, VIZQUERY_END);
+-    REXGPU_INFO("End viz query ID {:02X}", id);
++    REXGPU_DEBUG("End viz query ID {:02X}", id);
+     // The scan converter writes the internal result back to the register here.
+     // We just fake it and say it was visible in case it is read back.
+     if (id < 32) {
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 3efa24f..4c0da9b 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -27,6 +27,7 @@
+ #include <rex/stream.h>
+ #include <rex/system/function_dispatcher.h>
+ #include <rex/system/mmio_handler.h>
++#include <rex/system/thread_state.h>
+ #include <rex/system/xmemory.h>
+ #include <rex/thread.h>
+ 
+@@ -1592,7 +1593,13 @@ bool BaseHeap::Release(uint32_t base_address, uint32_t* out_region_size) {
+   uint32_t base_page_number = (base_address - heap_base_) >> page_size_shift_;
+   auto base_page_entry = page_table_[base_page_number];
+   if (base_page_entry.base_address != base_page_number) {
+-    REXSYS_ERROR("BaseHeap::Release failed because address is not a region start");
++    // The guest caller (from its link register) is what makes this diagnosable.
++    const auto* ts = runtime::ThreadState::Get();
++    REXSYS_ERROR(
++        "BaseHeap::Release failed because address is not a region start: heap {:08X} address {:08X} "
++        "(page entry: region base page {:X}, state {}), guest thread {:08X} lr {:08X}",
++        heap_base_, base_address, uint32_t(base_page_entry.base_address), uint32_t(base_page_entry.state),
++        ts ? ts->thread_id() : 0u, ts && ts->context() ? uint32_t(ts->context()->lr) : 0u);
+     return false;
+   }
+ 

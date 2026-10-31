@@ -1,0 +1,37 @@
+# Invalid save 2 (tools/menu_test.py, M5B): the character file cut to half its size, as if a write had stopped (stage 1's saves, copied
+# and damaged; the manifest still describes the valid file). The game itself does not handle this
+# (measured: with the manifest removed it crashes with a guest access violation while loading), so the runtime refuses the
+# package on open (content_damaged=refuse): an [error] line names the file, the game shows its own
+# corrupted-save message, and nothing on disk is changed or replaced.
+
+[scenario]
+description = "truncated character file: refused with diagnostics, game's corrupted-save message, save untouched"
+seconds = 60
+script_file = "save_damaged.kufscript"
+saves_from_run = "save_new"
+compare_run = "save_new"
+damage = [{file = "KD_*", action = "truncate"}]
+expect_errors = ["is damaged, refusing to open it \\(content_damaged=refuse\\): KD_\\d+: size \\d+, expected \\d+",
+                 "ResolvePath\\(savedisk:\\\\\\) failed - device not found"]
+log_absent = ["flags 0x812", "[content] deleted", "): committed ("]
+expect_saves_unchanged = true
+
+[format]
+width = 1280
+height = 720
+
+# The game's corrupted-save message (a text band over the title screen), shown twice.
+[[region]]
+name = "corrupted-save message shown"
+capture = "corrupted_dialog"
+rect = [140, 110, 1000, 180]
+min_std = 10.0
+
+[[region_diff]]
+name = "the same message after A (select another device): nothing deleted"
+a = "corrupted_dialog"
+b = "corrupted_again"
+rect = [280, 230, 950, 335]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0

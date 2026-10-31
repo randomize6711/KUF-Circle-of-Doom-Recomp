@@ -1,0 +1,86 @@
+# Key Bindings and Controller Buttons (M7 feature 5, docs/INPUT.md "Rebinding") in the title SETTINGS, keyboard and an
+# SDL virtual Xbox 360 pad. PC Settings, Down three times to Key Bindings, Return; Down to Weapon A, Return (waits for a
+# key), G: Weapon A is G. Return again, Escape: cancelled, nothing changed. Down past the eighth row scrolls the list
+# (Ability selected, the list moved by four); Return, E: Ability is E, and Pick Up (E, Y) keeps only Y. Back, Down to
+# Controller Buttons, Return; Return on Weapon A, the pad's X: X acts as A (and A as X). Back twice: the file is written.
+
+[scenario]
+description = "Key Bindings and Controller Buttons pages: capture, cancel, scroll, swap, save"
+seconds = 120
+args = ["--kuf_input_script_pad=xbox360"]
+script = """
+100 pad connect
+500 tap Return
+700 tap Escape
+800 press Down
+900 press Return
+1020 press Down
+1050 press Down
+1080 press Down
+1110 press Down
+1140 press Down
+1170 press Down
+1200 press Down
+1230 press Down
+1260 press Down
+1350 press Return
+1450 press Down
+1480 press Down
+1510 press Down
+1600 press Return
+1680 capture keys_page
+1700 press Down
+1730 press Down
+1760 press Down
+1790 press Down
+1850 press Return
+1920 capture waiting_for_key
+1950 press G
+2030 press Return
+2080 press Escape
+2150 press Down
+2180 press Down
+2210 press Down
+2240 press Down
+2270 press Down
+2300 press Down
+2330 press Down
+2400 capture scrolled
+2430 press Return
+2500 press E
+2580 capture ability_e
+2610 press Escape
+2700 press Down
+2760 press Return
+2840 capture buttons_page
+2870 press Return
+2950 pad press x
+3030 capture remapped
+3060 press Escape
+3150 press Escape
+3250 capture settings_again
+3280 press Escape
+"""
+capture_frames = []
+pc_settings_expect = { "gameplay_keys.a" = "G", "gameplay_keys.right_trigger" = "E", "gameplay_keys.y" = "Y", "controller_buttons.a" = "x", "controller_buttons.x" = "a" }
+log_sequence = [
+    "[kuf-pc-menu] PC Settings opened (title SETTINGS)",
+    "[kuf-pc-menu] key bindings page",
+    "[kuf-pc-menu] waiting for a key for Weapon A",
+    "[kuf-pc-menu] gameplay key: a = G",
+    "[kuf-pc-menu] waiting for a key for Weapon A",
+    "[kuf-pc-menu] cancelled (nothing changed)",
+    "[kuf-pc-menu] waiting for a key for Ability",
+    "[kuf-pc-menu] y no longer on E",
+    "[kuf-pc-menu] gameplay key: right_trigger = E",
+    "[kuf-pc-menu] controller buttons page",
+    "[kuf-pc-menu] waiting for a button for Weapon A",
+    "[kuf-input] controller buttons in gameplay: x as a, a as x",
+    "[kuf-pc-menu] controller button: x acts as a",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+    "[kuf-pc-menu] PC Settings closed",
+]
+
+[format]
+width = 1280
+height = 720

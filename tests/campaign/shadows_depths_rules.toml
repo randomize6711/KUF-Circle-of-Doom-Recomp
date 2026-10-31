@@ -1,0 +1,292 @@
+# Rules shared by shadows_depths_continue.toml and shadows_depths_reload.toml: every value, list row, the area
+# banner and the quest text equal the earlier run's. Status values, banner, panels: glyph pixels with luma > 200
+# (metric text). List rows and the name line: text dimmer than 200, so metric text_rel (brighter than the row's
+# own background by 40), which also reads a highlighted row. Both runs use the same script, so the cursor is on
+# the same row. Measured: identical rows 0.00; any two different rows >= 4.0. Rectangles as in
+# tests/save/save_continue.toml; inventory rows 28 px apart (row 1, selected and pulsing, not compared).
+[format]
+width = 1280
+height = 720
+
+[[range]]
+name = "all captures are real images"
+frames = [1, 1000000]
+width = 1280
+height = 720
+
+[[region_diff]]
+name = "area banner"
+a = "prev:arrive_2"
+b = "arrive_2"
+rect = [430, 400, 850, 430]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "status level"
+a = "prev:status"
+b = "status"
+rect = [990, 50, 1150, 84]
+metric = "text"
+text_threshold = 150.0
+max_mean_diff = 1.0
+
+# The large name glyphs vary with the scene behind the panel (same name up to 1.3, another name >= 19)
+[[region_diff]]
+name = "status name"
+a = "prev:status"
+b = "status"
+rect = [570, 50, 760, 84]
+metric = "text"
+text_threshold = 185.0
+max_mean_diff = 6.0
+
+[[region_diff]]
+name = "status SP"
+a = "prev:status"
+b = "status"
+rect = [895, 95, 1040, 120]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "status Luck"
+a = "prev:status"
+b = "status"
+rect = [612, 122, 760, 150]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "status Recover"
+a = "prev:status"
+b = "status"
+rect = [940, 122, 1150, 150]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "status EXP"
+a = "prev:status"
+b = "status"
+rect = [612, 152, 760, 184]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "status Gold"
+a = "prev:status"
+b = "status"
+rect = [900, 152, 1040, 184]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "status HP maximum"
+a = "prev:status"
+b = "status"
+rect = [606, 95, 760, 120]
+metric = "text"
+text_threshold = 200.0
+align_x = "right"
+keep_px = 23
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "weapons and abilities row 1"
+a = "prev:status"
+b = "status"
+rect = [610, 266, 1170, 296]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "weapons and abilities row 2"
+a = "prev:status"
+b = "status"
+rect = [610, 310, 1170, 340]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "weapons and abilities row 3"
+a = "prev:status"
+b = "status"
+rect = [610, 352, 1170, 382]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "weapons and abilities row 4"
+a = "prev:status"
+b = "status"
+rect = [610, 396, 1170, 426]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "weapons and abilities: selected item panel"
+a = "prev:status"
+b = "status"
+rect = [760, 455, 1180, 560]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "items row 1"
+a = "prev:page2"
+b = "page2"
+rect = [610, 266, 1170, 296]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "items row 2"
+a = "prev:page2"
+b = "page2"
+rect = [610, 310, 1170, 340]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "items row 3"
+a = "prev:page2"
+b = "page2"
+rect = [610, 352, 1170, 382]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "items row 4"
+a = "prev:page2"
+b = "page2"
+rect = [610, 396, 1170, 426]
+metric = "text_rel"
+allow_empty = true
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "items: selected item panel"
+a = "prev:page2"
+b = "page2"
+rect = [760, 455, 1180, 560]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "armor and accessories row 1"
+a = "prev:page3"
+b = "page3"
+rect = [610, 266, 1170, 296]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "armor and accessories row 2"
+a = "prev:page3"
+b = "page3"
+rect = [610, 310, 1170, 340]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "armor and accessories row 3"
+a = "prev:page3"
+b = "page3"
+rect = [610, 352, 1170, 382]
+metric = "text_rel"
+allow_empty = true
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "armor and accessories row 4"
+a = "prev:page3"
+b = "page3"
+rect = [610, 396, 1170, 426]
+metric = "text_rel"
+allow_empty = true
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "armor and accessories: selected item panel"
+a = "prev:page3"
+b = "page3"
+rect = [760, 455, 1180, 560]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "inventory row 2"
+a = "prev:inventory"
+b = "inventory"
+rect = [110, 170, 580, 198]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "inventory row 3"
+a = "prev:inventory"
+b = "inventory"
+rect = [110, 198, 580, 226]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "inventory row 4"
+a = "prev:inventory"
+b = "inventory"
+rect = [110, 226, 580, 254]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "inventory row 5"
+a = "prev:inventory"
+b = "inventory"
+rect = [110, 254, 580, 282]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "inventory row 6"
+a = "prev:inventory"
+b = "inventory"
+rect = [110, 282, 580, 310]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "inventory selected item"
+a = "prev:inventory"
+b = "inventory"
+rect = [100, 355, 590, 390]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "inventory item details"
+a = "prev:inventory"
+b = "inventory"
+rect = [280, 395, 590, 680]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "quest list"
+a = "prev:quests"
+b = "quests"
+rect = [490, 60, 1150, 180]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0

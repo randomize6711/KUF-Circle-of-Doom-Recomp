@@ -1,0 +1,66 @@
+# Cut scenes and scripted cameras with the modern camera (M6B). The new-game route of gameplay.new_game (Kendal,
+# Forest of Embracing): the intro's scripted camera is a camera without the free camera, which the modern camera
+# leaves to the game ("game" in the camera trace). The camera keys (right stick) are held during it and the mouse
+# is moved: the scripted camera must stay the game's own; when gameplay starts the game turns its camera behind the
+# character, and the modern camera takes that view as it is (nothing carried over from the input).
+
+[scenario]
+description = "Scripted intro camera stays the game's; gameplay starts from the game's view"
+seconds = 110
+args = ["--kuf_trace_modern_camera=true"]
+script = """
+500 tap Return
+700 tap Return
+850 tap Return
+1000 tap Return
+1250 tap Return
+1350 tap Return
+1500 tap Return
+1650 tap Return
+1800 repeat 60 until gameplay tap Return
+1660 down I
+1662 down L
+1700 look 0 -800
+1740 look 900 0
+1795 up I
+1796 up L
+@gameplay+2 log mark first_gameplay
+@gameplay+40 log mark settled
+@gameplay+60 capture gameplay_start
+"""
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay"]
+
+# The scripted camera ran as the game's own while the keys were held.
+[[scenario.log_value]]
+name = "scripted camera views are the game's"
+after = "1660 down I"
+before = "context: gameplay"
+pattern = 'view: pitch (-?[0-9.]+) deg, yaw -?[0-9.]+ deg, distance ratio [0-9.]+, game'
+which = "first"
+min = -90.0
+max = 90.0
+
+# When gameplay starts the game places its camera behind the character (a turn of about 165 degrees, taken by
+# the modern camera); the view is then exactly the game's (nothing added from the input during the scripted
+# part: offset 0).
+[[scenario.log_value]]
+name = "the game's own turn at the start of gameplay is taken"
+after = "context: gameplay"
+before = "log mark settled"
+pattern = 'the game turned its camera by -?([0-9.]+) deg'
+which = "max"
+min = 90.0
+
+[[scenario.log_value]]
+name = "gameplay starts from the game's view (nothing added)"
+after = "log mark first_gameplay"
+before = "log mark settled"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw -?[0-9.]+ deg, distance ratio [0-9.]+, modern, offset (-?[0-9.]+)'
+which = "last"
+min = -0.005
+max = 0.005
+
+[format]
+width = 1280
+height = 720

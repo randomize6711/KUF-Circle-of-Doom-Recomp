@@ -1,0 +1,15 @@
+# Restart after a save interrupted between its two steps (tools/menu_test.py, K22): a new process starts with
+# what save_kill_between left on disk. The uncommitted working copy is not applied (recovery notes in the
+# log); the game loads the last complete save, stage 1's (save_new.toml): every check of save_continue.toml
+# against stage 1's readings. The run then saves again, which must commit both steps as one.
+
+[scenario]
+description = "restart after a kill between the two save steps: last complete save loads, saving works"
+seconds = 240
+script_file = "save_continue.kufscript"
+saves_from_run = "save_kill_between"
+compare_run = "save_new"
+log_expect = ["from an interrupted session were not applied"]
+log_sequence = ["@gameplay+2120 press Return", "flush (save message 0x41127)", "(type 00000001): committed",
+                "[kuf-input] context: start prompt"]
+rules_from = "save_continue.toml"

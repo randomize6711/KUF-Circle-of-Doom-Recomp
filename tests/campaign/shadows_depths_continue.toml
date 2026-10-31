@@ -1,0 +1,16 @@
+# Campaign stage 1 (M6): CONTINUE the Shadow Depths save from manual session m6-play-1 (copied, read only, to
+# build/m6-saves/celine-shadows-depths-1; not in Git). Every reading equals the inspected exploration run's
+# (explore_shadows_depths.toml; its captures, checked by hand against the session's screenshots,
+# are kept read-only in build/m6-saves/celine-shadows-depths-1-captures); then the game saves (Quit > save)
+# for stage 2.
+[scenario]
+description = "CONTINUE into Forest of Embracing: Shadow Depths; status, equipment, inventory, quest as played; save"
+seconds = 280
+script_file = "shadows_depths.kufscript"
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+compare_dir = "build/m6-saves/celine-shadows-depths-1-captures"
+rules_from = "shadows_depths_rules.toml"
+log_expect = ["[content] XamContentCreate 'Circle of Doom - Character Save' as 'savedisk:' flags 0x13 -> open"]
+log_sequence = ["[kuf-input] context: gameplay", "@gameplay+2160 press Return", "(type 00000001): committed",
+                "[kuf-input] context: start prompt"]
+expect_saves = ["B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/CL_*"]

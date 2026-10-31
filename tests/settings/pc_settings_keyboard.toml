@@ -1,0 +1,128 @@
+# PC Settings in the in-game Settings, with the keyboard (M6B; the category pages: M7 feature 3,
+# src/runtime/pc_settings_menu.cpp). CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only; the run gets a
+# copy), options menu (Escape), four Downs to Settings, open it; Down eight times past Vibration to PC Settings (help
+# shows Select), Return opens the category page (Controls, Camera, Display, Key Bindings, Controller Buttons,
+# Restore Defaults).
+# Controls (defaults: mouse 4/4, stick 5, dead zone 25 %, Normal): Mouse Horizontal +2 (6), Mouse Vertical -1 (3),
+# Stick Sensitivity +1 (6), Dead Zone -1 (20 %), Mouse Y-Axis Inverted; Down on the last row does nothing. Back to the
+# categories (Controls selected); Camera (range 85, recentring Off, modern On): Vertical Range one left (75),
+# Recentering On; Modern Camera stays On. Back; Down to Restore Defaults (not chosen), Down does nothing, Up three times to
+# Display. Back: the Settings page with its own labels and values again, PC Settings selected, pc_settings.toml
+# written. Back closes Settings (the game's own options unchanged: nothing to save). Settings again, PC Settings
+# again, Controls: the changed values are shown. Then everything is closed.
+# The next run (pc_settings_persist) starts from this run's pc_settings.toml.
+
+[scenario]
+description = "PC Settings page with the keyboard: navigation, every widget, save on Back"
+seconds = 241
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 press Escape
+@gameplay+400 press Down
+@gameplay+450 press Down
+@gameplay+500 press Down
+@gameplay+550 press Down
+@gameplay+650 press Return
+@gameplay+800 capture settings_open
+@gameplay+850 press Down
+@gameplay+880 press Down
+@gameplay+910 press Down
+@gameplay+940 press Down
+@gameplay+970 press Down
+@gameplay+1000 press Down
+@gameplay+1030 press Down
+@gameplay+1100 capture on_vibration
+@gameplay+1130 press Down
+@gameplay+1200 capture pc_row_selected
+@gameplay+1230 press Down
+@gameplay+1300 capture pc_row_down_does_nothing
+@gameplay+1330 press Return
+@gameplay+1430 capture categories
+@gameplay+1460 press Return
+@gameplay+1530 capture controls_defaults
+@gameplay+1560 press Right
+@gameplay+1590 press Right
+@gameplay+1620 press Down
+@gameplay+1650 press Left
+@gameplay+1680 press Down
+@gameplay+1710 press Right
+@gameplay+1740 press Down
+@gameplay+1770 press Left
+@gameplay+1800 press Down
+@gameplay+1830 press Right
+@gameplay+1860 press Down
+@gameplay+1900 capture controls_changed
+@gameplay+1930 press Escape
+@gameplay+1990 press Down
+@gameplay+2020 press Return
+@gameplay+2090 press Down
+@gameplay+2120 press Down
+@gameplay+2150 press Left
+@gameplay+2180 press Down
+@gameplay+2210 press Left
+@gameplay+2240 press Down
+@gameplay+2300 capture camera_changed
+@gameplay+2330 press Escape
+@gameplay+2360 press Down
+@gameplay+2390 press Down
+@gameplay+2420 press Down
+@gameplay+2450 press Down
+@gameplay+2480 press Down
+@gameplay+2580 capture restore_defaults_selected
+@gameplay+2610 press Down
+@gameplay+2640 press Up
+@gameplay+2670 press Up
+@gameplay+2700 press Up
+@gameplay+2770 capture back_on_display
+@gameplay+2800 press Escape
+@gameplay+2890 capture settings_page_again
+@gameplay+2920 press Escape
+@gameplay+3040 capture settings_closed
+@gameplay+3070 press Return
+@gameplay+3190 capture settings_reopened
+@gameplay+3220 press Down
+@gameplay+3250 press Down
+@gameplay+3280 press Down
+@gameplay+3310 press Down
+@gameplay+3340 press Down
+@gameplay+3370 press Down
+@gameplay+3400 press Down
+@gameplay+3430 press Down
+@gameplay+3460 press Return
+@gameplay+3560 press Return
+@gameplay+3640 capture controls_kept
+@gameplay+3670 press Escape
+@gameplay+3730 press Escape
+@gameplay+3790 press Escape
+@gameplay+3880 press Escape
+@gameplay+4030 capture closed
+"""
+capture_frames = []
+# Only PC settings were changed: the game's own options (GlobalSetting) and the character files stay as they
+# were, and pc_settings.toml holds exactly the changed values.
+expect_saves_unchanged = true
+pc_settings_expect = { "camera.modern_camera" = true, "camera.vertical_range_degrees" = 75, "camera.auto_recenter" = true, "mouse.sensitivity_horizontal" = 6, "mouse.sensitivity_vertical" = 3, "mouse.invert_y" = true, "controller.camera_sensitivity" = 6, "controller.camera_deadzone_percent" = 20 }
+log_expect = [
+    "[kuf-input] context: gameplay",
+    "[kuf-pc-menu] in-game Settings layout extended",
+    "[kuf-settings] no /run-data/user/pc_settings.toml yet: defaults",
+]
+log_sequence = [
+    "[kuf-pc-menu] PC Settings opened",
+    "[kuf-pc-menu] controls page",
+    "[kuf-pc-menu] camera page",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+    "[kuf-pc-menu] PC Settings closed",
+    "[kuf-pc-menu] PC Settings opened",
+    "[kuf-pc-menu] PC Settings closed",
+]
+
+[format]
+width = 1280
+height = 720

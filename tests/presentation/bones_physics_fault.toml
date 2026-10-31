@@ -1,0 +1,11 @@
+# M6D D4b-3 fault injection: the physics step's palette readers are not given the game's own palettes
+# (--kuf_debug_physics_sees_presented), so they read the poses written for the frame, the characters' and their
+# physics-driven parts'. pose_check.py --expect-physics-fault requires the run summary to count such reads: the gate
+# the other runs pass (physics_reads_written 0) catches the fault.
+[scenario]
+description = "M6D D4b-3 fault injection: the physics step reads the presented poses (the isolation gate must see it)"
+seconds = 360
+script_file = "objects_route.kufscript"
+args = ["--kuf_frame_rate=120", "--kuf_debug_physics_sees_presented=true"]
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay"]

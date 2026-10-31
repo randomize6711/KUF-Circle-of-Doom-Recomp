@@ -1,0 +1,179 @@
+# The original console camera when PC Settings > Modern Camera is Off (--kuf_pc_settings for this run): none of
+# the modern camera acts; the camera keys and the mouse drive the game's right stick as before M6B, with its
+# restrictions. CONTINUE from build/m6-saves/celine-shadows-depths-1.
+#   I held 2 s: the view rises only a little (the game's vertical limit, about 10 degrees)
+#   2 s after release it is back at the default view (the original snap back)
+#   L held 2 s: the game's own turn rate (measured in M6A: about 69 degrees per second)
+#   mouse right 600 counts over 30 frames: the camera turns (as the right stick, M5A)
+#   Camera Distance 200 % and Field of View 110 are set too: neither acts (the game's own distance, 707 units,
+#   and its own field of view, 0.6 rad, in every projection)
+
+[scenario]
+description = "Modern Camera Off: the original camera, unchanged"
+seconds = 110
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_trace_modern_camera=true", "--kuf_trace_projection=true",
+        "--kuf_pc_settings=camera.modern_camera=false,camera.distance_percent=200,camera.field_of_view_degrees=110"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 log mark start
+@gameplay+330 down I
+@gameplay+390 up I
+@gameplay+391 log mark released
+@gameplay+450 log mark two_seconds
+@gameplay+480 log mark before_turn
+@gameplay+510 down L
+@gameplay+570 up L
+@gameplay+600 log mark turned
+@gameplay+630 log mark before_mouse
+@gameplay+640 look 20 0
+@gameplay+641 look 20 0
+@gameplay+642 look 20 0
+@gameplay+643 look 20 0
+@gameplay+644 look 20 0
+@gameplay+645 look 20 0
+@gameplay+646 look 20 0
+@gameplay+647 look 20 0
+@gameplay+648 look 20 0
+@gameplay+649 look 20 0
+@gameplay+650 look 20 0
+@gameplay+651 look 20 0
+@gameplay+652 look 20 0
+@gameplay+653 look 20 0
+@gameplay+654 look 20 0
+@gameplay+655 look 20 0
+@gameplay+656 look 20 0
+@gameplay+657 look 20 0
+@gameplay+658 look 20 0
+@gameplay+659 look 20 0
+@gameplay+660 look 20 0
+@gameplay+661 look 20 0
+@gameplay+662 look 20 0
+@gameplay+663 look 20 0
+@gameplay+664 look 20 0
+@gameplay+665 look 20 0
+@gameplay+666 look 20 0
+@gameplay+667 look 20 0
+@gameplay+668 look 20 0
+@gameplay+669 look 20 0
+@gameplay+700 log mark after_mouse
+@gameplay+730 log mark end
+@gameplay+720 capture after_turns
+"""
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay", "[kuf-settings] overrides for this run: camera.modern_camera=false"]
+log_absent = ["[kuf-input] mouse look: direct to the camera (modern camera)", "[kuf-cam] field of view: key"]
+
+[[scenario.log_value]]
+name = "start pitch"
+after = "log mark start"
+before = "down I"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+
+[[scenario.log_value]]
+name = "I held 2 s: small rise only"
+after = "down I"
+before = "log mark released"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+which = "max"
+relative_to = "start pitch"
+min = 3.0
+max = 13.0
+
+[[scenario.log_value]]
+name = "2 s after release: back (original snap back)"
+after = "log mark two_seconds"
+before = "log mark before_turn"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+relative_to = "start pitch"
+min = -1.0
+max = 1.0
+
+[[scenario.log_value]]
+name = "yaw before turning"
+after = "log mark two_seconds"
+before = "down L"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+
+[[scenario.log_value]]
+name = "L held 2 s (the game's own turn rate)"
+after = "log mark turned"
+before = "log mark before_mouse"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+relative_to = "yaw before turning"
+angle = true
+min = 110.0
+max = 170.0
+
+[[scenario.log_value]]
+name = "yaw before the mouse"
+after = "log mark before_mouse"
+before = "look 20 0"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+
+[[scenario.log_value]]
+name = "mouse turned the camera (as the right stick)"
+after = "log mark after_mouse"
+before = "log mark end"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+relative_to = "yaw before the mouse"
+angle = true
+min = 10.0
+
+[[scenario.log_value]]
+name = "distance: the game's own (Camera Distance 200 % does not act)"
+after = "log mark start"
+before = "down I"
+pattern = 'view: .*, game, offset -?[0-9.]+, distance ([0-9.]+)'
+min = 690.0
+max = 720.0
+
+[[scenario.log_value]]
+name = "field of view: the game's own (Field of View 110 does not act)"
+after = "log mark start"
+before = "log mark end"
+pattern = 'projection: fov ([0-9.]+) rad'
+which = "max"
+max = 0.6005
+
+# The handover to the gameplay angle (the render side draws each game frame with the angle written in that
+# frame: it reads the per-frame slot one game frame behind, with its own index). Frames written before the
+# switch keep their own angle (the loading camera's 0.5 rad, as with Modern Camera Off); every frame from the
+# first one written with the gameplay angle is drawn with the game's own (0.6 rad).
+[[scenario.log_value]]
+name = "handover: frames written with the gameplay angle drawn with it (smallest)"
+after = "projection: gameplay view write #"
+before = "@gameplay+300 capture start"
+pattern = 'projection: render, fov ([0-9.]+) rad, slot [01] from write #[0-9]+ \(gameplay view, 0\.6000\)'
+which = "min"
+min = 0.5995
+max = 0.6005
+
+[[scenario.log_value]]
+name = "handover: frames written with the gameplay angle drawn with it (largest)"
+after = "projection: gameplay view write #"
+before = "@gameplay+300 capture start"
+pattern = 'projection: render, fov ([0-9.]+) rad, slot [01] from write #[0-9]+ \(gameplay view, 0\.6000\)'
+which = "max"
+min = 0.5995
+max = 0.6005
+
+# (With the fixed tick, M6D, that frame is usually drawn before the switch is written: the trace then logs the
+# last render-side projection, "drawn before the change", right after the switch.)
+[[scenario.log_value]]
+name = "handover: the frame written before the switch drawn with its own angle"
+after = "projection: gameplay view write #"
+before = "@gameplay+300 capture start"
+pattern = 'projection: render, fov ([0-9.]+) rad, slot [01] from write #[0-9]+ \(gameplay view, 0\.5000\)'
+which = "max"
+min = 0.4995
+max = 0.5005
+
+[format]
+width = 1280
+height = 720

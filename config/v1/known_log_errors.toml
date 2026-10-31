@@ -1,0 +1,7 @@
+# Runtime error lines that are understood and tracked, so tests report them instead of failing on them.
+# Each pattern is a Python regex matched against one log line; keep them as narrow as possible (exact call
+# site), so that any other occurrence of the same message still fails the tests. See docs/KNOWN_ISSUES.md.
+
+[[known]]
+id = "K18"
+pattern = 'BaseHeap::Release failed because address is not a region start: heap E0000000 address [0-9A-F]{8} \(page entry: region base page 0, state 0\), guest thread [0-9A-F]{8} lr 8215B678$'

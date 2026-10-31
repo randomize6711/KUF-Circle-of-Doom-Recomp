@@ -1,0 +1,74 @@
+# The display page in the title screen's SETTINGS (M6C), keyboard, on the simulated monitor: SETTINGS, PC
+# Settings, the categories, Down twice to Display, Return (M7 feature 3); Size is fixed for Borderless
+# (Left does nothing); Mode Right: Fullscreen (the desktop's mode, 3440x1440 at 100 Hz); Size Left: 3440x1440 at
+# 60 Hz; down to Apply (the last row since the M7 UI polish), Keep; Back to the categories, Back saves. The other rows, Change Storage Device and Restore Defaults are hidden on the page.
+
+[scenario]
+description = "Display page in the title SETTINGS: fullscreen mode and refresh rate, kept and saved"
+seconds = 127
+args = ["--kuf_display_modes=3440x1440@100,3440x1440@60,2560x1080@60,1920x1080@60,1280x720@60"]
+script = """
+500 tap Return
+700 tap Escape
+800 press Down
+900 press Return
+1020 press Down
+1050 press Down
+1080 press Down
+1110 press Down
+1140 press Down
+1170 press Down
+1200 press Down
+1230 press Down
+1260 press Down
+1350 press Return
+1480 press Down
+1510 press Down
+1540 press Return
+1990 capture display_page
+2020 press Down
+2050 press Left
+2080 press Up
+2110 press Right
+2180 capture fullscreen
+2210 press Down
+2240 press Left
+2310 capture refresh
+2340 press Down
+2370 press Down
+2400 press Down
+2430 press Down
+2460 press Down
+2490 press Down
+2520 press Down
+2550 press Down
+2580 press Down
+2610 press Down
+2640 press Return
+2740 press Return
+2840 capture kept
+2870 press Escape
+2920 press Escape
+2970 capture settings_again
+"""
+capture_frames = []
+pc_settings_expect = { "display.mode" = "fullscreen", "display.width" = 3440, "display.height" = 1440, "display.refresh_millihertz" = 60000 }
+log_sequence = [
+    "[kuf-pc-menu] PC Settings opened (title SETTINGS)",
+    "[kuf-pc-menu] display page",
+    "[kuf-display] display: fullscreen 3440 x 1440 60 Hz on 'Simulated'",
+    "[kuf-pc-menu] display kept: fullscreen 3440x1440 refresh 60000 mHz",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+]
+
+[format]
+width = 1280
+height = 720
+
+[[region_diff]]
+name = "Size row shows the refresh rate change"
+a = "fullscreen"
+b = "refresh"
+rect = [178, 182, 462, 212]
+metric = "text"
+min_mean_diff = 2.0

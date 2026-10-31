@@ -1,0 +1,35 @@
+# Exploration (M6): CONTINUE from build/m6-saves/celine-shadows-depths-1; capture arrival, status pages,
+# inventory and the quest list. Same title/CONTINUE sequence as tests/save/save_continue.kufscript.
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1050 capture main_menu
+1100 press Return
+1250 capture continue_list
+1300 repeat 60 until gameplay press Return
+@gameplay+30 capture arrive_1
+@gameplay+90 capture arrive_2
+@gameplay+150 capture arrive_3
+@gameplay+300 capture arrive_4
+@gameplay+400 tap Tab
+@gameplay+480 capture status
+@gameplay+500 tap C
+@gameplay+580 capture page2
+@gameplay+600 tap C
+@gameplay+680 capture page3
+@gameplay+700 tap C
+@gameplay+780 capture page4
+@gameplay+800 tap PageDown
+@gameplay+880 capture inventory
+@gameplay+900 tap Escape
+@gameplay+980 tap Escape
+@gameplay+1080 tap Escape
+@gameplay+1160 capture pause_menu
+@gameplay+1200 press Down
+@gameplay+1260 press Down
+@gameplay+1320 capture pause_quests_selected
+@gameplay+1360 press Return
+@gameplay+1460 capture quests
+@gameplay+1560 press Down
+@gameplay+1620 capture quests_2

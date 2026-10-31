@@ -1,0 +1,54 @@
+# Save/load stage 2 (tests/save/save_continue.toml): a new process with stage 1's saves. Title, storage
+# message, main menu: Down to CONTINUE, then the saved character; Return until the player has control.
+# Press START; the storage message: the first confirm makes the game look for its saves (enumerate, then
+# open the package with OPEN_EXISTING), the second closes the message; then Down to CONTINUE.
+# Menu confirmations use "press" (held 4 frames), as a player would.
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1050 capture main_menu
+1100 press Return
+1250 capture continue_list
+1300 repeat 60 until gameplay press Return
+
+# The same readings as before saving
+@gameplay+300 capture loaded_play
+@gameplay+400 tap Tab
+@gameplay+480 capture status_loaded
+@gameplay+500 tap C
+@gameplay+580 capture equipment2_loaded
+@gameplay+600 tap C
+@gameplay+680 capture equipment3_loaded
+@gameplay+700 tap Z
+@gameplay+730 tap Z
+@gameplay+800 tap PageDown
+@gameplay+880 capture inventory_loaded
+@gameplay+900 tap Escape
+@gameplay+980 tap Escape
+
+# A second change and save, for the reload and interrupted-save scenarios: equip a potion in the RB slot
+# again (Items tab, Down to RB, Change Item, select the first entry), then save. With the slot empty, Change
+# Item lists the inventory without an Unequip row, usable items first; save_new's White Potions are always
+# there, and the random loot of its fight may put a Small Red Potion before them (K24). Either potion is a
+# change of the RB slot; the reload compares with what this run saved.
+@gameplay+1080 tap Tab
+@gameplay+1160 tap C
+@gameplay+1220 press Down
+@gameplay+1280 press Return
+@gameplay+1420 press Return
+@gameplay+1500 capture equipment2_resaved
+@gameplay+1520 tap Z
+@gameplay+1600 capture status_resaved
+@gameplay+1620 tap Escape
+@gameplay+1700 tap Escape
+@gameplay+1800 tap Down
+@gameplay+1830 tap Down
+@gameplay+1860 tap Down
+@gameplay+1890 tap Down
+@gameplay+1920 tap Down
+@gameplay+1980 capture quit_selected
+@gameplay+2000 press Return
+@gameplay+2090 capture save_question
+@gameplay+2120 press Return
+@gameplay+2470 capture title_after_save

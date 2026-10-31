@@ -1,0 +1,38 @@
+# Bindings from pc_settings.toml in gameplay (M7 feature 5): the file gives Weapon A the G key and exchanges the
+# controller's A and X. CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only) with an SDL virtual pad; the
+# layout is logged at start; in gameplay the pad's X reaches the game as A and its A as X (--kuf_trace_pad_remap); G
+# (Weapon A) attacks; Back (not remapped) opens the options menu and B closes it (menus keep the standard layout).
+
+[scenario]
+description = "Gameplay bindings from pc_settings.toml: keys and controller buttons"
+seconds = 110
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+pc_settings_file = "tests/settings/bindings_game_pc_settings.toml.in"
+args = ["--kuf_input_script_pad=xbox360", "--kuf_trace_pad_remap=true"]
+script = """
+100 pad connect
+500 pad press start
+700 pad press a
+850 pad press a
+1000 pad press down
+1100 pad press a
+1300 repeat 60 until gameplay pad press a
+@gameplay+300 pad press x
+@gameplay+400 pad press a
+@gameplay+500 press G
+@gameplay+600 pad press back
+@gameplay+700 capture options_menu
+@gameplay+750 pad press b
+@gameplay+850 capture closed
+"""
+capture_frames = []
+log_expect = [
+    "[kuf-input] gameplay keys: 1 changed from the defaults",
+    "[kuf-input] controller buttons in gameplay: x as a, a as x",
+    "[kuf-input] gameplay pad: buttons 4000 -> 1000",
+    "[kuf-input] gameplay pad: buttons 1000 -> 4000",
+]
+
+[format]
+width = 1280
+height = 720

@@ -1,0 +1,46 @@
+# Build trees, run sandboxes, analysis output (contains game-derived data: images, disassembly, logs)
+/build/
+/out/
+
+# Recompiled C++ produced from the user's default.xex -- proprietary derivative, never commit.
+# (generated/rexglue.cmake is SDK boilerplate and IS committed.)
+/generated/*
+!/generated/rexglue.cmake
+
+# Original game content and anything extracted from it
+*.xex
+*.xexp
+*.pak
+*.sox
+*.ccz
+*.xwb
+*.xsb
+*.xgs
+*.wmv
+*.36t
+*.bm
+*.bvl
+*.chunk
+*.dds
+*.bin
+*.elf
+*.dis
+dependency.bin
+/assets/
+/extracted/
+/game/
+
+# Local configuration
+/.game_dir
+CMakeUserPresets.json
+.vscode/
+.idea/
+.cache/
+compile_commands.json
+
+# Python / logs / misc
+__pycache__/
+*.pyc
+*.log
+*.tmp
+*~

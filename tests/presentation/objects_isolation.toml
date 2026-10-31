@@ -1,0 +1,10 @@
+# M6D D4a isolation: every presented world object raised by 750 units (the camera by 1,000, the player by 750) along
+# objects_route.kufscript; the game must play as objects_120.toml (state_compare.py over the first ticks of gameplay)
+# and its own object positions must never take the raise (object_check.py --isolation, through the fight).
+[scenario]
+description = "M6D D4a isolation: every presented world object moved far off; the game must not notice"
+seconds = 360
+script_file = "objects_route.kufscript"
+args = ["--kuf_frame_rate=120", "--kuf_presentation_test_offset=1000", "--kuf_trace_presentation=true", "--kuf_trace_game_state=true", "--kuf_trace_camera_orbit=true"]
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay"]

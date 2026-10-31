@@ -1,0 +1,259 @@
+# Save/load stage 2 (tools/menu_test.py, M5B): a new process starts with a copy of stage 1's saves
+# (save_new.toml; run that first), loads the character through CONTINUE and reads the same screens. Every
+# value and list row is compared with the reading taken just before saving, as text: glyph pixels only
+# (metric "text", luma > 200; measured on these rectangles: identical text <= 0.3, a changed value 7.8 to
+# 10.5), so the different scene behind the translucent panels does not matter. Value rectangles start right
+# of their labels (a bright moon graphic sits behind "HP:" and "Luck:"). The selected inventory row is not
+# compared (its highlight pulses); the selected item's name and description below it are. Rectangles only.
+# Current HP is not compared: the game does not save it and starts a loaded character at full HP (measured:
+# saved at 14/78, loaded at 78/78; the character file saved at 14 HP holds no field with that value;
+# docs/SAVES.md). The maximum is compared: the whole value right-aligned, its last 23 columns ("78" without
+# the slash), because a one-digit current HP (6/78, K24) moves it left.
+
+[scenario]
+description = "load the saved character via CONTINUE in a new process; status, equipment, items, inventory as saved"
+seconds = 240
+script_file = "save_continue.kufscript"
+saves_from_run = "save_new"
+log_expect = ["[kuf-input] context: gameplay",
+              "[content] XamContentCreate 'Circle of Doom - Character Save' as 'savedisk:' flags 0x13 -> open"]
+expect_saves = ["B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/KD_*"]
+# Then the second save (save_reload.toml checks it in a third process).
+log_sequence = ["@gameplay+2120 press Return", "(type 00000001): committed", "[kuf-input] context: start prompt"]
+
+[format]
+width = 1280
+height = 720
+
+# Status screen: name, level and the six values
+[[region_diff]]
+name = "status level as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [990, 50, 1150, 84]
+metric = "text"
+text_threshold = 150.0
+max_mean_diff = 1.0
+
+# The large name glyphs vary with the scene behind the panel (same name up to 1.3, another name >= 19)
+[[region_diff]]
+name = "status name as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [570, 50, 760, 84]
+metric = "text"
+text_threshold = 185.0
+max_mean_diff = 6.0
+
+[[region_diff]]
+name = "status HP maximum as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [606, 95, 760, 120]
+metric = "text"
+text_threshold = 200.0
+align_x = "right"
+keep_px = 23
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "status SP value as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [895, 95, 1040, 120]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "status Luck value as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [612, 122, 760, 150]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "status Recover value as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [940, 122, 1150, 150]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "status EXP value as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [612, 152, 760, 184]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "status Gold value as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [900, 152, 1040, 184]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+# Status screen tab: weapons and abilities (four slots)
+[[region_diff]]
+name = "weapons and abilities row 1 as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [610, 266, 1170, 296]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "weapons and abilities row 2 as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [610, 310, 1170, 340]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "weapons and abilities row 3 as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [610, 352, 1170, 382]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "weapons and abilities row 4 as saved"
+a = "prev:status_saved"
+b = "status_loaded"
+rect = [610, 396, 1170, 426]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+# Status screen tab: items (four slots)
+[[region_diff]]
+name = "items row 1 as saved"
+a = "prev:equipment2_rows_saved"
+b = "equipment2_loaded"
+rect = [610, 266, 1170, 296]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "items row 2 as saved"
+a = "prev:equipment2_rows_saved"
+b = "equipment2_loaded"
+rect = [610, 310, 1170, 340]
+metric = "text_rel"
+allow_empty = true
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "items row 3 as saved"
+a = "prev:equipment2_rows_saved"
+b = "equipment2_loaded"
+rect = [610, 352, 1170, 382]
+metric = "text_rel"
+allow_empty = true
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "items row 4 as saved"
+a = "prev:equipment2_rows_saved"
+b = "equipment2_loaded"
+rect = [610, 396, 1170, 426]
+metric = "text_rel"
+allow_empty = true
+max_mean_diff = 1.0
+
+# Status screen tab: armor and accessories (four slots)
+[[region_diff]]
+name = "armor and accessories row 1 as saved"
+a = "prev:equipment3_saved"
+b = "equipment3_loaded"
+rect = [610, 266, 1170, 296]
+metric = "text_rel"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "armor and accessories row 2 as saved"
+a = "prev:equipment3_saved"
+b = "equipment3_loaded"
+rect = [610, 310, 1170, 340]
+metric = "text_rel"
+allow_empty = true
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "armor and accessories row 3 as saved"
+a = "prev:equipment3_saved"
+b = "equipment3_loaded"
+rect = [610, 352, 1170, 382]
+metric = "text_rel"
+allow_empty = true
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "armor and accessories row 4 as saved"
+a = "prev:equipment3_saved"
+b = "equipment3_loaded"
+rect = [610, 396, 1170, 426]
+metric = "text_rel"
+allow_empty = true
+max_mean_diff = 1.0
+
+# Inventory: rows below the selected one, the selected item's name and description
+[[region_diff]]
+name = "inventory row 2 as saved"
+a = "prev:inventory_saved"
+b = "inventory_loaded"
+rect = [110, 170, 580, 200]
+metric = "text_rel"
+allow_empty = true
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "inventory row 3 as saved"
+a = "prev:inventory_saved"
+b = "inventory_loaded"
+rect = [110, 200, 580, 230]
+metric = "text_rel"
+allow_empty = true
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "inventory selected item as saved"
+a = "prev:inventory_saved"
+b = "inventory_loaded"
+rect = [100, 355, 590, 390]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "inventory item details as saved"
+a = "prev:inventory_saved"
+b = "inventory_loaded"
+rect = [280, 395, 590, 680]
+metric = "text"
+text_threshold = 200.0
+max_mean_diff = 1.0
+
+# The second change: the RB slot shows a potion again (its description is back).
+[[region_diff]]
+name = "RB slot equipped again before the second save"
+a = "equipment2_loaded"
+b = "equipment2_resaved"
+rect = [760, 455, 1180, 560]
+metric = "text"
+text_threshold = 200.0
+min_mean_diff = 1.0
+
+[[range]]
+name = "all captures are real images"
+frames = [1, 1000000]
+min_distinct = 300

@@ -1,0 +1,72 @@
+# Expected capture statistics for the v1 boot and title loop (tools/capture_check.py check).
+# Statistics only: no image content. Frame numbers are presented-frame indices (1-based), which are
+# deterministic per run. Measured on RADV (RX 9070 XT), 2026-10-20: boot logo at frame 60 (mean luma 4.1,
+# std 21.5, 63 sampled colours); title loop from frame 300 (mean 7.7-14.7, std 28-42, 1800-2300 colours,
+# frame-to-frame change 2.5-14); after ~70 s the attract movie and the title loop alternate. Bounds are wide enough for other GPUs and drivers, tight enough to catch a
+# blank, garbage or frozen image.
+#
+# Used by tools/capture_test.py with --kuf_capture_frames=60,300,360,420,480,540,600,660,720,780,840,900
+# and by the smoke test's periodic captures (--kuf_capture_every).
+
+[format]
+width = 1280
+height = 720
+
+[blank]
+max_std = 1.5
+max_distinct = 4
+
+[[range]]
+name = "boot logo"
+frames = [60, 60]
+optional = true          # periodic captures (smoke test) do not include frame 60
+mean = [1.5, 10.0]
+std = [10.0, 35.0]
+min_distinct = 30
+max_black = 0.99
+
+[[range]]
+name = "logo-to-title transition"
+frames = [61, 299]
+optional = true
+allow_blank = true       # fades through black
+
+[[range]]
+name = "title loop"
+frames = [300, 1950]     # the title loop plays for ~60 s before the attract movie starts (~frame 2100)
+mean = [4.0, 25.0]
+std = [18.0, 55.0]
+min_distinct = 500
+max_black = 0.95
+
+[[range]]
+name = "title and attract cycle"
+frames = [1951, 1000000] # attract movie (COD_ATTRACT.wmv, ~70 s, bright: mean 30-70), fade, title loop again
+optional = true          # the 40 s capture test ends before this
+allow_blank = true       # each attract pass ends with ~5 s of black before the title returns
+max_blank_seconds = 10.0
+any_mean_above = 30.0    # the attract movie was actually shown
+mean = [0.0, 160.0]  # sanity bounds: a white or garbage screen fails
+std = [0.0, 110.0]
+
+[[animation]]
+name = "title loop"
+frames = [300, 1950]
+min_change = 0.5         # the frozen movie of K13 measured exactly 0.0
+min_captures = 4
+
+[[animation]]
+name = "title and attract cycle"
+frames = [1951, 1000000]
+min_change = 0.5
+min_captures = 0
+ignore_blank_pairs = true # black-to-black inside a fade; its length is bounded by max_blank_seconds
+
+[compare]
+# The flame logo is the title movie; with real-time audio (paced since M4) its frame follows the audio clock
+# and can shift by a frame between runs. The rest of the screen ("Press START") stays compared.
+ignore = [[400, 0, 880, 480]]
+block = 8
+max_mean_diff = 3.0
+block_diff = 24.0
+max_block_fraction = 0.01

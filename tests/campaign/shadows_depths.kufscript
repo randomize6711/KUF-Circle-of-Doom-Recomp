@@ -1,0 +1,47 @@
+# Campaign save chain (M6, tests/campaign/shadows_depths_*.toml): CONTINUE a save made in a manual play session
+# in the Forest of Embracing: Shadow Depths (build/m6-saves/celine-shadows-depths-1, outside Git); read the area
+# banner, the status pages, the inventory and the quest list; then Quit > save and return to the title.
+# Title/CONTINUE sequence as in tests/save/save_continue.kufscript (press START, storage message, CONTINUE).
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1050 capture main_menu
+1100 press Return
+1250 capture continue_list
+1300 repeat 60 until gameplay press Return
+# The area banner fades in and out over the first seconds of play
+@gameplay+90 capture arrive_2
+# Status (Tab), the three equipment pages (C), the inventory (PageDown); Escape twice back to play
+@gameplay+400 tap Tab
+@gameplay+480 capture status
+@gameplay+500 tap C
+@gameplay+580 capture page2
+@gameplay+600 tap C
+@gameplay+680 capture page3
+@gameplay+800 tap PageDown
+@gameplay+880 capture inventory
+@gameplay+900 tap Escape
+@gameplay+980 tap Escape
+# Pause menu (Escape): Sleep, Change Regions, View Quests, Controls, Settings, Quit; Down twice = View Quests
+@gameplay+1080 tap Escape
+@gameplay+1160 capture pause_menu
+@gameplay+1200 press Down
+@gameplay+1260 press Down
+@gameplay+1360 press Return
+@gameplay+1460 capture quests
+# Back to play, pause menu again, Down five times = Quit, confirm, save: yes
+@gameplay+1560 tap Escape
+@gameplay+1640 tap Escape
+@gameplay+1720 tap Escape
+@gameplay+1800 capture pause_menu_2
+@gameplay+1830 tap Down
+@gameplay+1860 tap Down
+@gameplay+1890 tap Down
+@gameplay+1920 tap Down
+@gameplay+1950 tap Down
+@gameplay+2010 capture quit_selected
+@gameplay+2040 press Return
+@gameplay+2130 capture save_question
+@gameplay+2160 press Return
+@gameplay+2510 capture title_after_save

@@ -1,0 +1,55 @@
+# Native rendering (M6C follow-up) at 1920x1080 (16:9): Render Native renders the game's frame at 2x2, i.e.
+# 2560x1440, at least the output on each axis (the presenter filters it down to 1920x1080): the 3D scene, its
+# post-processing, the HUD and the menus are drawn at that resolution. Checks: the captured frame is 2560x1440;
+# reduced to 1280x720 (capture_check guest_coordinates) the HUD and the pause menu are where they belong;
+# tests/display/render_compare.py then compares it with render_ref_16_9 (Render 1x, same output): colours and
+# post-processing, every resolve 2x2 times larger, the lighting cube maps identical (KNOWN_ISSUES K31). CONTINUE
+# from build/m6-saves/celine-shadows-depths-1 (read only).
+
+[scenario]
+description = "Render Native at 1920x1080 (16:9): frame 2560x1440"
+seconds = 120
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_size=1920x1080", "--gpu_trace_frame=2000000000", "--gpu_trace_dir=/run-data/user"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+250 log mark hud
+@gameplay+300 capture hud
+@gameplay+330 capture scene
+@gameplay+340 trace
+@gameplay+400 press Escape
+@gameplay+500 capture pause
+@gameplay+560 press Escape
+@gameplay+700 log mark end
+"""
+capture_frames = []
+expect_saves_unchanged = true
+log_expect = [
+    "render scale 2x2 (frame 2560x1440); Render Native",
+    "[kuf-display] output 1920x1080 (16:9), drawn for aspect 1.7778",
+]
+
+[format]
+render_scale = [2, 2]
+guest_coordinates = true
+
+# "Paused" at its 16:9 place (bottom left of the pause screen: glyphs at x 80-175, y 642-668).
+[[region]]
+name = "Paused at its 16:9 place"
+capture = "pause"
+rect = [80, 638, 175, 672]
+metric = "text"
+mean = [3.0, 255.0]
+
+# The HP gauge (red) at its 16:9 place, bottom left of the HUD.
+[[region]]
+name = "HP gauge at its 16:9 place"
+capture = "hud"
+rect = [240, 624, 320, 634]
+metric = "red_minus_blue"
+mean = [60.0, 255.0]

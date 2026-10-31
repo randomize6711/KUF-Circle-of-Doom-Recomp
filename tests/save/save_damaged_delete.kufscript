@@ -1,0 +1,8 @@
+# Damaged save, the player chooses B: "delete the corrupted save file and create a new save file"
+# (save_damaged_delete.toml). The game deletes the package, creates an empty one and shows the main menu,
+# CONTINUE unavailable.
+500 tap Return
+700 press Return
+850 capture corrupted_dialog
+900 press Escape
+1100 capture after_delete

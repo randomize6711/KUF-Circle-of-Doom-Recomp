@@ -1,0 +1,9 @@
+# Bindings for bindings_game.toml (M7 feature 5): Weapon A on G (keyboard), the controller's A and X exchanged.
+version = 1
+
+[gameplay_keys]
+a = "G"
+
+[controller_buttons]
+a = "x"
+x = "a"

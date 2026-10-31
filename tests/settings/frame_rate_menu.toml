@@ -1,0 +1,118 @@
+# PC Settings > Frame Rate in-game with the keyboard (M6D D5, docs/HIGH_FPS.md section 21). CONTINUE from
+# build/m6-saves/celine-shadows-depths-1 (read only); options menu, Settings, PC Settings; the categories (M7 feature
+# 3): Down to Display, Return, Down five times to FPS (M7 UX fix 3; FPS: 30 (Original), Interpolation: On, World
+# Objects, Animation, Effects: On). FPS Right: 60 (held 10 s), Right twice: 120, Left three times: 30, Right three times:
+# 120, Right four times: Unlimited, Left six times: 60 (each value applied within a tick, the ones passed through
+# too). Interpolation Right (Off) and Left (On); Down to World Objects; Up and Down; World Objects Off, Animation Off
+# and On, Effects Off. Back to the categories, Back saves; gameplay at 60
+# with the objects and effects not interpolated. frame_rate_check.py: every change reached the scheduler, the guest
+# vblank followed, each held rate drawn, the game isolated. The next run (frame_rate_persist) starts from the file.
+
+[scenario]
+description = "Frame-rate page: FPS 30 -> 60 -> 120 -> 30 and 120 -> Unlimited -> 60, interpolation rows, saved"
+seconds = 280
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_profile=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 press Escape
+@gameplay+400 press Down
+@gameplay+450 press Down
+@gameplay+500 press Down
+@gameplay+550 press Down
+@gameplay+650 press Return
+@gameplay+800 press Down
+@gameplay+830 press Down
+@gameplay+860 press Down
+@gameplay+890 press Down
+@gameplay+920 press Down
+@gameplay+950 press Down
+@gameplay+980 press Down
+@gameplay+1010 press Down
+@gameplay+1110 press Return
+@gameplay+1260 press Down
+@gameplay+1290 press Down
+@gameplay+1320 press Return
+@gameplay+1420 press Down
+@gameplay+1450 press Down
+@gameplay+1480 press Down
+@gameplay+1510 press Down
+@gameplay+1540 press Down
+@gameplay+1610 capture fps_row
+@gameplay+1700 press Right
+@gameplay+1730 log mark at_60
+@gameplay+2030 press Right
+@gameplay+2060 press Right
+@gameplay+2090 log mark at_120
+@gameplay+2390 press Left
+@gameplay+2420 press Left
+@gameplay+2450 press Left
+@gameplay+2480 log mark at_30
+@gameplay+2780 press Right
+@gameplay+2810 press Right
+@gameplay+2840 press Right
+@gameplay+2870 log mark at_120b
+@gameplay+3170 press Right
+@gameplay+3200 press Right
+@gameplay+3230 press Right
+@gameplay+3260 press Right
+@gameplay+3290 capture fps_unlimited
+@gameplay+3320 log mark at_unlimited
+@gameplay+3620 press Left
+@gameplay+3650 press Left
+@gameplay+3680 press Left
+@gameplay+3710 press Left
+@gameplay+3740 press Left
+@gameplay+3770 press Left
+@gameplay+3800 capture fps_60
+@gameplay+3830 log mark at_60b
+@gameplay+4130 press Down
+@gameplay+4160 press Right
+@gameplay+4190 capture interpolation_off
+@gameplay+4340 press Left
+@gameplay+4370 press Down
+@gameplay+4430 capture advanced
+@gameplay+4460 press Up
+@gameplay+4520 press Down
+@gameplay+4580 press Right
+@gameplay+4610 press Down
+@gameplay+4640 press Right
+@gameplay+4670 press Left
+@gameplay+4700 press Down
+@gameplay+4730 press Right
+@gameplay+4760 capture advanced_changed
+@gameplay+4820 press Escape
+@gameplay+4920 press Escape
+@gameplay+5020 press Escape
+@gameplay+5120 press Escape
+@gameplay+5320 log mark play_a
+@gameplay+5330 down W
+@gameplay+5630 log mark play_b
+@gameplay+5640 up W
+"""
+capture_frames = []
+expect_saves_unchanged = true
+pc_settings_expect = { "frame_rate.limit_fps" = 60, "frame_rate.interpolation" = true, "frame_rate.interpolate_objects" = false, "frame_rate.interpolate_animation" = true, "frame_rate.interpolate_effects" = false, "camera.modern_camera" = true }
+log_expect = [
+    "[kuf-input] context: gameplay",
+    "[kuf-settings] frame rate: 30 (original) interpolation true objects true animation true effects true",
+    "[kuf-pacing] tick", "frame rate 30 (original) -> 60, interpolation true objects true animation true effects true",
+    "frame rate 240 -> unlimited", "frame rate unlimited -> 240", "frame rate 60 -> 30 (original)",
+    "[kuf-present] camera and player interpolation between ticks: on, world objects: off, skeletal poses: on, effect clock: off",
+]
+log_sequence = [
+    "[kuf-pc-menu] PC Settings opened",
+    "[kuf-pc-menu] display page",
+    "[kuf-pc-menu] frame rate 60 interpolation true",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+    "[kuf-pc-menu] PC Settings closed",
+]
+
+[format]
+width = 1280
+height = 720

@@ -1,0 +1,82 @@
+Fix (M6C, KNOWN_ISSUES K31): with a draw resolution scale above 1, the pixel shader's position input (Xenos
+ps_param_gen, "VPOS") was floor(host position) / scale, a fractional guest position (3.5 for the second host
+pixel of guest pixel 3). The hardware gives the guest pixel's integer position, and shaders use it as an index:
+KUF builds its lighting cube maps at level load from a 4x4 coefficient texture whose pixel shader addresses its
+weight tables with VPOS; at scale 2 three of four host pixels fetched the wrong weights, the cube maps came out
+wrong and every lit surface had a strong red cast. Now every host pixel covering a guest pixel gets that guest
+pixel's integer position (floor((floor(host) + 0.5) / scale), exact for any scale): the cube maps are bit-
+identical to the unscaled ones. Screen-space use of VPOS (dither patterns) keeps the original pattern scaled.
+
+diff --git a/src/graphics/pipeline/shader/dxbc_translator.cpp b/src/graphics/pipeline/shader/dxbc_translator.cpp
+index 2c31a0e..29806d3 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator.cpp
+@@ -660,12 +660,17 @@ void DxbcShaderTranslator::StartPixelShader() {
+     uint32_t resolution_scaled_axes =
+         uint32_t(draw_resolution_scale_x_ > 1) | (uint32_t(draw_resolution_scale_y_ > 1) << 1);
+     if (resolution_scaled_axes) {
+-      // Revert resolution scale - after truncating, so if the pixel position
+-      // is passed to tfetch (assuming the game doesn't round it by itself),
+-      // it will be sampled with higher resolution too.
+-      a_.OpMul(dxbc::Dest::R(param_gen_temp, resolution_scaled_axes), dxbc::Src::R(param_gen_temp),
++      // Revert resolution scale to the guest pixel's integer position, as the hardware gives it, for
++      // every host pixel covering it (the centre of the host pixel, + 0.5, keeps the division exact for
++      // any scale): shaders use it as an index (texel addresses, lookup tables), and a fractional
++      // position breaks that (KUF: the lighting coefficient pass).
++      a_.OpMAd(dxbc::Dest::R(param_gen_temp, resolution_scaled_axes), dxbc::Src::R(param_gen_temp),
+                dxbc::Src::LF(1.0f / draw_resolution_scale_x_, 1.0f / draw_resolution_scale_y_, 1.0f,
+-                             1.0f));
++                             1.0f),
++               dxbc::Src::LF(0.5f / draw_resolution_scale_x_, 0.5f / draw_resolution_scale_y_, 0.0f,
++                             0.0f));
++      a_.OpRoundNI(dxbc::Dest::R(param_gen_temp, resolution_scaled_axes),
++                   dxbc::Src::R(param_gen_temp));
+     }
+     if (shader_modification.pixel.param_gen_point) {
+       // A point - always front-facing (the upper bit of X is 0), not a line
+diff --git a/src/graphics/pipeline/shader/spirv_translator.cpp b/src/graphics/pipeline/shader/spirv_translator.cpp
+index 1774f97..0f6de21 100644
+--- a/src/graphics/pipeline/shader/spirv_translator.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator.cpp
+@@ -3211,9 +3211,17 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
+                                         id_vector_temp_),
+             spv::NoPrecision));
+     if (draw_resolution_scale_x_ > 1) {
+-      param_gen_x = builder_->createNoContractionBinOp(
+-          spv::OpFMul, type_float_, param_gen_x,
+-          builder_->makeFloatConstant(1.0f / float(draw_resolution_scale_x_)));
++      // The guest pixel's integer position, as the hardware gives it, for every host pixel covering it
++      // (the centre of the host pixel, + 0.5, keeps the division exact for any scale): shaders use it as
++      // an index (texel addresses, lookup tables), and a fractional position breaks that (KUF: the
++      // lighting coefficient pass, KNOWN_ISSUES K31).
++      param_gen_x = builder_->createUnaryBuiltinCall(
++          type_float_, ext_inst_glsl_std_450_, GLSLstd450Floor,
++          builder_->createNoContractionBinOp(
++              spv::OpFMul, type_float_,
++              builder_->createNoContractionBinOp(spv::OpFAdd, type_float_, param_gen_x,
++                                                 builder_->makeFloatConstant(0.5f)),
++              builder_->makeFloatConstant(1.0f / float(draw_resolution_scale_x_))));
+     }
+     param_gen_x = builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+                                                    GLSLstd450FAbs, param_gen_x);
+@@ -3247,9 +3255,17 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
+                                         id_vector_temp_),
+             spv::NoPrecision));
+     if (draw_resolution_scale_y_ > 1) {
+-      param_gen_y = builder_->createNoContractionBinOp(
+-          spv::OpFMul, type_float_, param_gen_y,
+-          builder_->makeFloatConstant(1.0f / float(draw_resolution_scale_y_)));
++      // The guest pixel's integer position, as the hardware gives it, for every host pixel covering it
++      // (the centre of the host pixel, + 0.5, keeps the division exact for any scale): shaders use it as
++      // an index (texel addresses, lookup tables), and a fractional position breaks that (KUF: the
++      // lighting coefficient pass, KNOWN_ISSUES K31).
++      param_gen_y = builder_->createUnaryBuiltinCall(
++          type_float_, ext_inst_glsl_std_450_, GLSLstd450Floor,
++          builder_->createNoContractionBinOp(
++              spv::OpFMul, type_float_,
++              builder_->createNoContractionBinOp(spv::OpFAdd, type_float_, param_gen_y,
++                                                 builder_->makeFloatConstant(0.5f)),
++              builder_->makeFloatConstant(1.0f / float(draw_resolution_scale_y_))));
+     }
+     param_gen_y = builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+                                                    GLSLstd450FAbs, param_gen_y);

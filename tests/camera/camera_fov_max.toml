@@ -1,0 +1,91 @@
+# Field of view 110 degrees (PC Settings > Field of View, the largest setting; M6B final settings), with
+# --kuf_trace_projection: every distinct projection matrix the game builds, with its field of view, aspect and
+# scales. CONTINUE from build/m6-saves/celine-shadows-depths-1; the view turned, up and down (captures).
+#   The gameplay camera's key (0.6 rad vertical, 57.6 degrees horizontally at 16:9) is replaced by 1.3535 rad
+#   vertical: 110 degrees horizontally at the screen's 16:9 (aspect from the viewport: wider screens see more at
+#   the sides, nothing stretched).
+#   The matrix: x scale = cot(fov / 2) / aspect, y scale = cot(fov / 2) (D3DX perspective, checked against the
+#   values computed here: 0.7002 / 1.2448).
+#   Every perspective projection built in gameplay uses it (all three of the game's passes); the HUD and menus
+#   are drawn with an orthographic projection that does not use it (no other projection appears; the trace logs
+#   each distinct projection once a second). (The render side draws each game frame with the angle written in
+#   that frame, one game frame behind the game side: the frame before the switch keeps the loading camera's
+#   0.5 rad, as with Modern Camera Off; checked at the handover below.)
+
+[scenario]
+description = "Field of view 110: the gameplay projection matrix"
+seconds = 90
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_trace_projection=true", "--kuf_trace_modern_camera=true", "--kuf_pc_settings=camera.field_of_view_degrees=110"]
+script_file = "camera_fov.kufscript"
+capture_frames = []
+log_expect = [
+    "[kuf-input] context: gameplay",
+    "[kuf-cam] field of view: key 0.6000 rad, used 1.3535 rad",
+    "[kuf-cam] projection: gameplay view",
+    "aspect 1.7778 near 1.0 far 50000.0: x scale 0.7002 y scale 1.2448 (expected 0.7002 / 1.2448), horizontal 110.00 degrees",
+]
+
+[[scenario.log_value]]
+name = "smallest field of view in gameplay"
+after = "@gameplay+300 capture start"
+before = "log mark end"
+pattern = 'projection: fov ([0-9.]+) rad'
+which = "min"
+min = 1.3530
+max = 1.3540
+
+[[scenario.log_value]]
+name = "largest field of view in gameplay"
+after = "@gameplay+300 capture start"
+before = "log mark end"
+pattern = 'projection: fov ([0-9.]+) rad'
+which = "max"
+min = 1.3530
+max = 1.3540
+
+[[scenario.log_value]]
+name = "aspect in gameplay (the viewport's)"
+after = "@gameplay+300 capture start"
+before = "log mark end"
+pattern = 'projection: fov [0-9.]+ rad aspect ([0-9.]+)'
+which = "max"
+min = 1.7777
+max = 1.7779
+
+# The handover to the gameplay angle (the render side draws each game frame with the angle written in that
+# frame: it reads the per-frame slot one game frame behind, with its own index). Frames written before the
+# switch keep their own angle (the loading camera's 0.5 rad, as with Modern Camera Off); every frame from the
+# first one written with the gameplay angle is drawn with the selected one (1.3535 rad).
+[[scenario.log_value]]
+name = "handover: frames written with the gameplay angle drawn with it (smallest)"
+after = "projection: gameplay view write #"
+before = "@gameplay+300 capture start"
+pattern = 'projection: render, fov ([0-9.]+) rad, slot [01] from write #[0-9]+ \(gameplay view, 1\.3535\)'
+which = "min"
+min = 1.3530
+max = 1.3540
+
+[[scenario.log_value]]
+name = "handover: frames written with the gameplay angle drawn with it (largest)"
+after = "projection: gameplay view write #"
+before = "@gameplay+300 capture start"
+pattern = 'projection: render, fov ([0-9.]+) rad, slot [01] from write #[0-9]+ \(gameplay view, 1\.3535\)'
+which = "max"
+min = 1.3530
+max = 1.3540
+
+# (With the fixed tick, M6D, that frame is usually drawn before the switch is written: the trace then logs the
+# last render-side projection, "drawn before the change", right after the switch.)
+[[scenario.log_value]]
+name = "handover: the frame written before the switch drawn with its own angle"
+after = "projection: gameplay view write #"
+before = "@gameplay+300 capture start"
+pattern = 'projection: render, fov ([0-9.]+) rad, slot [01] from write #[0-9]+ \(gameplay view, 0\.5000\)'
+which = "max"
+min = 0.4995
+max = 0.5005
+
+[format]
+width = 1280
+height = 720

@@ -1,0 +1,50 @@
+# Save/load stage 1 (tools/menu_test.py, M5B): new character, first world, a fight, gold and loot, readings of
+# the status and inventory screens, then the game's own manual save (options menu > Quit > "Do you want to
+# save and return to the Title Screen?" > Yes). Stage 2 (save_continue.toml) loads this run's saves in a new
+# process. The script is long, so it lives in a file (save_new.kufscript, --kuf_input_script_file).
+# Rectangles only, no image content.
+
+[scenario]
+description = "new game, fight, loot, status readings, save via Quit > save and return to title"
+seconds = 720
+script_file = "save_new.kufscript"
+log_expect = ["[kuf-input] context: gameplay"]
+# The status screen opens after the fight (K24: after a death the Tab does nothing and the later steps go astray);
+# the save after Yes is a committed package flush, then the title's Press START.
+log_sequence = ["@menu#2+10400 tap Tab", "[kuf-input] context: menu", "@menu#2+10480 capture status_saved",
+                "@menu#2+11820 press Return", "(type 00000001): committed", "[kuf-input] context: start prompt"]
+expect_saves = ["B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/KD_*",
+                "B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/GlobalSetting",
+                "B13EBABEBABEBABE/424507D1/Headers/00000001/Circle of Doom - Character Save.header"]
+
+[format]
+width = 1280
+height = 720
+
+[[region]]
+name = "status screen open"
+capture = "status_saved"
+rect = [570, 92, 760, 184]
+min_std = 15.0
+
+# The RB item slot was emptied (Unequip): the selected slot's description (White Potion, "Restores SP.") is
+# gone. Text metric as in save_continue.toml; the selected row itself is not used (its highlight pulses).
+[[region_diff]]
+name = "RB slot unequipped before saving"
+a = "equipment2_before_unequip"
+b = "equipment2_saved"
+rect = [760, 455, 1180, 560]
+metric = "text"
+text_threshold = 200.0
+min_mean_diff = 1.0
+
+[[region]]
+name = "save question shown"
+capture = "save_question"
+rect = [300, 200, 980, 300]
+min_std = 10.0
+
+[[range]]
+name = "all captures are real images"
+frames = [1, 1000000]
+min_distinct = 300

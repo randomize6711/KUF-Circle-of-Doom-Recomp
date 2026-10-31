@@ -1,0 +1,73 @@
+# Sliders with the mouse (M7 UX fix 2, src/runtime/pc_settings_menu.cpp PointerSlider). Title SETTINGS: a click on
+# the SFX Volume track sets it there; the Music Volume knob dragged left and right and released. PC Settings with the
+# pointer, Controls: a click at the end of Mouse Horizontal (20), Mouse Vertical dragged to the middle (10), a click
+# on Stick Dead Zone at a fifth (10 %). Back, Camera: clicks at the ends of Distance (200 %) and Field of View (110).
+# Back twice saves. Tracks: x 470-1074 (layout space), rows y 150, 197, 243, 336.
+
+[scenario]
+description = "Sliders with the mouse: click on a track, drag a knob (game and PC Settings sliders)"
+seconds = 105
+args = ["--kuf_trace_menu_pointer=true"]
+script = """
+500 tap Return
+700 tap Escape
+800 press Down
+900 press Return
+1000 mouse 700 150 1280 720
+1050 tap MouseLeft
+1100 capture sfx_clicked
+1150 mouse 1010 197 1280 720
+1180 down MouseLeft
+1220 mouse 600 197 1280 720
+1270 capture music_dragged_left
+1300 mouse 900 197 1280 720
+1350 capture music_dragged_right
+1380 up MouseLeft
+1450 mouse 300 564 1280 720
+1500 tap MouseLeft
+1600 mouse 300 150 1280 720
+1650 tap MouseLeft
+1750 capture controls
+1800 mouse 1072 150 1280 720
+1830 tap MouseLeft
+1900 mouse 1010 197 1280 720
+1930 down MouseLeft
+1970 mouse 771 197 1280 720
+2020 up MouseLeft
+2080 mouse 590 336 1280 720
+2110 tap MouseLeft
+2180 capture controls_set
+2230 press Escape
+2300 mouse 300 197 1280 720
+2350 tap MouseLeft
+2420 mouse 1072 150 1280 720
+2450 tap MouseLeft
+2500 mouse 1072 197 1280 720
+2530 tap MouseLeft
+2600 capture camera_set
+2630 press Escape
+2700 press Escape
+2800 capture settings_again
+"""
+capture_frames = []
+pc_settings_expect = { "mouse.sensitivity_horizontal" = 20, "mouse.sensitivity_vertical" = 10, "controller.camera_deadzone_percent" = 10, "camera.distance_percent" = 200, "camera.field_of_view_degrees" = 110 }
+log_sequence = [
+    "[kuf-pc-menu] slider 0 (Settings): set from the pointer",
+    "[kuf-pc-menu] slider 1 (Settings): set from the pointer",
+    "[kuf-pc-menu] slider 1: released",
+    "[kuf-pc-menu] PC Settings opened (title SETTINGS)",
+    "[kuf-pc-menu] description (",
+    "[kuf-pc-menu] controls page",
+    "[kuf-pc-menu] slider 0 (controls): set from the pointer",
+    "[kuf-pc-menu] slider 1 (controls): set from the pointer",
+    "[kuf-pc-menu] slider 1: released",
+    "[kuf-pc-menu] slider 3 (controls): set from the pointer",
+    "[kuf-pc-menu] camera page",
+    "[kuf-pc-menu] slider 0 (camera): set from the pointer",
+    "[kuf-pc-menu] slider 1 (camera): set from the pointer",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+]
+
+[format]
+width = 1280
+height = 720

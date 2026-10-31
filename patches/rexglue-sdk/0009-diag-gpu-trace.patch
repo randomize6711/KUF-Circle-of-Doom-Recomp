@@ -1,0 +1,364 @@
+Diagnostics (M6C, K31 investigation; off by default): a GPU trace for the Vulkan backend. With
+--gpu_trace_frame=N (and --gpu_trace_frame_count=M) the draws of swaps N..N+M-1 are logged ([gputrace] lines:
+shaders, render targets, texture fetch constants; for draws with a pixel shader also its depth, stencil, blend and
+colour-control registers and the float constants it reads) with every resolve (copy registers, whether it went to the
+scaled resolve buffer); with --gpu_trace_dir the data each resolve wrote (scaled when drawing at a resolution
+scale) and the textures loaded from resolves are written there. While the trace is enabled the backend also logs
+each distinct resolve and each pixel shader that reads the pixel position once, and dumps every cube texture it
+loads. Each dump waits for the GPU. Used to find the first stage whose colours differ between scale 1 and 2, and
+by the render-scale tests (tests/display) to compare the lighting cube maps.
+
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+index 696ff48..bc10130 100644
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -244,6 +244,11 @@ class VulkanCommandProcessor : public CommandProcessor {
+   // Returns the text to display in the GPU backend name in the window title.
+   std::string GetWindowTitleText() const;
+ 
++  // GPU trace (gpu_trace_frame, diagnostics): whether the current frame is traced; DiagDumpBuffer copies a buffer
++  // range to a file in gpu_trace_dir and waits for it (ends the current submission).
++  static bool DiagIsTracing();
++  void DiagDumpBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, const std::string& name);
++
+  protected:
+   bool SetupContext() override;
+   void ShutdownContext() override;
+@@ -426,6 +431,9 @@ class VulkanCommandProcessor : public CommandProcessor {
+ 
+   void ClearTransientDescriptorPools();
+   bool IssueCopy_ReadbackResolvePath();
++  // GPU trace (gpu_trace_frame): log a draw; log a resolve and dump the data it wrote.
++  void DiagTraceResolve(uint32_t written_address, uint32_t written_length);
++  void DiagTraceDraw(const VulkanShader* vs, const VulkanShader* ps);
+   bool IssueDraw_MemexportReadbackFullPath(uint32_t total_size);
+   bool IssueDraw_MemexportReadbackFastPath(uint32_t total_size);
+ 
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 9702a9e..e2e7fdc 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -12,6 +12,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <cstdint>
++#include <cstdio>
+ #include <cstring>
+ #include <iterator>
+ #include <mutex>
+@@ -46,6 +47,24 @@
+ #include <rex/ui/vulkan/presenter.h>
+ #include <rex/ui/vulkan/util.h>
+ 
++// GPU trace (diagnostics, off by default): for gpu_trace_frame_count frames from swap gpu_trace_frame, log every
++// draw (shaders, render targets, texture fetch constants) and every resolve (copy registers), and write the data
++// each resolve produced (the scaled data when drawing at a resolution scale) and every texture loaded from a
++// resolve to gpu_trace_dir. While enabled, also log each distinct resolve and each pixel shader using the pixel
++// position once, and dump every cube texture loaded. Each dump waits for the GPU (slow): investigation and tests.
++REXCVAR_DEFINE_INT32(gpu_trace_frame, -1, "GPU/Diag",
++                     "Trace the draws and resolves of the frames from this swap number on (-1 = off)");
++REXCVAR_DEFINE_INT32(gpu_trace_frame_count, 1, "GPU/Diag", "Number of frames to trace (gpu_trace_frame)");
++REXCVAR_DEFINE_STRING(gpu_trace_dir, "", "GPU/Diag",
++                      "Folder for the GPU trace's data files (resolves, textures); empty = no files");
++static int32_t g_diag_swap = 0;
++static uint32_t g_diag_resolve_index = 0;
++static uint32_t g_diag_draw_index = 0;
++static bool DiagTracing() {
++  return REXCVAR_GET(gpu_trace_frame) >= 0 && g_diag_swap >= REXCVAR_GET(gpu_trace_frame) &&
++         g_diag_swap < REXCVAR_GET(gpu_trace_frame) + REXCVAR_GET(gpu_trace_frame_count);
++}
++
+ // Legacy backend compatibility aliases for shared readback controls.
+ REXCVAR_DEFINE_BOOL(vulkan_readback_resolve, false, "GPU/Vulkan",
+                     "Read render-to-texture results on the CPU")
+@@ -2274,6 +2293,13 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
+ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                                        uint32_t frontbuffer_height) {
+   SCOPE_profile_cpu_f("gpu");
++  if (DiagTracing()) {
++    REXGPU_INFO("[gputrace] swap {} end: {} draws, {} resolves", g_diag_swap, g_diag_draw_index,
++                g_diag_resolve_index);
++  }
++  ++g_diag_swap;
++  g_diag_resolve_index = 0;
++  g_diag_draw_index = 0;
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+ 
+@@ -3677,6 +3703,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+       return true;
+     }
+   }
++  if (DiagTracing()) {
++    DiagTraceDraw(vertex_shader, pixel_shader);
++  }
+   bool memexport_used_pixel = pixel_shader && (pixel_shader->memexport_eM_written() != 0);
+   if (memexport_used_pixel) {
+     if (!device_properties.fragmentStoresAndAtomics) {
+@@ -3697,6 +3726,16 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+                                                              ps_param_gen_pos))
+                    : 0;
+ 
++  if (pixel_shader && ps_param_gen_pos != UINT32_MAX && REXCVAR_GET(gpu_trace_frame) >= 0) {
++    static std::vector<uint64_t> param_gen_seen;
++    uint64_t hash = pixel_shader->ucode_data_hash();
++    if (std::find(param_gen_seen.begin(), param_gen_seen.end(), hash) == param_gen_seen.end()) {
++      param_gen_seen.push_back(hash);
++      REXGPU_INFO("[gputrace] param_gen ps {:016X} interpolator {} swap {} surface {:08X} color {:08X}",
++                  hash, ps_param_gen_pos, g_diag_swap, regs[XE_GPU_REG_RB_SURFACE_INFO],
++                  regs[XE_GPU_REG_RB_COLOR_INFO]);
++    }
++  }
+   PrimitiveProcessor::ProcessingResult primitive_processing_result;
+   SpirvShaderTranslator::Modification vertex_shader_modification;
+   SpirvShaderTranslator::Modification pixel_shader_modification;
+@@ -4401,13 +4440,194 @@ bool VulkanCommandProcessor::IssueCopy() {
+   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(vulkan_readback_resolve));
+   if (readback_mode == ReadbackResolveMode::kDisabled) {
+     uint32_t written_address, written_length;
+-    return render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
+-                                         written_address, written_length);
++    bool result = render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
++                                                written_address, written_length);
++    if (DiagTracing()) {
++      DiagTraceResolve(written_address, written_length);
++    } else if (REXCVAR_GET(gpu_trace_frame) >= 0) {
++      const RegisterFile& regs = *register_file_;
++      static std::vector<std::array<uint32_t, 4>> seen;
++      std::array<uint32_t, 4> key = {written_address, regs[XE_GPU_REG_RB_COPY_DEST_INFO],
++                                     regs[XE_GPU_REG_RB_COPY_CONTROL],
++                                     regs[XE_GPU_REG_RB_COPY_DEST_PITCH]};
++      if (std::find(seen.begin(), seen.end(), key) == seen.end() && seen.size() < 4096) {
++        seen.push_back(key);
++        REXGPU_INFO(
++            "[gputrace] resolve-seen swap {} written {:08X}+{:08X} copy_control {:08X} dest_info {:08X} "
++            "dest_pitch {:08X} surface {:08X} color {:08X} window_offset {:08X} sc_tl {:08X} sc_br {:08X} "
++            "slice {:08X}",
++            g_diag_swap, written_address, written_length, key[2], key[1], key[3],
++            regs[XE_GPU_REG_RB_SURFACE_INFO], regs[XE_GPU_REG_RB_COLOR_INFO],
++            regs[XE_GPU_REG_PA_SC_WINDOW_OFFSET], regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL],
++            regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR], regs[XE_GPU_REG_RB_COPY_SURFACE_SLICE]);
++      }
++    }
++    return result;
+   }
+ 
+   return IssueCopy_ReadbackResolvePath();
+ }
+ 
++bool VulkanCommandProcessor::DiagIsTracing() { return DiagTracing(); }
++
++void VulkanCommandProcessor::DiagDumpBuffer(VkBuffer source, VkDeviceSize offset, VkDeviceSize size,
++                                            const std::string& name) {
++  if (REXCVAR_GET(gpu_trace_dir).empty()) {
++    return;
++  }
++  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++  VkBuffer buffer = VK_NULL_HANDLE;
++  VkDeviceMemory buffer_memory = VK_NULL_HANDLE;
++  if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
++          vulkan_device, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
++          ui::vulkan::util::MemoryPurpose::kReadback, buffer, buffer_memory)) {
++    return;
++  }
++  PushBufferMemoryBarrier(source, offset, size,
++                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
++                          VK_PIPELINE_STAGE_TRANSFER_BIT,
++                          VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
++                          VK_ACCESS_TRANSFER_READ_BIT);
++  SubmitBarriers(true);
++  VkBufferCopy region = {};
++  region.srcOffset = offset;
++  region.size = size;
++  deferred_command_buffer_.CmdVkCopyBuffer(source, buffer, 1, &region);
++  PushBufferMemoryBarrier(buffer, 0, size, VK_PIPELINE_STAGE_TRANSFER_BIT,
++                          VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
++                          VK_ACCESS_HOST_READ_BIT);
++  if (AwaitAllQueueOperationsCompletion()) {
++    void* mapping = nullptr;
++    if (dfn.vkMapMemory(device, buffer_memory, 0, VK_WHOLE_SIZE, 0, &mapping) == VK_SUCCESS) {
++      VkMappedMemoryRange range = {};
++      range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
++      range.memory = buffer_memory;
++      range.size = VK_WHOLE_SIZE;
++      dfn.vkInvalidateMappedMemoryRanges(device, 1, &range);
++      std::string path = fmt::format("{}/{}", REXCVAR_GET(gpu_trace_dir), name);
++      if (FILE* f = std::fopen(path.c_str(), "wb")) {
++        std::fwrite(mapping, 1, size_t(size), f);
++        std::fclose(f);
++      }
++      dfn.vkUnmapMemory(device, buffer_memory);
++    }
++  }
++  BeginSubmission(true);
++  dfn.vkDestroyBuffer(device, buffer, nullptr);
++  dfn.vkFreeMemory(device, buffer_memory, nullptr);
++}
++
++void VulkanCommandProcessor::DiagTraceDraw(const VulkanShader* vs, const VulkanShader* ps) {
++  const RegisterFile& regs = *register_file_;
++  std::string line = fmt::format(
++      "[gputrace] swap {} draw {} after_resolve {} vs {:016X} ps {:016X} surface {:08X} color {:08X} {:08X} "
++      "{:08X} {:08X} depth {:08X} mask {:08X} modectl {:08X} sx {:08X} sy {:08X} wscissor {:08X} {:08X}",
++      g_diag_swap, g_diag_draw_index, g_diag_resolve_index, vs ? vs->ucode_data_hash() : 0,
++      ps ? ps->ucode_data_hash() : 0, regs[XE_GPU_REG_RB_SURFACE_INFO],
++      regs[XE_GPU_REG_RB_COLOR_INFO], regs[XE_GPU_REG_RB_COLOR1_INFO],
++      regs[XE_GPU_REG_RB_COLOR2_INFO], regs[XE_GPU_REG_RB_COLOR3_INFO],
++      regs[XE_GPU_REG_RB_DEPTH_INFO], regs[XE_GPU_REG_RB_COLOR_MASK],
++      regs[XE_GPU_REG_RB_MODECONTROL], regs[XE_GPU_REG_PA_CL_VPORT_XSCALE],
++      regs[XE_GPU_REG_PA_CL_VPORT_YSCALE], regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL],
++      regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR]);
++  if (ps) {
++    for (const auto& binding : ps->texture_bindings()) {
++      uint32_t base = XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + binding.fetch_constant * 6;
++      line += fmt::format(" tf{}={:08X}:{:08X}:{:08X}:{:08X}:{:08X}:{:08X}", binding.fetch_constant,
++                          regs[base], regs[base + 1], regs[base + 2], regs[base + 3],
++                          regs[base + 4], regs[base + 5]);
++    }
++    line += fmt::format(" depthctl {:08X} stencil {:08X} blend0 {:08X} colorctl {:08X}",
++                        regs[XE_GPU_REG_RB_DEPTHCONTROL], regs[XE_GPU_REG_RB_STENCILREFMASK],
++                        regs[XE_GPU_REG_RB_BLENDCONTROL0], regs[XE_GPU_REG_RB_COLORCONTROL]);
++    // The pixel shader's float constants it reads (c<n>=x,y,z,w).
++    const Shader::ConstantRegisterMap& map = ps->constant_register_map();
++    for (uint32_t i = 0; i < 256 && !map.float_dynamic_addressing; ++i) {
++      if (!(map.float_bitmap[i >> 6] & (uint64_t(1) << (i & 63)))) continue;
++      const float* c = reinterpret_cast<const float*>(&regs[XE_GPU_REG_SHADER_CONSTANT_256_X + (i << 2)]);
++      line += fmt::format(" c{}={:g},{:g},{:g},{:g}", i, c[0], c[1], c[2], c[3]);
++    }
++  }
++  REXGPU_INFO("{}", line);
++  ++g_diag_draw_index;
++}
++
++void VulkanCommandProcessor::DiagTraceResolve(uint32_t written_address, uint32_t written_length) {
++  const RegisterFile& regs = *register_file_;
++  uint32_t index = g_diag_resolve_index++;
++  bool scaled = texture_cache_->IsDrawResolutionScaled();
++  REXGPU_INFO(
++      "[gputrace] swap {} resolve {} before_draw {} written {:08X}+{:08X} scaled {} copy_control {:08X} "
++      "dest_info {:08X} dest_pitch {:08X} dest_base {:08X} surface {:08X} color {:08X} {:08X} "
++      "{:08X} {:08X} depth {:08X} window_offset {:08X} sc_tl {:08X} sc_br {:08X} "
++      "vtx {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
++      g_diag_swap, index, g_diag_draw_index, written_address, written_length, scaled,
++      regs[XE_GPU_REG_RB_COPY_CONTROL], regs[XE_GPU_REG_RB_COPY_DEST_INFO],
++      regs[XE_GPU_REG_RB_COPY_DEST_PITCH], regs[XE_GPU_REG_RB_COPY_DEST_BASE],
++      regs[XE_GPU_REG_RB_SURFACE_INFO], regs[XE_GPU_REG_RB_COLOR_INFO],
++      regs[XE_GPU_REG_RB_COLOR1_INFO], regs[XE_GPU_REG_RB_COLOR2_INFO],
++      regs[XE_GPU_REG_RB_COLOR3_INFO], regs[XE_GPU_REG_RB_DEPTH_INFO],
++      regs[XE_GPU_REG_PA_SC_WINDOW_OFFSET], regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL],
++      regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR], regs[XE_GPU_REG_RB_COPY_SURFACE_SLICE],
++      regs[XE_GPU_REG_RB_COPY_FUNC], regs[XE_GPU_REG_RB_COPY_REF], regs[XE_GPU_REG_RB_COPY_MASK],
++      regs[XE_GPU_REG_RB_COLOR_CLEAR], regs[XE_GPU_REG_RB_COLOR_CLEAR_LO]);
++  if (!written_length || REXCVAR_GET(gpu_trace_dir).empty()) {
++    return;
++  }
++  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++  uint64_t source_start = written_address, source_length = written_length;
++  VkBuffer source = shared_memory_->buffer();
++  if (scaled) {
++    if (!texture_cache_->GetScaledResolveRange(written_address, written_length, 0, source_start,
++                                               source_length)) {
++      return;
++    }
++    source = texture_cache_->scaled_resolve_buffer();
++    texture_cache_->UseScaledResolveBufferForRead();
++  } else {
++    shared_memory_->Use(VulkanSharedMemory::Usage::kRead);
++  }
++  VkBuffer buffer = VK_NULL_HANDLE;
++  VkDeviceMemory buffer_memory = VK_NULL_HANDLE;
++  if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
++          vulkan_device, source_length, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
++          ui::vulkan::util::MemoryPurpose::kReadback, buffer, buffer_memory)) {
++    return;
++  }
++  SubmitBarriers(true);
++  VkBufferCopy region = {};
++  region.srcOffset = source_start;
++  region.size = source_length;
++  deferred_command_buffer_.CmdVkCopyBuffer(source, buffer, 1, &region);
++  PushBufferMemoryBarrier(buffer, 0, source_length, VK_PIPELINE_STAGE_TRANSFER_BIT,
++                          VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
++                          VK_ACCESS_HOST_READ_BIT);
++  if (AwaitAllQueueOperationsCompletion()) {
++    void* mapping = nullptr;
++    if (dfn.vkMapMemory(device, buffer_memory, 0, VK_WHOLE_SIZE, 0, &mapping) == VK_SUCCESS) {
++      VkMappedMemoryRange range = {};
++      range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
++      range.memory = buffer_memory;
++      range.size = VK_WHOLE_SIZE;
++      dfn.vkInvalidateMappedMemoryRanges(device, 1, &range);
++      std::string path = fmt::format("{}/resolve_s{}_{:03}_{:08X}.bin", REXCVAR_GET(gpu_trace_dir),
++                                     g_diag_swap, index, written_address);
++      if (FILE* f = std::fopen(path.c_str(), "wb")) {
++        std::fwrite(mapping, 1, size_t(source_length), f);
++        std::fclose(f);
++      }
++      dfn.vkUnmapMemory(device, buffer_memory);
++    }
++  }
++  BeginSubmission(true);
++  dfn.vkDestroyBuffer(device, buffer, nullptr);
++  dfn.vkFreeMemory(device, buffer_memory, nullptr);
++}
++
+ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+   const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+diff --git a/src/graphics/vulkan/texture_cache.cpp b/src/graphics/vulkan/texture_cache.cpp
+index ecbd940..e03616e 100644
+--- a/src/graphics/vulkan/texture_cache.cpp
++++ b/src/graphics/vulkan/texture_cache.cpp
+@@ -27,6 +27,7 @@
+ #include <rex/graphics/vulkan/command_processor.h>
+ #include <rex/graphics/vulkan/deferred_command_buffer.h>
+ #include <rex/graphics/vulkan/texture_cache.h>
++REXCVAR_DECLARE(int32_t, gpu_trace_frame);  // GPU trace (vulkan/command_processor.cpp)
+ #include <rex/logging.h>
+ #include <rex/math.h>
+ #include <rex/ui/vulkan/mem_alloc.h>
+@@ -1783,6 +1784,40 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+     copy_region.imageExtent.depth = std::max(depth >> level, UINT32_C(1));
+   }
+ 
++  // GPU trace (gpu_trace_frame): log the textures loaded in traced frames and dump those made from resolves;
++  // while the trace is enabled, dump every cube texture (KUF builds its lighting cube maps at level load).
++  bool diag_cube = texture_key.dimension == xenos::DataDimension::kCube &&
++                   REXCVAR_GET(gpu_trace_frame) >= 0 && level_first == 0;
++  if ((VulkanCommandProcessor::DiagIsTracing() || diag_cube) && level_first == 0) {
++    static uint32_t diag_texture_index = 0;
++    uint32_t index = diag_texture_index++;
++    REXGPU_INFO(
++        "[gputrace] texture load {} base {:08X} format {} {}x{}x{} tiled {} endian {} scaled {} "
++        "load_shader {} host_format {} pitch_blocks {} rows {} bytes {}",
++        index, texture_key.base_page << 12, uint32_t(guest_format), width, height,
++        depth_or_array_size, uint32_t(texture_key.tiled), uint32_t(texture_key.endianness),
++        uint32_t(texture_key.scaled_resolve), uint32_t(load_shader), uint32_t(host_format.format),
++        host_layout_base.x_pitch_blocks, host_layout_base.y_pitch_blocks,
++        host_layout_base.slice_size_bytes);
++    if (diag_cube) {
++      REXGPU_INFO("[gputrace] cube {} mips {} packed {} array {} slice_bytes {}", index,
++                  uint32_t(texture_key.mip_max_level), level_packed, array_size,
++                  host_layout_base.slice_size_bytes);
++      command_processor_.DiagDumpBuffer(
++          scratch_buffer, host_layout_base.offset_bytes,
++          host_layout_base.slice_size_bytes * array_size,
++          fmt::format("cube_{:03}_{:08X}_f{}.bin", index, texture_key.base_page << 12,
++                      uint32_t(guest_format)));
++    } else if (texture_key.scaled_resolve || guest_format == xenos::TextureFormat::k_24_8_FLOAT ||
++               guest_format == xenos::TextureFormat::k_24_8 ||
++               guest_format == xenos::TextureFormat::k_16_16_16_16_FLOAT) {
++      command_processor_.DiagDumpBuffer(
++          scratch_buffer, host_layout_base.offset_bytes, host_layout_base.slice_size_bytes,
++          fmt::format("texture_{:03}_{:08X}_f{}.bin", index, texture_key.base_page << 12,
++                      uint32_t(guest_format)));
++    }
++  }
++
+   return true;
+ }
+ 

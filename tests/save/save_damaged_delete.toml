@@ -1,0 +1,35 @@
+# Invalid save 3 (tools/menu_test.py, M5B): a damaged character file, and the player answers the game's
+# corrupted-save message with B, "delete the corrupted save file and create a new save file". The game
+# deletes the package and creates a new, empty one (its own behaviour; it writes into it once a character is
+# made); the runtime keeps the damaged package aside as <package>.rex-damaged (never loaded) instead of
+# erasing it, so the data stays available.
+
+[scenario]
+description = "damaged save, player chooses delete: new save package, damaged one kept aside"
+seconds = 60
+script_file = "save_damaged_delete.kufscript"
+saves_from_run = "save_new"
+compare_run = "save_new"
+damage = [{file = "KD_*", action = "flip"}]
+expect_errors = ["is damaged, refusing to open it", "ResolvePath\\(savedisk:\\\\\\) failed - device not found"]
+log_expect = ["which is damaged: kept aside as 'Circle of Doom - Character Save.rex-damaged'",
+              "flags 0x812 -> create"]
+expect_saves = ["B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save.rex-damaged/KD_*",
+                "B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/.rex-manifest"]
+expect_no_saves = ["B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/KD_*"]
+
+[format]
+width = 1280
+height = 720
+
+[[region]]
+name = "corrupted-save message shown"
+capture = "corrupted_dialog"
+rect = [140, 110, 1000, 180]
+min_std = 10.0
+
+[[region]]
+name = "main menu after the delete"
+capture = "after_delete"
+rect = [500, 230, 780, 350]
+min_std = 10.0

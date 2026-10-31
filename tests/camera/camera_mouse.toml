@@ -1,0 +1,179 @@
+# Modern camera with the mouse (M6B): direct mouse look (no stick emulation), default settings (0.1 degrees per
+# count both ways). CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only). The script's `look` items
+# are pointer movement as from a captured mouse. Measured from the camera trace (--kuf_trace_modern_camera:
+# the rendered view's pitch and yaw five times a second).
+#   up 400 counts: the view rises by 40 degrees, and stays there for 3 s (no snap back)
+#   up 1000 more: limited at +85; down 2000: limited at -85; up 940 (94 degrees): back near the default
+#   right 900: yaw +90 degrees, at once; right 2700 more (a full turn in all): yaw back where it started
+#   right 900 again, then W for two seconds: the character walks where the camera looks
+#   looking down keeps the camera's distance
+#   turned 180 degrees away, the right-stick click (V) centres the camera behind the character: the game's own
+#   turn is taken (the modern camera does not hold its direction against it)
+# Captures along the way (the canopy above, the character from above, the turn).
+
+[scenario]
+description = "Modern camera, mouse: vertical range and hold, 360-degree turn, sensitivity"
+seconds = 130
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_trace_modern_camera=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 capture start
+@gameplay+330 log mark start
+@gameplay+360 look 0 -400
+@gameplay+400 log mark up40
+@gameplay+400 capture up40
+@gameplay+490 log mark up40_held
+@gameplay+500 capture up40_after_3s
+@gameplay+510 look 0 -1000
+@gameplay+560 log mark up_limit
+@gameplay+560 capture up_limit
+@gameplay+590 look 0 2000
+@gameplay+640 log mark down_limit
+@gameplay+640 capture down_limit
+@gameplay+670 look 0 -940
+@gameplay+720 log mark back_level
+@gameplay+750 look 900 0
+@gameplay+800 log mark right90
+@gameplay+800 capture right90
+@gameplay+830 look 2700 0
+@gameplay+880 log mark full_turn
+@gameplay+880 capture full_turn
+@gameplay+920 log mark end
+@gameplay+930 look 900 0
+@gameplay+960 down W
+@gameplay+1010 log mark walk_check
+@gameplay+1020 capture walking
+@gameplay+1022 up W
+@gameplay+1060 log mark walked
+@gameplay+1070 look 1800 0
+@gameplay+1100 down V
+@gameplay+1130 up V
+@gameplay+1180 log mark centred
+@gameplay+1180 capture centred
+"""
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay", "[kuf-input] mouse look: direct to the camera (modern camera)"]
+
+[[scenario.log_value]]
+name = "start pitch"
+after = "log mark start"
+before = "look 0 -400"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+min = -14.0
+max = -6.0
+
+[[scenario.log_value]]
+name = "start yaw"
+after = "log mark start"
+before = "look 0 -400"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+
+[[scenario.log_value]]
+name = "up 400 counts"
+after = "log mark up40"
+before = "log mark up40_held"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+which = "first"
+relative_to = "start pitch"
+min = 38.5
+max = 41.5
+
+[[scenario.log_value]]
+name = "held 3 s later (no snap back)"
+after = "log mark up40_held"
+before = "look 0 -1000"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+relative_to = "start pitch"
+min = 38.5
+max = 41.5
+
+[[scenario.log_value]]
+name = "upper limit"
+after = "log mark up_limit"
+before = "look 0 2000"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+min = 84.5
+max = 85.01
+
+[[scenario.log_value]]
+name = "lower limit"
+after = "log mark down_limit"
+before = "look 0 -940"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+min = -85.01
+max = -84.5
+
+# Looking down keeps the camera's distance: the orbit turns around the character and the game's own camera does
+# not drift closer. (The first M6B builds measured a pull-in here, 707 -> 616 units, and took it for the
+# collision; the collision's own trace showed no hit at all: it was the game's camera pulled towards the orbit
+# (docs/CAMERA.md). Collision with the scenery is measured in camera_distance_near / camera_distance_far.)
+[[scenario.log_value]]
+name = "start distance"
+after = "log mark start"
+before = "look 0 -400"
+pattern = 'modern, offset -?[0-9.]+, distance ([0-9.]+)'
+
+[[scenario.log_value]]
+name = "looking down keeps the distance"
+after = "look 0 2000"
+before = "log mark down_limit"
+pattern = 'modern, offset -?[0-9.]+, distance ([0-9.]+)'
+which = "min"
+relative_to = "start distance"
+min = -15.0
+max = 15.0
+
+[[scenario.log_value]]
+name = "up 94 degrees from the lower limit"
+after = "log mark back_level"
+before = "look 900 0"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+min = 8.0
+max = 10.0
+
+[[scenario.log_value]]
+name = "right 900 counts"
+after = "log mark right90"
+before = "look 2700 0"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+relative_to = "start yaw"
+angle = true
+min = 89.5
+max = 90.5
+
+[[scenario.log_value]]
+name = "full turn"
+after = "log mark full_turn"
+before = "log mark end"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+relative_to = "start yaw"
+angle = true
+min = -0.5
+max = 0.5
+
+[[scenario.log_value]]
+name = "walking direction against the view"
+after = "down W"
+before = "log mark walked"
+pattern = 'relative to the view (-?[0-9.]+) deg'
+which = "last"
+min = -15.0
+max = 15.0
+
+[[scenario.log_value]]
+name = "right-stick click: the game's centring turn is taken"
+after = "down V"
+before = "log mark centred"
+pattern = 'the game turned its camera by -?([0-9.]+) deg'
+which = "max"
+min = 90.0
+
+[format]
+width = 1280
+height = 720

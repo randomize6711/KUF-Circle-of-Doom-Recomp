@@ -1,0 +1,137 @@
+# Camera distance 100 %, the default (M6B final verification: the game's collision at the default distance;
+# camera_distance_near / _far run the same route at 50 % and 200 %), measured every frame
+# (--kuf_trace_camera_orbit: the rendered camera after the game's collision, the requested orbit, the
+# collision's corrections). CONTINUE
+# from build/m6-saves/celine-shadows-depths-1 (Shadow Depths: big trees, uneven ground). A full turn (mouse, 2
+# degrees per frame) at the default height, then 30 degrees up (the eye low over the ground) and a full turn,
+# then 75 degrees down (the eye high, towards the canopy) and a full turn, then back and held still.
+# Checks: the orbit distance is the setting times the game's own (707 units here at the start); the camera stays
+# aimed at the character and above the ground; the scenery was in the way while turning (the game's collision
+# pulled the camera in, at once: it never shows the inside of the scenery), and the camera went back out
+# gradually (time constant 0.3 s: the largest increase in one frame bounded); held still, it is back on the
+# requested orbit. (Measured at 100 %: 707.9 units at the start, a hit in the level turn, the largest increase in
+# a frame 37.9 units, back on the orbit within 0.06.)
+
+[scenario]
+description = "Camera distance 100 % (default): orbit distance, collision while turning, smooth recovery"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_trace_camera_orbit=true", "--kuf_input_script_pad=xbox360", "--kuf_pc_settings=camera.distance_percent=100"]
+script_file = "camera_distance.kufscript"
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay", "distance 100% field of view original"]
+
+[[scenario.log_value]]
+name = "requested distance at the start"
+after = "log mark level_turn"
+before = "look 20 0"
+pattern = 'requested pitch -?[0-9.]+ distance ([0-9.]+)'
+which = "first"
+min = 700.0
+max = 715.0
+
+[[scenario.log_value]]
+name = "level_turn: aim off the pivot"
+after = "log mark level_turn"
+before = "log mark go_low"
+pattern = 'aim off pivot ([0-9.]+) deg'
+which = "max"
+max = 0.5
+
+[[scenario.log_value]]
+name = "level_turn: lowest eye above the feet"
+after = "log mark level_turn"
+before = "log mark go_low"
+pattern = 'eye above feet (-?[0-9.]+),'
+which = "min"
+min = 25.0
+
+[[scenario.log_value]]
+name = "level_turn: largest distance increase in a frame (released gradually)"
+after = "log mark level_turn"
+before = "log mark go_low"
+pattern = 'distance change (-?[0-9.]+),'
+which = "max"
+max = 45.0
+
+[[scenario.log_value]]
+name = "low_turn: aim off the pivot"
+after = "log mark low_turn"
+before = "log mark go_high"
+pattern = 'aim off pivot ([0-9.]+) deg'
+which = "max"
+max = 0.5
+
+[[scenario.log_value]]
+name = "low_turn: lowest eye above the feet"
+after = "log mark low_turn"
+before = "log mark go_high"
+pattern = 'eye above feet (-?[0-9.]+),'
+which = "min"
+min = 25.0
+
+[[scenario.log_value]]
+name = "low_turn: largest distance increase in a frame (released gradually)"
+after = "log mark low_turn"
+before = "log mark go_high"
+pattern = 'distance change (-?[0-9.]+),'
+which = "max"
+max = 45.0
+
+[[scenario.log_value]]
+name = "high_turn: aim off the pivot"
+after = "log mark high_turn"
+before = "log mark back"
+pattern = 'aim off pivot ([0-9.]+) deg'
+which = "max"
+max = 0.5
+
+[[scenario.log_value]]
+name = "high_turn: lowest eye above the feet"
+after = "log mark high_turn"
+before = "log mark back"
+pattern = 'eye above feet (-?[0-9.]+),'
+which = "min"
+min = 25.0
+
+[[scenario.log_value]]
+name = "high_turn: largest distance increase in a frame (released gradually)"
+after = "log mark high_turn"
+before = "log mark back"
+pattern = 'distance change (-?[0-9.]+),'
+which = "max"
+max = 45.0
+
+[[scenario.log_value]]
+name = "level_turn: the scenery was in the way (collision)"
+after = "log mark level_turn"
+before = "log mark go_low"
+pattern = 'collision: hit ([0-9]),'
+which = "max"
+min = 1.0
+
+[[scenario.log_value]]
+name = "held still: back on the requested orbit"
+after = "log mark hold"
+before = "log mark end"
+pattern = 'off orbit ([0-9.]+),'
+which = "max"
+max = 1.0
+
+[[scenario.log_value]]
+name = "held still: no distance change"
+after = "log mark hold"
+before = "log mark end"
+pattern = 'distance change (-?[0-9.]+),'
+which = "max"
+max = 1.0
+
+# K38: every scripted look and stick change reaches exactly one game tick (the camera's per-tick trace: one line
+# per tick between items one tick apart). Before the fix the script applied its items at presents, and a tick
+# could see two items or none.
+[[scenario.input_ticks]]
+name = "scripted camera input"
+after = "log mark level_turn"
+before = "log mark end"
+item = ' look |pad axis'
+update = '\[kuf-cam\] orbit:'

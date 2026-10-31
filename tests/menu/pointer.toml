@@ -1,0 +1,50 @@
+# The mouse pointer in the original menus (M7 feature 2, docs/INPUT.md "Mouse", src/runtime/menu_pointer.cpp): no
+# keyboard after the title prompt. In the title list the pointer goes to LANGUAGE (three Downs, LEADERBOARD skipped)
+# and a click opens the language list box; there the pointer selects the sixth row and the first again (index logged
+# by --kuf_trace_menu_pointer), Escape leaves without a change. The pointer goes to SETTINGS and a click opens it;
+# hovering a value row selects it; hovering the wide PC Settings row selects it and a click opens the PC page
+# ("PC Settings opened"); a hover there moves the PC page's selection; Escape twice back to the title list.
+# Driver-level moves ("mouse x y 1280 720": guest pixels) and clicks. The title list is two rows higher with its added
+# rows (title_rows.toml).
+
+[scenario]
+description = "Mouse pointer: hover selects, click confirms (title list, language list box, SETTINGS, PC page)"
+seconds = 150
+args = ["--kuf_trace_menu_pointer=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 mouse 640 549 1280 720
+1150 capture title_language
+1200 press MouseLeft
+1400 capture language_list
+1450 mouse 600 600 1280 720
+1600 capture language_row5
+1650 mouse 600 470 1280 720
+1800 capture language_row0
+1850 press Escape
+2000 mouse 640 519 1280 720
+2150 capture title_settings
+2200 press MouseLeft
+2400 capture settings
+2450 mouse 300 330 1280 720
+2600 capture settings_row4
+2650 mouse 700 564 1280 720
+2800 capture settings_pc_row
+2850 press MouseLeft
+3000 capture pc_page
+3050 mouse 300 240 1280 720
+3200 capture pc_row2
+3250 press Escape
+3400 press Escape
+3550 capture back
+"""
+capture_frames = []
+log_expect = [
+    "[kuf-input] context: menu",
+    "in scene 03D00000: focus 03D02001 type 2 (525,460 230x220), 0 buttons list: index 5",
+    "in scene 03D00000: focus 03D02001 type 2 (525,460 230x220), 0 buttons list: index 0",
+    "[kuf-pc-menu] PC Settings opened (title SETTINGS)",
+    "[kuf-pc-menu] PC Settings closed",
+]

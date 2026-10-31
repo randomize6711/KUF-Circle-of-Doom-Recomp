@@ -1,0 +1,5 @@
+# Saved frame-rate settings for frame_rate_cli.toml: 60 fps, the effect clock off.
+version = 1
+[frame_rate]
+limit_fps = 60
+interpolate_effects = false

@@ -1,0 +1,11 @@
+# Function boundary overrides for default.xex v1 (title 424507D1, media 7092B5EC, sha256 3ec406cc...29ff).
+# Each entry is a leaf function without a .pdata record that is only reached by a tail jump (`b`), so
+# analysis never claims it. Boundaries were checked in the disassembly (straight-line code, no internal
+# branches leaving the range).
+
+[functions]
+0x823F89D0 = { size = 0x8 }    # addi r3,r3,4; b 0x823ED520 (adjust-this thunk)
+0x8228A0C8 = { end = 0x8228A174 }  # float vector math leaf, ends at blr 0x8228A170
+0x826B6F18 = { end = 0x826B6F40 }  # flag checks with bclr, tail-jumps to 0x825EC188
+0x82705898 = { size = 0x10 }   # virtual call thunk: vtable slot +92
+0x827058A8 = { size = 0x10 }   # virtual call thunk: vtable slot +96

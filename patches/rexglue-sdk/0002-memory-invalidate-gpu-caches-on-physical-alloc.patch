@@ -1,0 +1,98 @@
+diff --git a/include/rex/system/xmemory.h b/include/rex/system/xmemory.h
+index 0c39a42..5b79eed 100644
+--- a/include/rex/system/xmemory.h
++++ b/include/rex/system/xmemory.h
+@@ -325,6 +325,10 @@ class PhysicalHeap : public BaseHeap {
+  protected:
+   bool IsHostPageWriteWatched(uint32_t host_page_number) const override;
+ 
++  // Notifies the physical memory invalidation callbacks that a newly
++  // allocated range has new contents. Called without heap locks held.
++  void InvalidateNewAllocation(uint32_t physical_address, uint32_t length);
++
+   // Allocation on these heaps delegates to parent_heap_, whose own reconcile
+   // pass takes the global critical region. Acquire whenever this heap or its
+   // parent will need it, so the ordering holds even for a heap whose own guest
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 76cc877..3efa24f 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -1904,7 +1904,7 @@ bool PhysicalHeap::Alloc(uint32_t size, uint32_t alignment, uint32_t allocation_
+   // Global critical region before heap_mutex_ - see
+   // AcquireHostPageReconcileLock for why the order matters.
+   auto global_lock = AcquireHostPageReconcileLock();
+-  std::lock_guard<std::recursive_mutex> heap_lock(heap_mutex_);
++  std::unique_lock<std::recursive_mutex> heap_lock(heap_mutex_);
+ 
+   // Allocate from parent heap (gets our physical address in 0-512mb).
+   uint32_t parent_heap_start = GetPhysicalAddress(heap_base_);
+@@ -1925,6 +1925,11 @@ bool PhysicalHeap::Alloc(uint32_t size, uint32_t alignment, uint32_t allocation_
+     return false;
+   }
+   *out_address = address;
++  heap_lock.unlock();
++  if (global_lock.owns_lock()) {
++    global_lock.unlock();
++  }
++  InvalidateNewAllocation(parent_address, size);
+   return true;
+ }
+ 
+@@ -1937,7 +1942,7 @@ bool PhysicalHeap::AllocFixed(uint32_t base_address, uint32_t size, uint32_t ali
+   // Global critical region before heap_mutex_ - see
+   // AcquireHostPageReconcileLock for why the order matters.
+   auto global_lock = AcquireHostPageReconcileLock();
+-  std::lock_guard<std::recursive_mutex> heap_lock(heap_mutex_);
++  std::unique_lock<std::recursive_mutex> heap_lock(heap_mutex_);
+ 
+   // Allocate from parent heap (gets our physical address in 0-512mb).
+   // NOTE: this can potentially overwrite heap contents if there are already
+@@ -1958,6 +1963,11 @@ bool PhysicalHeap::AllocFixed(uint32_t base_address, uint32_t size, uint32_t ali
+     return false;
+   }
+ 
++  heap_lock.unlock();
++  if (global_lock.owns_lock()) {
++    global_lock.unlock();
++  }
++  InvalidateNewAllocation(parent_base_address, size);
+   return true;
+ }
+ 
+@@ -1973,7 +1983,7 @@ bool PhysicalHeap::AllocRange(uint32_t low_address, uint32_t high_address, uint3
+   // Global critical region before heap_mutex_ - see
+   // AcquireHostPageReconcileLock for why the order matters.
+   auto global_lock = AcquireHostPageReconcileLock();
+-  std::lock_guard<std::recursive_mutex> heap_lock(heap_mutex_);
++  std::unique_lock<std::recursive_mutex> heap_lock(heap_mutex_);
+ 
+   // Allocate from parent heap (gets our physical address in 0-512mb).
+   low_address = std::max(heap_base_, low_address);
+@@ -1996,9 +2006,27 @@ bool PhysicalHeap::AllocRange(uint32_t low_address, uint32_t high_address, uint3
+     return false;
+   }
+   *out_address = address;
++  heap_lock.unlock();
++  if (global_lock.owns_lock()) {
++    global_lock.unlock();
++  }
++  InvalidateNewAllocation(parent_address, size);
+   return true;
+ }
+ 
++void PhysicalHeap::InvalidateNewAllocation(uint32_t physical_address, uint32_t length) {
++  // GPU caches (shared memory, textures) may have marked these pages valid
++  // while they were unallocated - e.g. a fetch from a stale or speculative
++  // address. Write watches can't be installed on inaccessible pages, so
++  // without this the guest's writes to the new allocation would never be
++  // seen and the first upload would be reused forever. Tell the GPU the
++  // contents are new, exactly as a write to a watched page would.
++  auto global_lock = global_critical_region_.Acquire();
++  for (auto invalidation_callback : memory_->physical_memory_invalidation_callbacks_) {
++    invalidation_callback->first(invalidation_callback->second, physical_address, length, true);
++  }
++}
++
+ bool PhysicalHeap::AllocSystemHeap(uint32_t size, uint32_t alignment, uint32_t allocation_type,
+                                    uint32_t protect, bool top_down, uint32_t* out_address) {
+   return Alloc(size, alignment, allocation_type, protect, top_down, out_address);

@@ -1,0 +1,151 @@
+# Camera sensitivity at the minimum (M6B final settings): mouse horizontal and vertical level 1, stick level
+# 1 (--kuf_pc_settings), the virtual Xbox 360 pad. CONTINUE from build/m6-saves/celine-shadows-depths-1. The
+# speeds (camera_math.h): mouse 0.025 degrees per count, stick 15 degrees per second at full
+# deflection. Measured from the camera trace (the view's yaw and pitch) and the orbit trace (every frame):
+# (Yaw within +/- 0.3 degree: the game's own idle camera motion passes through, as in camera_mouse.)
+#   mouse right 100 counts: +2.5 degrees; up 40 counts (from the view before): +1 degrees (raw counts, no acceleration)
+#   stick half way right (dead zone 25 %, curve ^1.5: 19.2 % of the speed) for 1 s: +2.89 degrees; then full
+#   right for 8 frames (0.27 s of real time): +4 degrees, within +/- 1 (8 frames of real time vary)
+#   a steady turn, 10 counts every frame for 24 frames: +6 degrees, the camera moving the same amount
+#   every frame once the game's own easing into the turn is done (no jitter), never swinging close to the
+#   character (the game's position smoothing is done around the character: docs/CAMERA.md)
+
+[scenario]
+description = "Camera sensitivity at the minimum: mouse and stick speeds, steady turning"
+seconds = 110
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_trace_modern_camera=true", "--kuf_trace_camera_orbit=true", "--kuf_input_script_pad=xbox360",
+        "--kuf_pc_settings=mouse.sensitivity_horizontal=1,mouse.sensitivity_vertical=1,controller.camera_sensitivity=1"]
+script_file = "camera_sensitivity.kufscript"
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay", "mouse 1/1 invert false stick 1"]
+
+[[scenario.log_value]]
+name = "start yaw"
+after = "log mark start"
+before = "look 100 0"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+which = "last"
+
+[[scenario.log_value]]
+name = "start pitch"
+after = "log mark start"
+before = "look 100 0"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+which = "last"
+
+[[scenario.log_value]]
+name = "mouse right 100 counts"
+after = "log mark mouse_right"
+before = "look 0 -40"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+which = "last"
+relative_to = "start yaw"
+angle = true
+min = 2.20
+max = 2.80
+
+[[scenario.log_value]]
+name = "pitch before"
+after = "log mark mouse_right"
+before = "look 0 -40"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+which = "last"
+
+[[scenario.log_value]]
+name = "mouse up 40 counts"
+after = "log mark mouse_up"
+before = "look 0 40"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+which = "last"
+relative_to = "pitch before"
+min = 0.95
+max = 1.05
+
+[[scenario.log_value]]
+name = "level yaw"
+after = "log mark level"
+before = "pad axis rightx 16384"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+which = "last"
+
+[[scenario.log_value]]
+name = "stick half right 1 s"
+after = "log mark stick_half"
+before = "pad axis rightx 32767"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+which = "last"
+relative_to = "level yaw"
+angle = true
+min = 2.39
+max = 3.39
+
+[[scenario.log_value]]
+name = "after the half push"
+after = "log mark stick_half"
+before = "pad axis rightx 32767"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+which = "last"
+
+[[scenario.log_value]]
+name = "stick full right 8 frames"
+after = "log mark stick_right"
+before = "log mark steady"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+which = "last"
+relative_to = "after the half push"
+angle = true
+min = 3.00
+max = 5.00
+
+[[scenario.log_value]]
+name = "before the steady turn"
+after = "log mark stick_right"
+before = "log mark steady"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+which = "last"
+
+[[scenario.log_value]]
+name = "steady turn 240 counts"
+after = "log mark steady_done"
+before = "log mark end"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+which = "last"
+relative_to = "before the steady turn"
+angle = true
+min = 5.70
+max = 6.30
+
+[[scenario.log_value]]
+name = "steady turn: change of the per-frame movement (jitter)"
+# In the steady part of the turn (after the game's own easing into it, the trailing it adds to every turn), of
+# the camera as placed: the trees here come between camera and character during a full turn at this speed, and
+# the collision's pull-in is not the rotation's (it is measured in camera_distance_far).
+after = "log mark steady_mid"
+before = "log mark steady_last"
+pattern = 'requested step [0-9.]+ change ([0-9.]+)'
+which = "max"
+max = 0.1
+
+[[scenario.log_value]]
+name = "steady turn: closest to the character (no swing through it)"
+# The camera as placed (after the position smoothing and the orbit, before the scenery's collision).
+after = "log mark steady"
+before = "log mark steady_done"
+pattern = 'requested pitch -?[0-9.]+ distance ([0-9.]+)'
+which = "min"
+min = 590.0
+
+[format]
+width = 1280
+height = 720
+
+# K38: every scripted look and stick change reaches exactly one game tick (the camera's per-tick trace: one line
+# per tick between items one tick apart). Before the fix the script applied its items at presents, and a tick
+# could see two items or none.
+[[scenario.input_ticks]]
+name = "scripted camera input"
+after = "log mark start"
+before = "log mark end"
+item = ' look |pad axis'
+update = '\[kuf-cam\] orbit:'

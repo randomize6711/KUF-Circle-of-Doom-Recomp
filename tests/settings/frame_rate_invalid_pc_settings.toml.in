@@ -1,0 +1,7 @@
+# Valid TOML with invalid frame-rate values on purpose (tests/settings/frame_rate_invalid.toml).
+version = 1
+[frame_rate]
+limit_fps = 29
+interpolation = "yes"
+interpolate_objects = 1
+interpolate_effects = false

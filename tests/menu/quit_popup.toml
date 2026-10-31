@@ -1,0 +1,42 @@
+# The console's storage question answered for the player and the Quit Game question (M7 UX fixes 5 and 6,
+# src/runtime/title_menu.cpp). --kuf_storage_prompt=auto (the players' default): after Press START the game's "select
+# a storage device now?" and its warning after it are answered at once: the main menu without another key. The
+# pointer to QUIT GAME, a click: the game's message box asks; a click beside the box does nothing; a right click
+# answers No; a click on QUIT GAME asks again, a click on the box answers Yes: the game closes as when the window is
+# closed (exit status 0). The box: the message box scene's one button at (423,424 434x68).
+
+[scenario]
+description = "Storage question answered for the player; Quit Game box: stray click, No, Yes with the mouse"
+seconds = 60
+args = ["--kuf_storage_prompt=auto"]
+script = """
+500 tap Return
+700 capture main_menu
+750 mouse 640 661 1280 720
+800 tap MouseLeft
+880 capture quit_question
+900 mouse 100 650 1280 720
+930 tap MouseLeft
+1000 capture still_asking
+1030 tap MouseRight
+1100 capture after_no
+1150 mouse 640 661 1280 720
+1200 tap MouseLeft
+1280 mouse 640 458 1280 720
+1330 tap MouseLeft
+"""
+capture_frames = []
+log_sequence = [
+    "[kuf-title] storage prompt: answering Yes (the PC port saves in its own folder)",
+    "[kuf-title] storage prompt answered",
+    "[kuf-title] storage notice: not shown",
+    "[kuf-title] Quit Game: asking",
+    "[kuf-title] Quit Game: No",
+    "[kuf-title] Quit Game: asking",
+    "[kuf-title] Quit Game: Yes",
+    "[kuf-title] Quit Game",
+]
+
+[format]
+width = 1280
+height = 720

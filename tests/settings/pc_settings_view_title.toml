@@ -1,0 +1,67 @@
+# The Camera page in the title screen's SETTINGS (M6B final settings; category pages M7 feature 3), keyboard: SETTINGS,
+# eight Downs to PC Settings (past Change Storage Device), Return: the categories (Change Storage Device hidden); Down
+# to Camera, Return. Distance Left x6 (100 -> 50 %, the minimum: the last Left does nothing), Down, Field of View Right
+# x12 (the game's own -> 60 ... 110, the maximum: the last Right does nothing). Back to the categories, Back: SETTINGS
+# again (its own rows and Change Storage Device shown), the file written with the limits.
+
+[scenario]
+description = "PC page 2 in the title SETTINGS: scrolling, minimum distance and maximum field of view, saved"
+seconds = 110
+script = """
+500 tap Return
+700 tap Escape
+800 press Down
+900 press Return
+1020 press Down
+1050 press Down
+1080 press Down
+1110 press Down
+1140 press Down
+1170 press Down
+1200 press Down
+1230 press Down
+1260 press Down
+1320 capture pc_row
+1350 press Return
+1450 capture pc_page
+1480 press Down
+1510 press Return
+1580 capture camera_page
+1610 press Left
+1640 press Left
+1670 press Left
+1700 press Left
+1730 press Left
+1760 press Left
+1790 press Down
+1820 press Right
+1850 press Right
+1880 press Right
+1910 press Right
+1940 press Right
+1970 press Right
+2000 press Right
+2030 press Right
+2060 press Right
+2090 press Right
+2120 press Right
+2150 press Right
+2220 capture camera_limits
+2250 press Escape
+2280 press Escape
+2380 capture settings_again
+2410 press Escape
+2510 capture main_menu
+"""
+capture_frames = []
+pc_settings_expect = { "camera.distance_percent" = 50, "camera.field_of_view_degrees" = 110, "camera.modern_camera" = true }
+log_expect = [
+    "[kuf-pc-menu] title SETTINGS layout extended",
+    "[kuf-pc-menu] PC Settings opened (title SETTINGS)",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+    "[kuf-pc-menu] PC Settings closed",
+]
+
+[format]
+width = 1280
+height = 720

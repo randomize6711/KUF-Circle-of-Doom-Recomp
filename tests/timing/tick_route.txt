@@ -1,0 +1,19 @@
+# M6D timing route (tests/timing/*.toml): CONTINUE from the Shadow Depths fixture, walk forward for 180 ticks, turn
+# the camera, stand still. Frame numbers are game ticks (each tick is drawn once); the captures' wall-clock times
+# give the game's speed.
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 capture start
+@gameplay+300 down W
+@gameplay+390 capture walk_90
+@gameplay+480 up W
+@gameplay+480 capture walk_180
+@gameplay+490 down L
+@gameplay+515 up L
+@gameplay+600 capture turned
+@gameplay+900 capture idle_600
+@gameplay+1500 capture idle_1200

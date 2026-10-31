@@ -1,0 +1,43 @@
+# The character slots and the game type screen with the mouse only (M7 UI polish; scenes 0x02E and 0x02F, traced in
+# docs/MENU_ARCHITECTURE.md). The storage question and its notice answered with Return (the harness asks); a click on
+# CONTINUE; build/m6-saves/celine-shadows-depths-1 (read only): a click on the first slot (Celine) loads it; the game type screen: hovering a greyed co-op row selects nothing; a click on Difficulty
+# selects it and changes the value (the game's own Right; from the last value back to the first); a click on Continue
+# Solo Game starts the game. No Xbox LIVE co-op notice since the M7 UI follow-up (the co-op gate answers "not
+# available" without it). Every row's twin is hidden, the co-op rows unavailable: the pointer's plan counts only
+# shown, available buttons (tests/ui/test_menu_pointer.cpp "game type").
+
+[scenario]
+description = "Character slots and game type with the mouse: slot click, greyed rows, Difficulty, Continue Solo Game"
+seconds = 90
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_trace_menu_pointer=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+950 mouse 640 470 1280 720
+1000 tap MouseLeft
+1150 capture slots
+1200 mouse 830 125 1280 720
+1250 tap MouseLeft
+1560 capture game_type
+1600 mouse 838 335 1280 720
+1670 capture greyed_hover
+1700 mouse 838 251 1280 720
+1760 tap MouseLeft
+1840 capture difficulty_clicked
+1880 mouse 838 293 1280 720
+1930 tap MouseLeft
+2030 repeat 60 until gameplay press Return
+@gameplay+150 capture gameplay
+"""
+capture_frames = []
+log_sequence = [
+    "[kuf-title] co-op: not available in the PC port",
+    "[kuf-pointer] value row clicked: 'Difficulty:",
+    "[kuf-input] context: gameplay",
+]
+
+[format]
+width = 1280
+height = 720

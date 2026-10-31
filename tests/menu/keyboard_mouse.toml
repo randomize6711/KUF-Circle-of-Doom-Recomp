@@ -1,0 +1,80 @@
+# Keyboard and mouse through the title screen, main menu and SETTINGS (tools/menu_test.py).
+# Frame numbers are presented frames; each input waits for the previous screen to settle. The expected
+# rows were confirmed by inspecting a calibration run (M4). Coordinates only, no image content.
+
+# M7: the title list and SETTINGS as the game has them and controller prompts (--kuf_title_menu_rows=false,
+# --kuf_storage_row=true, --kuf_button_prompts=controller): the references show the original screens; the added rows
+# and the keyboard prompts are tested by title_rows.toml, pointer.toml and prompts_keyboard.toml.
+[scenario]
+# M6B: the SETTINGS screens have the PC Settings row; references recorded with it (the M4 set, without it,
+# stays in build/references/v1-menu-keyboard_mouse).
+references = "v1-menu-keyboard_mouse-m6b"
+description = "Enter at Press START, storage prompt, D-pad/hold/focus/wheel/click navigation, SETTINGS"
+args = ["--kuf_title_menu_rows=false", "--kuf_storage_row=true", "--kuf_button_prompts=controller"]
+seconds = 68
+script = """
+500 tap Return
+700 tap Escape
+800 tap Down
+860 down Down
+950 up Down
+1000 down Up
+1001 focus off
+1060 focus on
+1100 focus off
+1101 tap Down
+1140 focus on
+1200 wheel -1
+1260 wheel 2
+1330 tap MouseLeft
+1450 tap MouseRight
+1520 mouse 945 514 1890 1029
+1521 mouse 10 500 1890 1029
+1530 tap Up
+1590 tap Return
+1690 tap Down
+1760 tap Escape
+"""
+capture_frames = [790, 850, 900, 1050, 1090, 1150, 1250, 1320, 1510, 1580, 1680, 1750, 1850]
+log_expect = [
+  "[kuf-input] game waits for START",
+  "[kuf-input] game no longer waits for START",
+  "window focus lost: all keys released",
+  "pointer at guest (640, 359)",            # centre of a 1890x1029 window (pillarboxed 16:9)
+  "pointer outside the guest image",        # on the pillarbox bar
+]
+
+[format]
+width = 1280
+height = 720
+
+# Main menu: NEW GAME, CONTINUE, LEADERBOARD, SETTINGS, LANGUAGE, PROLOGUE, CREDITS (2 and 3 greyed out
+# without a save). The selected item has an orange glow.
+[[highlight]]
+name = "main menu"
+metric = "red_minus_blue"
+x = [440, 840]
+rows = [496, 524, 552, 580, 608, 636, 664]
+half_height = [12, 14]
+min_margin = 8.0
+# 790 NEW GAME after B on the storage prompt; 850 Down skips the greyed items to SETTINGS; 900 Down held
+# for 90 frames: the game's own auto-repeat reaches CREDITS; 1050 Up held, focus lost one frame later: one
+# step only (no stuck key); 1090 still there; 1150 a tap while unfocused is ignored; 1250 wheel down one;
+# 1320 wheel up two; 1510 left click opened LANGUAGE, right click came back; 1580 Up to SETTINGS;
+# 1850 Escape back from SETTINGS.
+expect = { "790" = 0, "850" = 3, "900" = 6, "1050" = 5, "1090" = 5, "1150" = 5, "1250" = 6, "1320" = 4, "1510" = 4, "1580" = 3, "1850" = 3 }
+
+# SETTINGS: SFX, Music, Voice, Brightness, Skin, Camera, Blood, Vibration, Change Storage Device.
+[[highlight]]
+name = "settings"
+metric = "luma"           # the selected row has the arrow cursor icon left of its label
+x = [120, 180]
+rows = [150, 197, 243, 336, 382, 428, 474, 519, 564]
+half_height = 10
+min_margin = 8.0
+expect = { "1680" = 0, "1750" = 1 }
+
+# The flame logo behind the menus is a movie; with real-time audio its frame follows the audio clock and can
+# shift by a frame between runs, so the reference comparison skips it (menu text and UI stay compared).
+[compare]
+ignore = [[400, 0, 880, 480]]

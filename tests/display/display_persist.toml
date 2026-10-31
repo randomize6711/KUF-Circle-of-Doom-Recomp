@@ -1,0 +1,19 @@
+# The display settings saved by display_menu (windowed 1920x1080) are used at the next start (M6C): the log shows
+# them read, the start mode (render scale chosen for it) and the window made 1920x1080 on the (simulated) monitor.
+# Title screen only.
+
+[scenario]
+description = "Saved display settings applied at the next start"
+seconds = 45
+pc_settings_from_run = "display_menu"
+args = ["--kuf_display_modes=3440x1440@100,3440x1440@60,2560x1080@60,1920x1080@60,1280x720@60"]
+script = """
+600 capture title
+"""
+capture_frames = []
+pc_settings_expect = { "display.mode" = "windowed", "display.width" = 1920, "display.height" = 1080 }
+log_sequence = [
+    "[kuf-settings] display: windowed 1920x1080 refresh desktop monitor primary widescreen true",
+    "[kuf-display] start: windowed 1920x1080, output simulated 1280 x 720: render scale 1x1 (frame 1280x720)",
+    "[kuf-display] display: windowed 1920 x 1080 on 'Simulated'",
+]

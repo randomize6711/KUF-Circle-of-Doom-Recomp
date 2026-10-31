@@ -1,0 +1,24 @@
+# A pc_settings.toml that is not valid TOML (M6B): the game starts with the defaults, keeps the damaged file as
+# pc_settings.toml.bad-<time> for the player, logs a warning and plays normally (title screen to the main menu).
+# Nothing is written until the player changes a setting.
+
+[scenario]
+description = "Malformed pc_settings.toml: defaults, file kept aside, game starts"
+seconds = 45
+pc_settings_file = "tests/settings/malformed_pc_settings.toml.in"
+script = """
+500 tap Return
+700 press Return
+900 capture main_menu
+"""
+capture_frames = []
+pc_settings_absent = true
+log_expect = [
+    "[kuf-settings] /run-data/user/pc_settings.toml could not be read; kept as pc_settings.toml.bad-",
+    "[kuf-settings] camera: modern true range 85 recenter false mouse 4/4 invert false stick 5 deadzone 25%",
+    "[kuf-input] context: menu",
+]
+
+[format]
+width = 1280
+height = 720

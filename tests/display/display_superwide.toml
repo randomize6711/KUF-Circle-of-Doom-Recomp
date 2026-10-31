@@ -1,0 +1,66 @@
+# 32:9 output (5120x1440) with PC Settings > Field of View 90 (horizontal at 16:9, so 1.1311 rad vertically): the
+# 3D views keep that vertical angle at 32:9 (126.9 degrees horizontally); the HUD and menus fill the middle half.
+# CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only). The output is simulated with
+# --kuf_display_size (offscreen runs have no real display); the captures are the game's 1280x720 frame as the
+# presenter gets it before stretching it to the output (docs/DISPLAY.md), so the HUD box shows as a compressed
+# band and the regions below are in frame pixels.
+# Render 1x (the 1280x720 frame scaled to the output, as these checks are written for); the native rendering
+# of this shape is tested by the render_* scenarios.
+
+[scenario]
+description = "32:9 (5120x1440): Hor+ with Field of View 90, HUD in the middle half"
+seconds = 120
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_size=5120x1440", "--kuf_trace_display=true", "--kuf_trace_projection=true", "--kuf_pc_settings=camera.field_of_view_degrees=90,display.render_scale=1"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+250 log mark hud
+@gameplay+300 capture hud
+@gameplay+400 press Escape
+@gameplay+500 capture pause
+@gameplay+530 mouse 2560 720 5120 1440
+@gameplay+540 mouse 1260 720 5120 1440
+@gameplay+560 press Escape
+@gameplay+700 log mark end
+"""
+capture_frames = []
+expect_saves_unchanged = true
+log_expect = [
+    "[kuf-display] output 5120x1440 (32:9), drawn for aspect 3.5556",
+    "[kuf-input-script] pointer at guest (640, 360)",
+    "[kuf-input-script] pointer outside the guest image",
+    "[kuf-display] 2D quads placed in the 16:9 box",
+]
+
+# The gameplay projection's horizontal angle at this aspect (the game's own vertical 0.6 rad unless set).
+[[scenario.log_value]]
+name = "gameplay horizontal field of view"
+after = "log mark hud"
+pattern = 'projection: fov [0-9.]+ rad aspect 3.5556 .*horizontal ([0-9.]+) degrees'
+which = "max"
+min = 126.77
+max = 126.97
+
+[format]
+width = 1280
+height = 720
+
+# "Paused" (bottom left of the pause screen; at 16:9 its glyphs are at x 80-175, y 642-668).
+[[region]]
+name = "Paused is drawn in the HUD box"
+capture = "pause"
+rect = [355, 638, 412, 672]
+metric = "text"
+mean = [3.0, 255.0]
+
+[[region]]
+name = "nothing where the 16:9 layout would put it"
+capture = "pause"
+rect = [60, 0, 330, 672]
+metric = "text"
+mean = [0.0, 0.5]

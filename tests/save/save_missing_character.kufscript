@@ -1,0 +1,6 @@
+# A save package whose character file is missing and that has no manifest (save_missing_character.toml):
+# Press START, select the storage device (Yes), confirm the storage message, the main menu.
+500 tap Return
+700 press Return
+850 press Return
+1000 capture main_menu

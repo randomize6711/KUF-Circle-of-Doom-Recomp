@@ -1,0 +1,22 @@
+# Save/load stage 3 (tests/save/save_reload.toml): a third process with the saves of stage 2 (two saves of the
+# same character in two processes). The same way in through CONTINUE as in save_continue.kufscript.
+# Press START; the storage message: the first confirm makes the game look for its saves (enumerate, then
+# open the package with OPEN_EXISTING), the second closes the message; then Down to CONTINUE.
+# Menu confirmations use "press" (held 4 frames), as a player would.
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1050 capture main_menu
+1100 press Return
+1250 capture continue_list
+1300 repeat 60 until gameplay press Return
+
+# Readings: status screen, then the Items tab, with the cursor on row 2 (RB) on both, as in save_continue's
+# status_resaved and equipment2_resaved (a highlighted row's text is brighter; rows compare like with like)
+@gameplay+300 tap Tab
+@gameplay+340 press Down
+@gameplay+380 capture status_reloaded
+@gameplay+400 tap C
+@gameplay+540 capture equipment2_reloaded
+@gameplay+560 tap Escape

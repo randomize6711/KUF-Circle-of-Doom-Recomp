@@ -1,0 +1,15 @@
+# Interrupted save 1 (tools/menu_test.py, M5B): stage 2's run (save_continue.kufscript: load stage 1's save,
+# re-equip the RB slot, save through Quit), but the process is killed with SIGKILL the moment the game's
+# save data is complete in the runtime's working copy and nothing is committed yet (content_test_kill,
+# stage "changed": the game has written its files and called XamContentFlush). save_after_kill_written.toml
+# then starts from what is left on disk.
+
+[scenario]
+description = "killed (SIGKILL) after the game wrote its save, before the commit"
+seconds = 240
+script_file = "save_continue.kufscript"
+saves_from_run = "save_new"
+args = ["--content_test_kill=changed:1"]
+expect_exit = 137
+log_expect = ["[content] TEST: killing the process at commit 1 stage 'changed'"]
+rules_from = "save_continue.toml"

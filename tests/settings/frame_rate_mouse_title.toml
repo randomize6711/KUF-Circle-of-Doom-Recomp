@@ -1,0 +1,61 @@
+# The frame-rate page with the mouse in the title screen's SETTINGS (M6D D5; the menus have no pointer: the wheel
+# moves one row per detent, the left button selects, the right button goes back, docs/INPUT.md). The keyboard opens
+# SETTINGS (as pc_settings_title); nine wheel detents down to PC Settings, a left click opens the categories; two
+# detents down to Display, a left click opens it, five detents down to FPS (M7 UX fix 3); three left clicks step it 30 -> 60 -> 90 -> 120 (Select
+# steps forward); a real SDL wheel event to Interpolation and a real SDL click: Off. Right click three times: the
+# categories, SETTINGS (the file written), the main menu. The title screen
+# and its menus are drawn over the title-loop movie, which keeps the render thread busy: render-only frames reach
+# about 36 per second there whatever the setting (docs/HIGH_FPS.md 21.6), so frame_rate_check.py --min-fps 33 (more
+# than one frame per tick: the setting reached the scheduler; no lock at 30).
+
+[scenario]
+description = "Frame-rate page with the mouse in the title SETTINGS: wheel, left click steps, right click back"
+seconds = 131
+script = """
+500 tap Return
+700 tap Escape
+800 press Down
+900 press Return
+1000 wheel -1
+1040 wheel -1
+1080 wheel -1
+1120 wheel -1
+1160 wheel -1
+1200 wheel -1
+1240 wheel -1
+1280 wheel -1
+1320 wheel -1
+1390 press MouseLeft
+1540 wheel -1
+1580 wheel -1
+1650 press MouseLeft
+1800 wheel -1
+1840 wheel -1
+1880 wheel -1
+1920 wheel -1
+1960 wheel -1
+2030 capture fps_row
+2060 press MouseLeft
+2100 press MouseLeft
+2140 press MouseLeft
+2180 log mark at_120
+2510 sdl wheel -1 640 360
+2570 sdl click left 640 360
+2670 capture interpolation_off
+2700 press MouseRight
+2800 press MouseRight
+2900 press MouseRight
+3000 capture main_menu
+"""
+capture_frames = []
+pc_settings_expect = { "frame_rate.limit_fps" = 120, "frame_rate.interpolation" = false }
+log_expect = [
+    "[kuf-pc-menu] PC Settings opened (title SETTINGS)",
+    "frame rate 90 -> 120, interpolation true",
+    "frame rate 120 -> 120, interpolation false",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+]
+
+[format]
+width = 1280
+height = 720

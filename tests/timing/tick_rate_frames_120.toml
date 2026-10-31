@@ -1,0 +1,29 @@
+# M6D D3b-1: render-only frames (--kuf_frame_rate=120) do not change the game's speed or its state. The game runs 30
+# ticks per real second while frames are drawn between the ticks (at least 2.5 frames per tick over the run, loading
+# and menus included); the builds call no rand() and no PhysX simulate and every retained list is restored; after the
+# same number of ticks the character stands where the default run's does (the walk's end compared with
+# tick_rate_fixed). docs/HIGH_FPS.md section 14.
+[scenario]
+description = "M6D render-only frames at --kuf_frame_rate=120: still 30 game ticks per real second, same game"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+compare_run = "tick_rate_fixed"
+script_file = "tick_route.txt"
+args = ["--kuf_frame_rate=120"]
+
+[scenario.timing]
+from = "start"
+to = "idle_1200"
+min_ticks_per_second = 29.0
+max_ticks_per_second = 30.6
+expect_mode = "fixed_tick"
+min_frames_per_tick = 2.5
+game_counter_matches = true
+summary_max = {rand_in_builds = 0, physx_in_builds = 0, restore_failures = 0}
+
+[[region_diff]]
+name = "the walk ends where the default run's does (same ticks, same distance)"
+a = "prev:walk_180"
+b = "walk_180"
+rect = [0, 0, 1280, 720]
+max_mean_diff = 6.0

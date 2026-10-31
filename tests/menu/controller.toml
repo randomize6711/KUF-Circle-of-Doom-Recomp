@@ -1,0 +1,68 @@
+# Controller through the title screen, main menu and SETTINGS, via an SDL virtual Xbox 360 gamepad that the
+# SDK's SDL driver handles like a plugged-in pad (tools/menu_test.py). Includes disconnecting with a button
+# held, keyboard fallback, and reconnecting.
+
+# M7: the title list and SETTINGS as the game has them and controller prompts (--kuf_title_menu_rows=false,
+# --kuf_storage_row=true, --kuf_button_prompts=controller): the references show the original screens; the added rows
+# and the keyboard prompts are tested by title_rows.toml, pointer.toml and prompts_keyboard.toml.
+[scenario]
+# M6B: the SETTINGS screens have the PC Settings row; references recorded with it (the M4 set, without it,
+# stays in build/references/v1-menu-controller).
+references = "v1-menu-controller-m6b"
+description = "Start at Press START, B on the prompt, D-pad and left stick, A/B into SETTINGS, disconnect/reconnect"
+seconds = 62
+args = ["--kuf_input_script_pad=xbox360", "--kuf_title_menu_rows=false", "--kuf_storage_row=true", "--kuf_button_prompts=controller"]
+script = """
+100 pad connect
+500 pad press start
+700 pad press b
+800 pad press down
+860 pad axis lefty 32767
+866 pad axis lefty 0
+930 pad press up
+1000 pad press a
+1110 pad press down
+1200 pad press b
+1300 pad down down
+1306 pad disconnect
+1400 tap Up
+1460 pad connect
+1520 pad press down
+"""
+capture_frames = [790, 850, 920, 990, 1100, 1160, 1290, 1390, 1450, 1580]
+log_expect = [
+  "SDL OnControllerDeviceAdded: \"KUF virtual Xbox 360 gamepad\"",
+  "SDL OnControllerDeviceRemoved: 0 device(s) remain.",
+  "SDL OnControllerDeviceAdded: connection order 0, device 2.",
+  "[kuf-input] game no longer waits for START",
+]
+
+[format]
+width = 1280
+height = 720
+
+[[highlight]]
+name = "main menu"
+metric = "red_minus_blue"
+x = [440, 840]
+rows = [496, 524, 552, 580, 608, 636, 664]
+half_height = [12, 14]
+min_margin = 8.0
+# 790 B answered the prompt; 850 D-pad down; 920 left stick down; 990 D-pad up; 1290 B back from SETTINGS;
+# 1390 D-pad held while the pad is unplugged: one step, then released (no runaway auto-repeat);
+# 1450 keyboard still drives the menu with no pad; 1580 the reconnected pad works.
+expect = { "790" = 0, "850" = 3, "920" = 4, "990" = 3, "1290" = 3, "1390" = 4, "1450" = 3, "1580" = 4 }
+
+[[highlight]]
+name = "settings"
+metric = "luma"           # the selected row has the arrow cursor icon left of its label
+x = [120, 180]
+rows = [150, 197, 243, 336, 382, 428, 474, 519, 564]
+half_height = 10
+min_margin = 8.0
+expect = { "1100" = 0, "1160" = 1 }
+
+# The flame logo behind the menus is a movie; with real-time audio its frame follows the audio clock and can
+# shift by a frame between runs, so the reference comparison skips it (menu text and UI stay compared).
+[compare]
+ignore = [[400, 0, 880, 480]]

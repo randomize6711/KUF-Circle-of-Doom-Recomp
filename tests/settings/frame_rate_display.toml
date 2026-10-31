@@ -1,0 +1,88 @@
+# Display changes at 120 fps (M6D D5): the frame rate from the PC settings (--kuf_pc_settings, not --kuf_frame_rate),
+# a simulated 21:9 monitor (as display_menu). The display page: Mode Windowed, a smaller size, Widescreen Off and On
+# (at once), down to Apply (the last row) and Keep (the window becomes 1920x1080); Up six times to FPS (120 shown).
+# Gameplay before and after: up to 120 frames per second (the swapchain recreated, the frame rate kept; one limiter).
+
+[scenario]
+description = "Display mode, size and widescreen changed at 120 fps: the frame rate kept"
+seconds = 214
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_modes=3440x1440@100,3440x1440@60,2560x1080@60,1920x1080@60,1280x720@60", "--kuf_pc_settings=frame_rate.limit_fps=120", "--kuf_profile=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+200 log mark play_a
+@gameplay+210 down W
+@gameplay+510 log mark play_b
+@gameplay+520 up W
+@gameplay+580 press Escape
+@gameplay+680 press Down
+@gameplay+730 press Down
+@gameplay+780 press Down
+@gameplay+830 press Down
+@gameplay+930 press Return
+@gameplay+1080 press Down
+@gameplay+1110 press Down
+@gameplay+1140 press Down
+@gameplay+1170 press Down
+@gameplay+1200 press Down
+@gameplay+1230 press Down
+@gameplay+1260 press Down
+@gameplay+1290 press Down
+@gameplay+1390 press Return
+@gameplay+1540 press Down
+@gameplay+1570 press Down
+@gameplay+1600 press Return
+@gameplay+1760 capture display_page
+@gameplay+1790 press Left
+@gameplay+1850 press Down
+@gameplay+1880 press Left
+@gameplay+1940 press Down
+@gameplay+1970 press Down
+@gameplay+2000 press Right
+@gameplay+2060 press Left
+@gameplay+2120 press Down
+@gameplay+2150 press Down
+@gameplay+2180 press Down
+@gameplay+2210 press Down
+@gameplay+2240 press Down
+@gameplay+2270 press Down
+@gameplay+2300 press Down
+@gameplay+2330 press Down
+@gameplay+2360 press Return
+@gameplay+2460 press Return
+@gameplay+2560 capture kept
+@gameplay+2590 press Up
+@gameplay+2620 press Up
+@gameplay+2650 press Up
+@gameplay+2680 press Up
+@gameplay+2710 press Up
+@gameplay+2740 press Up
+@gameplay+2810 capture fps_row
+@gameplay+2840 press Escape
+@gameplay+2940 press Escape
+@gameplay+3040 press Escape
+@gameplay+3140 press Escape
+@gameplay+3340 log mark play_c
+@gameplay+3350 down W
+@gameplay+3650 log mark play_d
+@gameplay+3660 up W
+"""
+capture_frames = []
+expect_saves_unchanged = true
+pc_settings_expect = { "display.mode" = "windowed", "display.width" = 1920, "display.height" = 1080, "frame_rate.limit_fps" = 120 }
+log_expect = [
+    "[kuf-settings] overrides for this run: frame_rate.limit_fps=120",
+    "[kuf-pacing] render-only frames: up to 120 frames per second between the game's 30 ticks",
+    "[kuf-pc-menu] display kept: windowed 1920x1080",
+    "[kuf-pc-menu] display page",
+]
+log_absent = ["[kuf-pacing] tick", "frame rate request dropped"]
+
+[format]
+width = 1280
+height = 720

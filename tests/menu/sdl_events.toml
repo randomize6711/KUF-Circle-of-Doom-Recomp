@@ -1,0 +1,81 @@
+# The real host-input path: SDL events pushed into the (offscreen) game window's queue go through WindowSDL
+# (key translation, mouse coordinates, focus) to the keyboard/mouse driver (tools/menu_test.py). Also a real
+# window resize, with the pointer mapped across the letterbox.
+
+# M7: the title list and SETTINGS as the game has them and controller prompts (--kuf_title_menu_rows=false,
+# --kuf_storage_row=true, --kuf_button_prompts=controller): the references show the original screens; the added rows
+# and the keyboard prompts are tested by title_rows.toml, pointer.toml and prompts_keyboard.toml.
+[scenario]
+# M6B: the SETTINGS screens have the PC Settings row; references recorded with it (the M4 set, without it,
+# stays in build/references/v1-menu-sdl_events).
+references = "v1-menu-sdl_events-m6b"
+description = "SDL key/mouse/focus/resize events through the window: title, prompt, menu, key repeat, focus, resize"
+args = ["--kuf_title_menu_rows=false", "--kuf_storage_row=true", "--kuf_button_prompts=controller"]
+seconds = 62  # the last capture (1600) is at about 59 s; 58 left a margin of 0-2 frames (failed once at 1598)
+script = """
+500 sdl key down Return
+503 sdl key up Return
+700 sdl key down Escape
+702 sdl key up Escape
+800 sdl key down Down
+801 sdl key repeat Down
+802 sdl key repeat Down
+803 sdl key repeat Down
+804 sdl key up Down
+900 sdl key down Up
+901 sdl focus off
+902 sdl key up Up
+960 sdl focus on
+1000 sdl resize 1280 1024
+1030 pointer
+1031 sdl motion 640 100
+1032 pointer
+1033 sdl motion 640 152
+1034 pointer
+1035 sdl motion 1279 871
+1036 pointer
+1100 sdl wheel -1 640 600
+1160 sdl wheel -1 640 600
+1220 sdl wheel 1 640 600
+1250 sdl click left 640 600
+1340 sdl click right 640 600
+"""
+capture_frames = [790, 870, 990, 1150, 1210, 1320, 1420, 1600]
+log_expect = [
+  "[kuf-input] game no longer waits for START",
+  "window focus lost: all keys released",
+  "window focus gained",
+  "pointer outside the guest image (window 1280x1024)",   # on the top letterbox bar
+  "pointer at guest (640, 0) (window 1280x1024)",         # first row of the letterboxed image
+  "pointer at guest (1279, 719) (window 1280x1024)",      # last pixel of the image
+]
+
+[format]
+width = 1280
+height = 720
+
+[[highlight]]
+name = "main menu"
+metric = "red_minus_blue"
+x = [440, 840]
+rows = [496, 524, 552, 580, 608, 636, 664]
+half_height = [12, 14]
+min_margin = 8.0
+# 790 Escape answered the prompt; 870 Down with three OS repeat events: one step; 990 Up, focus lost before
+# its key-up: one step, nothing stuck; 1150 wheel down to SETTINGS; 1210 wheel down to LANGUAGE; then
+# wheel up to SETTINGS and a left click opens it (1320); 1420 right click came back to SETTINGS.
+expect = { "790" = 0, "870" = 3, "990" = 0, "1150" = 3, "1210" = 4, "1420" = 3 }
+
+[[highlight]]
+name = "settings"
+metric = "luma"
+x = [120, 180]
+rows = [150, 197, 243, 336, 382, 428, 474, 519, 564]
+half_height = 10
+min_margin = 8.0
+expect = { "1320" = 0 }
+
+# The flame logo behind the menus is a movie; with real-time audio its frame follows the audio clock and can
+# shift by a frame between runs, so the reference comparison skips it (menu text and UI stay compared).
+[compare]
+ignore = [[400, 0, 880, 480]]

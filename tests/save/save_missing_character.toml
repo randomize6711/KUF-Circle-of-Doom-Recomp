@@ -1,0 +1,24 @@
+# Invalid save 4 (tools/menu_test.py, M5B): a package without its character file and without a manifest
+# (as a save from before M5B or copied in by hand could be). Nothing for the runtime to verify; the game
+# handles it itself: no character to continue, the main menu works, no crash, and nothing is written over.
+
+[scenario]
+description = "character file missing (no manifest): main menu without a character, no crash, nothing changed"
+seconds = 60
+script_file = "save_missing_character.kufscript"
+saves_from_run = "save_new"
+compare_run = "save_new"
+damage = [{file = "KD_*", action = "delete"}, {file = ".rex-manifest", action = "delete"}]
+log_expect = ["has no manifest (written before transactions or copied in); not verified"]
+log_absent = ["flags 0x812", "[content] deleted", "): committed ("]
+expect_saves_unchanged = true
+
+[format]
+width = 1280
+height = 720
+
+[[region]]
+name = "main menu shown"
+capture = "main_menu"
+rect = [500, 230, 780, 350]
+min_std = 10.0

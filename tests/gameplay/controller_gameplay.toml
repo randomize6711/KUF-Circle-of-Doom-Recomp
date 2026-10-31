@@ -1,0 +1,108 @@
+# Gameplay with a controller (SDL virtual Xbox 360 pad through the SDK's SDL driver; tools/menu_test.py):
+# tutorial skip with B/A, status (Start) and inventory (RB), left-stick movement, right-stick camera, attacks
+# and Dash, pause (Back) and resume (B). Anchored to the game's state like new_game.toml.
+
+[scenario]
+description = "Controller: end tutorial, status/inventory, left stick walk, right stick camera, attack, pause/resume"
+seconds = 150
+args = ["--kuf_input_script_pad=xbox360"]
+script = """
+100 pad connect
+500 pad press start
+700 pad press a
+850 pad press a
+1000 pad press a
+1250 pad press a
+1350 pad press a
+1500 pad press a
+1650 pad press a
+1800 repeat 60 until gameplay pad down a
+1803 repeat 60 until gameplay pad up a
+@menu#2+60 pad press b
+@menu#2+130 pad press a
+@menu#2+400 capture free_play
+@menu#2+420 pad press start
+@menu#2+500 capture status_start
+@menu#2+520 pad press rb
+@menu#2+600 capture inventory_start
+@menu#2+620 pad press b
+@menu#2+680 pad press b
+@menu#2+760 capture before_walk
+@menu#2+770 pad axis lefty -32767
+@menu#2+890 pad axis lefty 0
+@menu#2+900 capture after_walk
+@menu#2+960 pad axis rightx 18000
+@menu#2+975 capture look_before
+@menu#2+978 capture look_after
+@menu#2+990 pad axis rightx 0
+@menu#2+1050 pad press x
+@menu#2+1100 pad press a
+@menu#2+1150 pad press b
+@menu#2+1200 pad press back
+@menu#2+1280 capture paused
+@menu#2+1300 pad press b
+@menu#2+1380 capture resumed
+"""
+capture_frames = []
+log_expect = [
+  "SDL OnControllerDeviceAdded: \"KUF virtual Xbox 360 gamepad\"",
+  "[kuf-input] context: gameplay",
+]
+
+[format]
+width = 1280
+height = 720
+
+[[region]]
+name = "HUD in free play"
+capture = "free_play"
+rect = [150, 570, 300, 640]
+metric = "red_minus_blue"
+mean = [8.0, 255.0]
+
+[[region]]
+name = "HUD after resuming from pause"
+capture = "resumed"
+rect = [150, 570, 300, 640]
+metric = "red_minus_blue"
+mean = [8.0, 255.0]
+
+[[region]]
+name = "status screen open (Start)"
+capture = "status_start"
+rect = [570, 92, 760, 184]
+min_std = 15.0
+
+[[region]]
+name = "inventory open and empty (RB)"
+capture = "inventory_start"
+rect = [110, 140, 580, 320]
+max_std = 10.0
+
+[[region_diff]]
+name = "left stick moved the character"
+a = "before_walk"
+b = "after_walk"
+rect = [0, 0, 1280, 560]
+min_mean_diff = 8.0
+
+# Right stick at 18,000 for 30 frames, captured mid-turn 3 frames apart: ~10 px per frame above the game's
+# dead zone (calibration), so ~30 px.
+[[shift]]
+name = "right stick turned the camera"
+a = "look_before"
+b = "look_after"
+direction = "left"
+min_px = 12
+
+[[region_diff]]
+name = "Back opened the options menu"
+a = "free_play"
+b = "paused"
+rect = [120, 40, 500, 270]
+min_mean_diff = 20.0
+
+[[range]]
+name = "all captures are real images"
+frames = [1, 1000000]
+min_distinct = 300

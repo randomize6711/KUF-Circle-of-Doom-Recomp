@@ -1,0 +1,13 @@
+# Valid TOML with invalid display values on purpose (tests/display/display_invalid.toml): each falls back to its
+# default; the saved monitor is not connected (the game uses the primary one and keeps the name); unknown keys stay.
+version = 1
+[camera]
+distance_percent = 150
+[display]
+mode = "exclusive"
+width = 100
+height = 1080
+refresh_millihertz = -60
+monitor = "DP-9 (disconnected)"
+widescreen = true
+future_display_key = "kept"

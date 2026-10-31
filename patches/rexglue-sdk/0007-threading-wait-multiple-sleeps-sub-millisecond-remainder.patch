@@ -1,0 +1,22 @@
+Fix (M6A): WaitMultiple (several handles, finite timeout) slept min(remaining, 1 ms) with the remaining time
+truncated to whole milliseconds, i.e. not at all during the last millisecond. Alertable waits poll in 1 ms
+slices, so an alertable WaitAny on several handles (the audio worker; guest KeWaitForMultipleObjects) spun a
+whole core. Now the remaining time is kept in clock units. Same 1 ms poll granularity as before.
+
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index 9ac8d15..2faa1b6 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -414,8 +414,10 @@ class PosixConditionBase {
+       if (timeout == std::chrono::milliseconds::max()) {
+         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+       } else {
+-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
+-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
++        // The remaining time in clock units: truncated to whole milliseconds it is 0 for the whole last
++        // millisecond (all of a 1 ms alertable poll slice), and the loop then spun without sleeping.
++        auto remaining = end_time - now;
++        auto sleep_time = std::min<std::chrono::steady_clock::duration>(remaining, std::chrono::milliseconds(1));
+         std::this_thread::sleep_for(sleep_time);
+       }
+     }

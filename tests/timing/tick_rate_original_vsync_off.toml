@@ -1,0 +1,17 @@
+# M6D D2 control: the original pacing (--kuf_fixed_tick=false) with --vsync=false runs the game as fast as it can draw
+# (5.9 times real time alone, docs/HIGH_FPS.md section 3). This shows that the timing check sees an acceleration; if
+# it ever passes at 30, the measurement is broken, not the game fixed.
+[scenario]
+description = "M6D control: the original pacing speeds the game up when vblanks are not limited"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script_file = "tick_route.txt"
+args = ["--kuf_fixed_tick=false", "--vsync=false"]
+
+[scenario.timing]
+from = "start"
+to = "idle_1200"
+min_ticks_per_second = 45.0
+expect_mode = "original"
+max_frames_per_tick = 1.01
+game_counter_matches = true

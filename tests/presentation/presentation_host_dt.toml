@@ -1,0 +1,13 @@
+# M6D K43: the original 30 fps mode with the modern camera timed by the host clock between its updates, as before K43
+# (--kuf_camera_host_dt). CONTINUE from the Shadow Depths fixture along presentation_state_route.kufscript;
+# presentation.state_compare_detects_host_dt requires state_compare.py to find the player's position different from
+# presentation_30 (about 0.0001 units: the difference K43 let through a 0.01 comparison).
+[scenario]
+description = "M6D K43: the 30 fps mode with the camera timed by the host clock (the state comparison must catch it)"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script_file = "presentation_state_route.kufscript"
+args = ["--kuf_camera_host_dt=true", "--kuf_trace_game_state=true", "--kuf_trace_camera_orbit=true"]
+capture_frames = []
+expect_saves_unchanged = true
+log_expect = ["[kuf-input] context: gameplay"]

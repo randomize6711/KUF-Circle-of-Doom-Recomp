@@ -1,0 +1,11 @@
+# M6D K46 fault test (docs/HIGH_FPS.md 14.8): k46_released_120 with the correction off
+# (--kuf_debug_restore_released: the builds restore the released index too). The run must crash as the 120 fps play
+# session did, in sub_821A2FD8 reading object 0 (k46_check.py --expect-crash): the regression test catches the fault.
+[scenario]
+description = "M6D K46 fault test: released indices restored (--kuf_debug_restore_released): the K46 crash"
+seconds = 180
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script_file = "k46_released_route.kufscript"
+args = ["--kuf_frame_rate=120", "--kuf_debug_restore_stale_every=30", "--kuf_debug_restore_released=true"]
+capture_frames = []
+log_expect = ["test records in the saved scene setup list"]

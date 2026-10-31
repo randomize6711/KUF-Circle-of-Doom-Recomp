@@ -1,0 +1,79 @@
+# Manual review of imports the game exercised in the M2 audit runs (tools/import_audit_report.py --reviewed).
+# status: one of "Fully implemented", "Partially implemented", "Intentionally stubbed", "Unused",
+# "Not yet investigated".
+
+[RtlRaiseException]
+status = "Partially implemented"
+note = "Runtime handles only SetThreadName (0x406D1388); other codes Break and return. Our RaiseException guard (src/runtime/eh_trace.cpp) passes thread naming through and fails fast on anything else. Observed: 2 calls, both thread naming."
+
+[NtQueryInformationFile]
+status = "Fully implemented"
+note = "Reviewed: the unimplemented info classes (XCTD compression) log at error level, none logged; XFileSectorInformation is a debug-logged stub, not hit."
+
+[NtReadFile]
+status = "Fully implemented"
+note = "Reviewed: completes synchronously (async TODO) and signals the event/IOSB; 6,013 reads in 5 min without error."
+
+[NtCreateFile]
+status = "Fully implemented"
+note = "Reviewed: fail-path marker is the normal not-found return. Game folder is read-only; write opens downgrade to read (Xenia behaviour), rename refused (patch 0001)."
+
+[NtSetInformationFile]
+status = "Fully implemented"
+note = "Reviewed: assert_always only on unsupported classes; 1,042 calls (file position) without error log."
+
+[NtQueryFullAttributesFile]
+status = "Fully implemented"
+note = "Reviewed: assert only for root-directory-relative paths (not used). Returns NO_SUCH_FILE for the ShaderDumpxe debug probe, as on hardware."
+
+[NtAllocateVirtualMemory]
+status = "Fully implemented"
+note = "Reviewed: assert_always only on unsupported flag combinations; 2,442 calls without error."
+
+[KeInitializeSemaphore]
+status = "Fully implemented"
+note = "Reviewed: assert covers invalid limits only."
+
+[KeResetEvent]
+status = "Fully implemented"
+note = "Reviewed: assert covers non-event objects only."
+
+[ExCreateThread]
+status = "Fully implemented"
+note = "Reviewed: fail-path marker is the error return; 35 threads created (incl. OpenMP workers and Job Threads)."
+
+[XAudioRegisterRenderDriverClient]
+status = "Fully implemented"
+note = "Reviewed: one client registered; render driver frames submitted every ~5.3 ms."
+
+[XGetVideoMode]
+status = "Fully implemented"
+note = "Reviewed: reports 1280x720 widescreen 60 Hz (satisfies the game's PAL-50 refusal check)."
+
+[VdCallGraphicsNotificationRoutines]
+status = "Intentionally stubbed"
+note = "Returns 0; display-mode-change notifications are not emitted. No effect observed."
+
+[KeEnableFpuExceptions]
+status = "Intentionally stubbed"
+note = "No-op: guest FP exception enabling is not mapped to host traps (would turn benign FP conditions into crashes)."
+
+[NetDll_WSAStartup]
+status = "Partially implemented"
+note = "Winsock startup succeeds; networking stays offline in M2. Interface kept for native LAN (M11)."
+
+[NetDll_XNetStartup]
+status = "Partially implemented"
+note = "XNet startup succeeds; no Xbox Live. Interface kept for native LAN (M11)."
+
+[XMsgStartIORequest]
+status = "Partially implemented"
+note = "Observed: XGI (app 0xFB) message 0x000B0006 XUserSetContextEx (rich presence) accepted as a successful no-op, correct offline. Other XAM app messages are handled per app (apps/*.cpp); unknown ones not observed."
+
+[XamUserGetSigninState]
+status = "Fully implemented"
+note = "Offline local profile: user 0 signed in locally (state 1, 'User'), users 1-3 signed out."
+
+[XamUserReadProfileSettings]
+status = "Fully implemented"
+note = "Offline profile defaults (SDK UserProfile); 5 reads for user 0."

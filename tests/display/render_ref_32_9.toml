@@ -1,0 +1,41 @@
+# Render resolution reference (M6C follow-up): the 5120x1440 (32:9) output with Render 1x, i.e. the game's
+# 1280x720 frame scaled to the output, as before native rendering. The render_native_* scenarios of this shape
+# are compared with it by tests/display/render_compare.py (colours, post-processing, the lighting cube maps, the
+# resolves). CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only); the GPU trace (SDK patch 0009)
+# dumps the resolves of one gameplay frame and the cube maps the game builds at level load. The traced frame is the
+# tick frame after the script's trace at @gameplay+340 (K35: a swap number is not the same moment in every run).
+
+[scenario]
+description = "Render 1x at 5120x1440 (32:9): frame 1280x720"
+seconds = 120
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_size=5120x1440", "--kuf_pc_settings=display.render_scale=1", "--gpu_trace_frame=2000000000", "--gpu_trace_dir=/run-data/user"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+250 log mark hud
+@gameplay+300 capture hud
+@gameplay+330 capture scene
+@gameplay+340 trace
+@gameplay+400 press Escape
+@gameplay+500 capture pause
+@gameplay+560 press Escape
+@gameplay+700 log mark end
+"""
+capture_frames = []
+expect_saves_unchanged = true
+# The HUD box: the rules of display_superwide.toml (the frame is reduced to 1280x720 first).
+rules_from = "display_superwide.toml"
+log_expect = [
+    "render scale 1x1 (frame 1280x720); Render 1x",
+    "[kuf-display] output 5120x1440 (32:9), drawn for aspect 3.5556",
+]
+
+[format]
+render_scale = [1, 1]
+guest_coordinates = true
+

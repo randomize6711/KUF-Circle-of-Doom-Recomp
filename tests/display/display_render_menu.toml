@@ -1,0 +1,115 @@
+# PC Settings > Display > Render in-game (M6C follow-up), on a simulated 2560x1440 output, where Render Native
+# renders the frame at 2x2 (2560x1440). CONTINUE from build/m6-saves/celine-shadows-depths-1; options menu,
+# Settings, PC Settings, down to the display page (as display_menu), then down past Apply, VSync and the frame rate
+# to Render (its eleventh row, above Apply; the list scrolls, M7 UX fix 3 and UI polish): Right three times = 1x (saved; 1280x720 from the next start), 2x (the scale in effect), 3x (3840x2160 from
+# the next start). Each value is saved at once; nothing else changes: the frame stays 2560x1440 for this run
+# (captures). Back saves: pc_settings.toml [display] render_scale = 3. The next run (display_render_persist)
+# starts from that file.
+
+[scenario]
+description = "Display page: Render row, saved, in effect from the next start"
+seconds = 206
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_size=2560x1440"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 press Escape
+@gameplay+400 press Down
+@gameplay+450 press Down
+@gameplay+500 press Down
+@gameplay+550 press Down
+@gameplay+650 press Return
+@gameplay+800 press Down
+@gameplay+830 press Down
+@gameplay+860 press Down
+@gameplay+890 press Down
+@gameplay+920 press Down
+@gameplay+950 press Down
+@gameplay+980 press Down
+@gameplay+1010 press Down
+@gameplay+1110 press Return
+@gameplay+1230 press Down
+@gameplay+1260 press Down
+@gameplay+1290 press Return
+@gameplay+1760 capture display_page
+@gameplay+1790 press Down
+@gameplay+1820 press Down
+@gameplay+1850 press Down
+@gameplay+1880 press Down
+@gameplay+1910 press Down
+@gameplay+1940 press Down
+@gameplay+1970 press Down
+@gameplay+2000 press Down
+@gameplay+2030 press Down
+@gameplay+2060 press Down
+@gameplay+2160 capture render_native
+@gameplay+2190 press Right
+@gameplay+2260 capture render_1x
+@gameplay+2290 press Right
+@gameplay+2360 capture render_2x
+@gameplay+2390 press Right
+@gameplay+2460 capture render_3x
+@gameplay+2490 press Escape
+@gameplay+2540 press Escape
+@gameplay+2590 press Escape
+@gameplay+2690 press Escape
+@gameplay+2880 capture gameplay
+"""
+capture_frames = []
+expect_saves_unchanged = true
+pc_settings_expect = { "display.render_scale" = 3, "display.mode" = "borderless", "display.widescreen" = true }
+log_sequence = [
+    "render scale 2x2 (frame 2560x1440); Render Native",
+    "[kuf-pc-menu] display page",
+    "[kuf-pc-menu] render 1x: 1280x720 from the next start (now 2560x1440)",
+    "[kuf-pc-menu] render 2x: 2560x1440 (in effect)",
+    "[kuf-pc-menu] render 3x: 3840x2160 from the next start (now 2560x1440)",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+    "[kuf-pc-menu] PC Settings closed",
+]
+log_absent = ["display not kept", "[kuf-pc-menu] display applied"]
+
+[format]
+render_scale = [2, 2]
+guest_coordinates = true
+
+# The Render row's label (frame pixels: the last visible row of the display page, scrolled to it; M7 UX fix 3) changes
+# with each value:
+# "Render: Native", "Render: 1x *", "Render: 2x", "Render: 3x *".
+[[region_diff]]
+name = "Render row: Native -> 1x"
+a = "render_native"
+b = "render_1x"
+rect = [462, 480, 745, 510]
+metric = "text"
+min_mean_diff = 3.0
+
+[[region_diff]]
+name = "Render row: 1x -> 2x"
+a = "render_1x"
+b = "render_2x"
+rect = [462, 480, 745, 510]
+metric = "text"
+min_mean_diff = 3.0
+
+# The other rows did not change (the first and fourth rows shown; the cursor is on Render in both captures).
+[[region_diff]]
+name = "Top row unchanged"
+a = "render_native"
+b = "render_3x"
+rect = [462, 142, 745, 172]
+metric = "text"
+max_mean_diff = 1.0
+
+[[region_diff]]
+name = "Interpolation row unchanged"
+a = "render_native"
+b = "render_3x"
+rect = [462, 297, 745, 325]
+metric = "text"
+max_mean_diff = 1.0

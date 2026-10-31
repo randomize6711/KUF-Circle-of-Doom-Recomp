@@ -1,0 +1,44 @@
+# NEW GAME -> character selection -> change character -> back to Press START -> Enter works again
+# (tools/menu_test.py). Stops before choosing a character: no game is started.
+
+# M7: the title list and SETTINGS as the game has them and controller prompts (--kuf_title_menu_rows=false,
+# --kuf_storage_row=true, --kuf_button_prompts=controller): the references show the original screens; the added rows
+# and the keyboard prompts are tested by title_rows.toml, pointer.toml and prompts_keyboard.toml.
+[scenario]
+description = "NEW GAME, change character left/right, B back to the title, Press START again"
+args = ["--kuf_title_menu_rows=false", "--kuf_storage_row=true", "--kuf_button_prompts=controller"]
+seconds = 62
+script = """
+500 tap Return
+700 tap Escape
+800 tap Return
+1010 tap Right
+1110 tap Left
+1210 tap Escape
+1500 tap Return
+"""
+capture_frames = [1000, 1100, 1200, 1450, 1650]
+# The prompt is armed at the title, cleared by Enter, armed again after B from character select, and
+# cleared again by Enter.
+log_sequence = [
+  "[kuf-input] game waits for START",
+  "[kuf-input] game no longer waits for START",
+  "[kuf-input] game waits for START",
+  "[kuf-input] game no longer waits for START",
+]
+
+[format]
+width = 1280
+height = 720
+
+# Character select (1000 Kendal, 1100 Regnier, 1200 Kendal again) is checked against local references
+# (compare); here only that every capture is a real image.
+[[range]]
+name = "all"
+frames = [1, 100000]
+min_distinct = 300
+
+# The flame logo behind the menus is a movie; with real-time audio its frame follows the audio clock and can
+# shift by a frame between runs, so the reference comparison skips it (menu text and UI stay compared).
+[compare]
+ignore = [[400, 0, 880, 480]]

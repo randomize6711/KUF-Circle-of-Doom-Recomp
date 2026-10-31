@@ -1,0 +1,79 @@
+# The frame-rate settings survive a restart (M6D D5): a new process starts with the pc_settings.toml that
+# frame_rate_menu wrote (60 fps, world objects and effects not interpolated; ctest orders them). The game draws 60
+# frames per second from the first gameplay frame, without a command-line flag; the frame-rate page shows 60. FPS
+# Left: 30 (the original pacing again, at once); World Objects and Effects On. Back saves; gameplay at 30.
+
+[scenario]
+description = "Frame-rate settings loaded after a restart and used without command-line flags; changed back to 30"
+seconds = 205
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+pc_settings_from_run = "frame_rate_menu"
+args = ["--kuf_profile=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+200 log mark play_a
+@gameplay+210 down W
+@gameplay+510 log mark play_b
+@gameplay+520 up W
+@gameplay+680 press Escape
+@gameplay+780 press Down
+@gameplay+830 press Down
+@gameplay+880 press Down
+@gameplay+930 press Down
+@gameplay+1030 press Return
+@gameplay+1180 press Down
+@gameplay+1210 press Down
+@gameplay+1240 press Down
+@gameplay+1270 press Down
+@gameplay+1300 press Down
+@gameplay+1330 press Down
+@gameplay+1360 press Down
+@gameplay+1390 press Down
+@gameplay+1490 press Return
+@gameplay+1640 press Down
+@gameplay+1670 press Down
+@gameplay+1700 press Return
+@gameplay+1800 press Down
+@gameplay+1830 press Down
+@gameplay+1860 press Down
+@gameplay+1890 press Down
+@gameplay+1920 press Down
+@gameplay+1990 press Left
+@gameplay+2020 log mark at_30
+@gameplay+2320 press Down
+@gameplay+2350 press Down
+@gameplay+2410 press Left
+@gameplay+2440 press Down
+@gameplay+2470 press Down
+@gameplay+2500 press Left
+@gameplay+2530 capture advanced_on
+@gameplay+2590 press Escape
+@gameplay+2690 press Escape
+@gameplay+2790 press Escape
+@gameplay+2890 press Escape
+@gameplay+3090 log mark play_c
+@gameplay+3100 down W
+@gameplay+3400 log mark play_d
+@gameplay+3410 up W
+"""
+capture_frames = []
+expect_saves_unchanged = true
+pc_settings_expect = { "frame_rate.limit_fps" = 30, "frame_rate.interpolation" = true, "frame_rate.interpolate_objects" = true, "frame_rate.interpolate_animation" = true, "frame_rate.interpolate_effects" = true }
+log_expect = [
+    "[kuf-settings] loaded /run-data/user/pc_settings.toml",
+    "[kuf-settings] frame rate: 60 interpolation true objects false animation true effects false",
+    "[kuf-pacing] render-only frames: up to 60 frames per second between the game's 30 ticks",
+    "[kuf-present] camera and player interpolation between ticks: on, world objects: off, skeletal poses: on, effect clock: off",
+    "frame rate 60 -> 30 (original)",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+]
+log_absent = ["[kuf-pacing] frame rate from the command line"]
+
+[format]
+width = 1280
+height = 720

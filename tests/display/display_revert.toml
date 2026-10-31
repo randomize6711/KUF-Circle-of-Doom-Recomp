@@ -1,0 +1,102 @@
+# Apply without keeping (M6C), on the simulated monitor (Apply is the last row since the M7 UI polish: eleven Downs
+# from Mode, eleven Ups back): Windowed, Apply, then Back: the previous display
+# (borderless) comes back at once (the rows show it again); Windowed and Apply again, and wait: after 15 s it
+# reverts by itself. Nothing is saved (no
+# pc_settings.toml is written).
+
+[scenario]
+description = "Display page: Back and the 15 s timeout restore the previous display; nothing saved"
+seconds = 261
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_modes=3440x1440@100,3440x1440@60,2560x1080@60,1920x1080@60,1280x720@60"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 press Escape
+@gameplay+400 press Down
+@gameplay+450 press Down
+@gameplay+500 press Down
+@gameplay+550 press Down
+@gameplay+650 press Return
+@gameplay+800 press Down
+@gameplay+830 press Down
+@gameplay+860 press Down
+@gameplay+890 press Down
+@gameplay+920 press Down
+@gameplay+950 press Down
+@gameplay+980 press Down
+@gameplay+1010 press Down
+@gameplay+1110 press Return
+@gameplay+1230 press Down
+@gameplay+1260 press Down
+@gameplay+1290 press Return
+@gameplay+1760 capture display_page
+@gameplay+1790 press Left
+@gameplay+1820 press Down
+@gameplay+1850 press Down
+@gameplay+1880 press Down
+@gameplay+1910 press Down
+@gameplay+1940 press Down
+@gameplay+1970 press Down
+@gameplay+2000 press Down
+@gameplay+2030 press Down
+@gameplay+2060 press Down
+@gameplay+2090 press Down
+@gameplay+2120 press Down
+@gameplay+2150 press Return
+@gameplay+2250 capture keep
+@gameplay+2280 press Escape
+@gameplay+2380 capture reverted
+@gameplay+2410 log mark wait
+@gameplay+2420 press Up
+@gameplay+2450 press Up
+@gameplay+2480 press Up
+@gameplay+2510 press Up
+@gameplay+2540 press Up
+@gameplay+2570 press Up
+@gameplay+2600 press Up
+@gameplay+2630 press Up
+@gameplay+2660 press Up
+@gameplay+2690 press Up
+@gameplay+2720 press Up
+@gameplay+2750 press Left
+@gameplay+2780 press Down
+@gameplay+2810 press Down
+@gameplay+2840 press Down
+@gameplay+2870 press Down
+@gameplay+2900 press Down
+@gameplay+2930 press Down
+@gameplay+2960 press Down
+@gameplay+2990 press Down
+@gameplay+3020 press Down
+@gameplay+3050 press Down
+@gameplay+3080 press Down
+@gameplay+3110 press Return
+@gameplay+4330 log mark waited
+@gameplay+4340 press Up
+@gameplay+4430 capture after_timeout
+@gameplay+4460 press Escape
+@gameplay+4510 press Escape
+@gameplay+4560 press Escape
+@gameplay+4660 press Escape
+"""
+capture_frames = []
+expect_saves_unchanged = true
+pc_settings_absent = true
+log_sequence = [
+    "[kuf-pc-menu] display page",
+    "[kuf-pc-menu] display applied (windowed 2560 x 1080 on 'Simulated')",
+    "[kuf-display] display: borderless 3440 x 1440 on 'Simulated'",
+    "[kuf-pc-menu] display not kept (Back): back to the previous one",
+    "log mark wait",
+    "[kuf-pc-menu] display applied (windowed 2560 x 1080 on 'Simulated')",
+    "[kuf-display] display: borderless 3440 x 1440 on 'Simulated'",
+    "[kuf-pc-menu] display not kept within 15 s: back to the previous one",
+    "log mark waited",
+    "[kuf-pc-menu] PC Settings closed",
+]
+log_absent = ["display kept"]

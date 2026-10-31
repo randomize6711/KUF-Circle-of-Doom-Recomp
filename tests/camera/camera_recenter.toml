@@ -1,0 +1,90 @@
+# Modern camera with the keyboard's camera keys (I/J/K/L = right stick) and automatic recentring switched on for
+# this run (--kuf_pc_settings, as the PC Settings page would store it). CONTINUE from
+# build/m6-saves/celine-shadows-depths-1.
+#   I held 1 s: the view rises by 48.75 degrees (full deflection, 75 x 0.65 degrees per second)
+#   0.5 s after release it is still up (recentring waits 1 s for input to stop)
+#   3 s after release it is back at the game's default view
+#   L held 1 s: 75 degrees to the right
+
+[scenario]
+description = "Modern camera, keyboard camera keys, automatic recentring on"
+seconds = 110
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_trace_modern_camera=true", "--kuf_pc_settings=camera.auto_recenter=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 log mark start
+@gameplay+330 down I
+@gameplay+360 up I
+@gameplay+361 log mark released
+@gameplay+376 log mark half_second
+@gameplay+400 log mark one_and_a_half
+@gameplay+450 log mark three_seconds
+@gameplay+500 log mark before_turn
+@gameplay+530 down L
+@gameplay+560 up L
+@gameplay+590 log mark turned
+@gameplay+620 log mark end
+@gameplay+610 capture after_turn
+"""
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay", "[kuf-settings] overrides for this run: camera.auto_recenter=true"]
+
+[[scenario.log_value]]
+name = "start pitch"
+after = "log mark start"
+before = "down I"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+
+[[scenario.log_value]]
+name = "I held 1 s"
+after = "down I"
+before = "log mark released"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+which = "max"
+relative_to = "start pitch"
+min = 40.0
+max = 53.5
+
+[[scenario.log_value]]
+name = "0.5 s after release: still up"
+after = "log mark released"
+before = "log mark half_second"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+which = "min"
+relative_to = "start pitch"
+min = 40.0
+
+[[scenario.log_value]]
+name = "3 s after release: back to the default view"
+after = "log mark three_seconds"
+before = "log mark before_turn"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+relative_to = "start pitch"
+min = -1.5
+max = 1.5
+
+[[scenario.log_value]]
+name = "yaw before turning"
+after = "log mark three_seconds"
+before = "down L"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+
+[[scenario.log_value]]
+name = "L held 1 s"
+after = "log mark turned"
+before = "log mark end"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+relative_to = "yaw before turning"
+angle = true
+min = 68.0
+max = 82.0
+
+[format]
+width = 1280
+height = 720

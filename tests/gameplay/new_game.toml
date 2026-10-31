@@ -1,0 +1,140 @@
+# New game to free play with keyboard and mouse (tools/menu_test.py). Character selection, world loading,
+# gameplay initialisation (HUD), status screen, empty inventory, movement, mouse-look camera, pause and resume.
+# Everything after the world loads is anchored to the game's own state (@context#n+frames): loading and the
+# intro cutscene take a different time in every run. Rectangles are coordinates only, no image content.
+
+[scenario]
+description = "Kendal, Forest of Embracing, end tutorial, HUD, status/inventory, walk, mouse look, pause/resume"
+seconds = 150
+script = """
+500 tap Return
+700 tap Return
+850 tap Return
+1000 tap Return
+1250 tap Return
+1350 tap Return
+1500 tap Return
+1650 tap Return
+1800 repeat 60 until gameplay tap Return
+@menu#2+60 press Space
+@menu#2+130 tap Return
+@menu#2+400 capture free_play
+@menu#2+420 tap Tab
+@menu#2+500 capture status_start
+@menu#2+520 tap PageDown
+@menu#2+600 capture inventory_start
+@menu#2+620 tap Escape
+@menu#2+680 tap Escape
+@menu#2+760 capture before_walk
+@menu#2+770 down W
+@menu#2+890 up W
+@menu#2+900 capture after_walk
+@menu#2+960 look 5 0
+@menu#2+961 look 5 0
+@menu#2+962 look 5 0
+@menu#2+963 look 5 0
+@menu#2+964 look 5 0
+@menu#2+965 look 5 0
+@menu#2+966 look 5 0
+@menu#2+967 look 5 0
+@menu#2+968 look 5 0
+@menu#2+969 look 5 0
+@menu#2+970 look 5 0
+@menu#2+971 look 5 0
+@menu#2+972 look 5 0
+@menu#2+973 look 5 0
+@menu#2+974 look 5 0
+@menu#2+975 look 5 0
+@menu#2+976 look 5 0
+@menu#2+977 look 5 0
+@menu#2+978 look 5 0
+@menu#2+979 look 5 0
+@menu#2+980 look 5 0
+@menu#2+981 look 5 0
+@menu#2+982 look 5 0
+@menu#2+983 look 5 0
+@menu#2+984 look 5 0
+@menu#2+985 look 5 0
+@menu#2+986 look 5 0
+@menu#2+987 look 5 0
+@menu#2+988 look 5 0
+@menu#2+989 look 5 0
+@menu#2+975 capture look_before
+@menu#2+978 capture look_after
+@menu#2+1050 tap Escape
+@menu#2+1130 capture paused
+@menu#2+1150 tap Escape
+@menu#2+1230 capture resumed
+"""
+capture_frames = []
+log_expect = [
+  "[kuf-input] context: gameplay",
+  "[kuf-input] mouse look on: pointer captured",
+  "[kuf-input] mouse look off: pointer released",
+]
+
+[format]
+width = 1280
+height = 720
+
+# HUD after the tutorial: the red HP bar bottom left.
+[[region]]
+name = "HUD in free play"
+capture = "free_play"
+rect = [150, 570, 300, 640]
+metric = "red_minus_blue"
+mean = [8.0, 255.0]
+
+[[region]]
+name = "HUD after resuming from pause"
+capture = "resumed"
+rect = [150, 570, 300, 640]
+metric = "red_minus_blue"
+mean = [8.0, 255.0]
+
+# Status screen (Tab): the panel top right with HP/EXP/Gold text.
+[[region]]
+name = "status screen open"
+capture = "status_start"
+rect = [570, 92, 760, 184]
+min_std = 15.0
+
+# A new character's inventory is empty: no item lines.
+[[region]]
+name = "inventory empty at start"
+capture = "inventory_start"
+rect = [110, 140, 580, 320]
+max_std = 10.0
+
+# Walking for 4 seconds changes the view.
+[[region_diff]]
+name = "walking moved the character"
+a = "before_walk"
+b = "after_walk"
+rect = [0, 0, 1280, 560]
+min_mean_diff = 8.0
+
+# Mouse look right, 5 counts per frame for 30 frames; captured mid-turn 3 frames apart. With the M6B modern camera
+# (0.1 degrees per count) that is 1.5 degrees, about 30 px, the range this check was calibrated for in M5A (then
+# 20 px per frame through the stick emulation); 20 counts per frame turn 6 degrees in 3 frames, and when the
+# camera stands in foliage the near leaves' parallax makes the shift measurement ambiguous. The scene moves left.
+[[shift]]
+name = "mouse look turned the camera"
+a = "look_before"
+b = "look_after"
+direction = "left"
+min_px = 12
+
+# Escape in play opens the options menu (pause): its panel top left (Sleep, Change Regions, View Quests,
+# Controls, Settings, Quit).
+[[region_diff]]
+name = "pause menu opened"
+a = "free_play"
+b = "paused"
+rect = [120, 40, 500, 270]
+min_mean_diff = 20.0
+
+[[range]]
+name = "all captures are real images"
+frames = [1, 1000000]
+min_distinct = 300

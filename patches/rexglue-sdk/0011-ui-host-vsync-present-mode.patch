@@ -1,0 +1,35 @@
+UI (M7 UX fix 3): a host vertical sync choice. The Vulkan presenter picks the fastest present mode (immediate, then
+mailbox, FIFO relaxed, FIFO), which tears; --present_vsync=true makes it create FIFO swapchains (the display's
+refresh, no tearing). The game's own --vsync is unrelated: it sets the guest vblank rate. The choice applies when the
+swapchain is created; the game changes it at run time by setting the cvar and calling
+Presenter::OnSurfaceResizeFromUIThread on the UI thread (the resize path: the swapchain is retired and recreated, and
+a FIFO swapchain moves painting to the UI thread as before). Default false: unchanged behaviour.
+
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index 23645ef..0af58dc 100644
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -58,6 +58,11 @@ REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_mailbox, true, "UI/Vulkan",
+ REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_fifo_relaxed, true, "UI/Vulkan",
+                     "Allow FIFO relaxed present mode");
+ 
++REXCVAR_DEFINE_BOOL(present_vsync, false, "UI/Presenter",
++                    "Host vertical sync: present at the display's refresh (FIFO, no tearing); false: the modes above "
++                    "(immediate first). A change takes effect when the swapchain is recreated (a resize, or "
++                    "Presenter::OnSurfaceResizeFromUIThread)");
++
+ namespace rex {
+ namespace ui {
+ namespace vulkan {
+@@ -1381,7 +1386,10 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+   // interfering with GPU command processing, and also to allow tearing so
+   // variable refresh rate may be used where it's available.
+   // Note: If the priorities here are changes, update the cvar descriptions.
+-  if (REXCVAR_GET(vulkan_allow_present_mode_immediate) &&
++  if (REXCVAR_GET(present_vsync)) {
++    // Host vertical sync requested: the display's refresh, no tearing (always available).
++    swapchain_create_info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
++  } else if (REXCVAR_GET(vulkan_allow_present_mode_immediate) &&
+       std::find(present_modes.cbegin(), present_modes.cend(), VK_PRESENT_MODE_IMMEDIATE_KHR) !=
+           present_modes.cend()) {
+     // Allowing tearing to reduce latency, and possibly variable refresh rate

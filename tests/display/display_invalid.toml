@@ -1,0 +1,23 @@
+# Invalid display values and a disconnected monitor in pc_settings.toml (M6C): each bad value is logged and gets
+# its default (borderless at the desktop's size); the monitor that is not connected falls back to the primary one
+# without losing the saved name; the camera value and the unknown key are kept. Nothing is rewritten (no change in
+# the menu). Title screen only.
+
+[scenario]
+description = "Invalid display settings and a disconnected monitor: defaults, fallback, nothing lost"
+seconds = 45
+pc_settings_file = "tests/display/display_settings_invalid.toml.in"
+args = ["--kuf_display_modes=3440x1440@100,3440x1440@60,2560x1080@60,1920x1080@60,1280x720@60"]
+script = """
+600 capture title
+"""
+capture_frames = []
+pc_settings_expect = { "display.monitor" = "DP-9 (disconnected)", "display.mode" = "exclusive", "camera.distance_percent" = 150, "display.future_display_key" = "kept" }
+log_expect = [
+    "display.mode: invalid value (default used)",
+    "display.refresh_millihertz: invalid value (default used)",
+    "display.width: invalid value (default used)",
+    "display.width / display.height: only one is set (the desktop's size used)",
+    "[kuf-settings] display: borderless desktop size refresh desktop monitor 'DP-9 (disconnected)' widescreen true",
+    "[kuf-display] display: borderless 3440 x 1440 on 'Simulated' (the saved monitor is not connected)",
+]

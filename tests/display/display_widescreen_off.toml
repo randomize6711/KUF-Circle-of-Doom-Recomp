@@ -1,0 +1,59 @@
+# PC Settings > Widescreen Off on a 21:9 output (3440x1440): the game draws exactly as the original (16:9
+# projections, HUD where it was), and the presenter pillarboxes the 16:9 image.
+# CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only). The output is simulated with
+# --kuf_display_size (offscreen runs have no real display); the captures are the game's 1280x720 frame as the
+# presenter gets it before stretching it to the output (docs/DISPLAY.md), so the HUD box shows as a compressed
+# band and the regions below are in frame pixels.
+# Render 1x (the 1280x720 frame scaled to the output, as these checks are written for); the native rendering
+# of this shape is tested by the render_* scenarios.
+
+[scenario]
+description = "Widescreen off at 21:9: the original 16:9 image, pillarboxed"
+seconds = 120
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_size=3440x1440", "--kuf_trace_display=true", "--kuf_trace_projection=true", "--kuf_pc_settings=display.widescreen=false,display.render_scale=1"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+250 log mark hud
+@gameplay+300 capture hud
+@gameplay+400 press Escape
+@gameplay+500 capture pause
+@gameplay+530 mouse 1720 720 3440 1440
+@gameplay+540 mouse 420 720 3440 1440
+@gameplay+560 press Escape
+@gameplay+700 log mark end
+"""
+capture_frames = []
+expect_saves_unchanged = true
+log_expect = [
+    "[kuf-display] output 3440x1440 (21:9), drawn for aspect 1.7778",
+    "[kuf-display] projection from 821E9F74: fov 0.6000 aspect 1.7778 (kept)",
+    "[kuf-input-script] pointer at guest (640, 360)",
+    "[kuf-input-script] pointer outside the guest image",
+]
+
+# The gameplay projection's horizontal angle at this aspect (the game's own vertical 0.6 rad unless set).
+[[scenario.log_value]]
+name = "gameplay horizontal field of view"
+after = "log mark hud"
+pattern = 'projection: fov [0-9.]+ rad aspect 1.7778 .*horizontal ([0-9.]+) degrees'
+which = "max"
+min = 57.50
+max = 57.70
+
+[format]
+width = 1280
+height = 720
+
+# "Paused" (bottom left of the pause screen; at 16:9 its glyphs are at x 80-175, y 642-668).
+[[region]]
+name = "Paused is drawn in the HUD box"
+capture = "pause"
+rect = [70, 638, 185, 672]
+metric = "text"
+mean = [3.0, 255.0]

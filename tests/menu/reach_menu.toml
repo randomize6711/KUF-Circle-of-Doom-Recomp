@@ -1,0 +1,33 @@
+# Cold start to the main menu with the keyboard (ROADMAP M4: 10/10 cold starts). tools/menu_test.py
+# M7: the title list and SETTINGS as the game has them and controller prompts (--kuf_title_menu_rows=false,
+# --kuf_storage_row=true, --kuf_button_prompts=controller): the references show the original screens; the added rows
+# and the keyboard prompts are tested by title_rows.toml, pointer.toml and prompts_keyboard.toml.
+[scenario]
+description = "Cold start: Enter at Press START, Escape on the storage prompt, Down to SETTINGS"
+args = ["--kuf_title_menu_rows=false", "--kuf_storage_row=true", "--kuf_button_prompts=controller"]
+seconds = 32
+script = """
+500 tap Return
+700 tap Escape
+800 tap Down
+"""
+capture_frames = [790, 850]
+log_expect = ["[kuf-input] game waits for START", "[kuf-input] game no longer waits for START"]
+
+[format]
+width = 1280
+height = 720
+
+[[highlight]]
+name = "main menu"
+metric = "red_minus_blue"
+x = [440, 840]
+rows = [496, 524, 552, 580, 608, 636, 664]
+half_height = [12, 14]
+min_margin = 8.0
+expect = { "790" = 0, "850" = 3 }
+
+# The flame logo behind the menus is a movie; with real-time audio its frame follows the audio clock and can
+# shift by a frame between runs, so the reference comparison skips it (menu text and UI stay compared).
+[compare]
+ignore = [[400, 0, 880, 480]]

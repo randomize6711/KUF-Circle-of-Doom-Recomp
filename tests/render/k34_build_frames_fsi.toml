@@ -1,0 +1,32 @@
+# K34 regression (M6D D3b-0, docs/HIGH_FPS.md section 13): frames drawn without the HUD's draws, on the EDRAM-exact path (fsi, reference).
+# Render-only frames (--kuf_render_builds=1) with --kuf_render_build_hud=false draw the scene of a tick again
+# without its HUD (its entries released after the tick's own frame, as before D3b-1). The game's
+# depth-only passes then leave a 640-pitch 4x MSAA depth buffer at EDRAM tile 720 owning the whole EDRAM, the frame's
+# colour at tile 0 included, and the final resolve dumps it from there. Before SDK patch 0010 the host render target
+# path read those tiles outside the depth buffer: the frame was black. tests/render/k34_check.py compares the build
+# frames with the tick's own frame and with this scenario on the other path. CONTINUE from
+# build/m6-saves/celine-shadows-depths-1 (read only). Not a gameplay mode: the builds are a diagnostic.
+# The captures are at fixed ticks (gameplay starts at tick 1497-1504): the mist's and the vegetation's motion follows
+# the frames drawn since the start, so the two runs compare the same moment only at the same tick (with gameplay a
+# few ticks apart under load the fbo and fsi frames differed by 0.20 levels per tick of difference, 2026-10-28).
+
+[scenario]
+description = "K34: frames without the HUD's draws (render-only builds) on the EDRAM-exact path (fsi, reference)"
+seconds = 120
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--render_target_path_vulkan=fsi", "--kuf_render_builds=1", "--kuf_render_build_hud=false"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+1800 capture start
+1800 freeze 3 idle
+1900 capture after
+"""
+capture_frames = []
+expect_saves_unchanged = true
+log_expect = ["[kuf-pacing] D3a diagnostic --kuf_render_builds=1"]
+log_sequence = ["[kuf-input] context: gameplay", "tick 1800: 1800 capture start"]

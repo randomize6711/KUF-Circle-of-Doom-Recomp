@@ -1,0 +1,410 @@
+# Combat, enemy defeat, loot and inventory with keyboard and mouse, following the tutorial into its first
+# fight (tools/menu_test.py). The tutorial stays on (its route leads to the lizardmen; it also blocks the
+# status screen during its camera lesson, so the "before" readings are taken where the fight starts).
+# Outcomes come from the game's own screens, compared within the run: the status screen's EXP line and the
+# inventory list before and after the fight. Rectangles only, no image content.
+# The fight is real: damage, kills and drops vary between runs; the checks only need some of each. Drops are
+# rare at this level, so the fight lasts about three minutes and ends with a pick-up sweep around the spot
+# (a 2-minute fight without a sweep picked up nothing in two runs in a row on 2026-10-21). The 5 Small Red
+# Potions (Q) are drunk from +6300, one every 700 frames, so some are left for the end of the fight and the
+# sweep (K24: drunk from the start, the character died in 4 of 64 runs, all at +9740..+10400).
+
+# Native rendering (M6C follow-up): combat_loot on a simulated 2560x1440 output, where Render Native renders the
+# frame at 2x2 (2560x1440). The same script and checks as combat_loot.toml (the camera and the game do not depend on
+# the render resolution; the captures are reduced to 1280x720 for the image rules).
+
+# K24 (docs/KNOWN_ISSUES.md): which drops a death gets came from the seed it happened to meet, so a fight could drop
+# nothing (no gold, no item: the loot rule failed in about one run in ten). --kuf_test_drop_seed starts every dead
+# unit's drop decision from a known seed (0x370085B5): the game's own rolls, chances and tables decide, and a Red
+# Lizardman's death takes the gold path (8 gold, collected without a button). The fight itself still varies; the
+# rules below are unchanged. tests/gameplay/k24_check.py reads the decisions; gameplay.combat_loot_no_drops runs the
+# same with the decisions skipped and must fail the loot rule alone.
+
+[scenario]
+args = ["--kuf_display_size=2560x1440", "--kuf_test_drop_seed=922781109"]
+description = "Render Native 2560x1440: Tutorial route to the lizardmen, fight with potions, pick up loot, EXP gained, items in inventory"
+seconds = 660
+script = """
+500 tap Return
+700 tap Return
+850 tap Return
+1000 tap Return
+1250 tap Return
+1350 tap Return
+1500 tap Return
+1650 tap Return
+1800 repeat 60 until gameplay tap Return
+@menu#2+90 tap Return
+@menu#2+600 down W
+@menu#2+660 tap Return
+@menu#2+720 tap Return
+@menu#2+780 tap Return
+@menu#2+840 tap Return
+@menu#2+900 tap Return
+@menu#2+960 tap Return
+@menu#2+1020 tap Return
+@menu#2+1080 tap Return
+@menu#2+1140 tap Return
+@menu#2+1200 tap Return
+@menu#2+1260 tap Return
+@menu#2+1320 tap Return
+@menu#2+1380 tap Return
+@menu#2+1440 tap Return
+@menu#2+1500 tap Return
+@menu#2+1560 tap Return
+@menu#2+1620 tap Return
+@menu#2+1680 tap Return
+@menu#2+1740 tap Return
+@menu#2+1800 tap Return
+@menu#2+1860 tap Return
+@menu#2+1920 tap Return
+@menu#2+1980 tap Return
+@menu#2+2040 tap Return
+@menu#2+2100 tap Return
+@menu#2+2160 tap Return
+@menu#2+2220 tap Return
+@menu#2+2280 tap Return
+@menu#2+2340 tap Return
+@menu#2+2400 tap Return
+@menu#2+2460 tap Return
+@menu#2+2520 tap Return
+@menu#2+2580 tap Return
+@menu#2+2640 tap Return
+@menu#2+2700 tap Return
+@menu#2+2760 tap Return
+@menu#2+2820 tap Return
+@menu#2+2880 tap Return
+@menu#2+2940 tap Return
+@menu#2+3000 tap Return
+@menu#2+3060 tap Return
+@menu#2+3120 tap Return
+@menu#2+3180 tap Return
+@menu#2+3240 tap Return
+@menu#2+3300 tap Return
+@menu#2+3360 tap Return
+@menu#2+3420 tap Return
+@menu#2+3480 tap Return
+@menu#2+900 tap MouseMiddle
+@menu#2+1200 tap MouseMiddle
+@menu#2+1500 tap MouseMiddle
+@menu#2+1800 tap MouseMiddle
+@menu#2+2100 tap MouseMiddle
+@menu#2+2400 tap MouseMiddle
+@menu#2+2700 tap MouseMiddle
+@menu#2+3000 tap MouseMiddle
+@menu#2+3300 tap MouseMiddle
+@menu#2+3500 up W
+@menu#2+3510 tap Tab
+@menu#2+3590 capture status_before
+@menu#2+3600 tap PageDown
+@menu#2+3680 capture inventory_before
+@menu#2+3700 tap Escape
+@menu#2+3760 tap Escape
+@menu#2+3830 tap MouseRight
+@menu#2+3860 tap MouseLeft
+@menu#2+3890 tap E
+@menu#2+3920 tap MouseRight
+@menu#2+3950 tap MouseLeft
+@menu#2+3980 tap E
+@menu#2+4010 tap MouseRight
+@menu#2+4040 tap MouseLeft
+@menu#2+4070 tap E
+@menu#2+4100 tap MouseRight
+@menu#2+4130 tap MouseLeft
+@menu#2+4160 tap E
+@menu#2+4190 tap MouseRight
+@menu#2+4220 tap MouseLeft
+@menu#2+4250 tap E
+@menu#2+4280 tap MouseRight
+@menu#2+4310 tap MouseLeft
+@menu#2+4340 tap E
+@menu#2+4370 tap MouseRight
+@menu#2+4400 tap MouseLeft
+@menu#2+4430 tap E
+@menu#2+4460 tap MouseRight
+@menu#2+4490 tap MouseLeft
+@menu#2+4520 tap E
+@menu#2+4550 tap MouseRight
+@menu#2+4580 tap MouseLeft
+@menu#2+4610 tap E
+@menu#2+4640 tap MouseRight
+@menu#2+4670 tap MouseLeft
+@menu#2+4700 tap E
+@menu#2+4730 tap MouseRight
+@menu#2+4760 tap MouseLeft
+@menu#2+4790 tap E
+@menu#2+4820 tap MouseRight
+@menu#2+4850 tap MouseLeft
+@menu#2+4880 tap E
+@menu#2+4910 tap MouseRight
+@menu#2+4940 tap MouseLeft
+@menu#2+4970 tap E
+@menu#2+5000 tap MouseRight
+@menu#2+5030 tap MouseLeft
+@menu#2+5060 tap E
+@menu#2+5090 tap MouseRight
+@menu#2+5120 tap MouseLeft
+@menu#2+5150 tap E
+@menu#2+5180 tap MouseRight
+@menu#2+5210 tap MouseLeft
+@menu#2+5240 tap E
+@menu#2+5270 tap MouseRight
+@menu#2+5300 tap MouseLeft
+@menu#2+5330 tap E
+@menu#2+5360 tap MouseRight
+@menu#2+5390 tap MouseLeft
+@menu#2+5420 tap E
+@menu#2+5450 tap MouseRight
+@menu#2+5480 tap MouseLeft
+@menu#2+5510 tap E
+@menu#2+5540 tap MouseRight
+@menu#2+5570 tap MouseLeft
+@menu#2+5600 tap E
+@menu#2+5630 tap MouseRight
+@menu#2+5660 tap MouseLeft
+@menu#2+5690 tap E
+@menu#2+5720 tap MouseRight
+@menu#2+5750 tap MouseLeft
+@menu#2+5780 tap E
+@menu#2+5810 tap MouseRight
+@menu#2+5840 tap MouseLeft
+@menu#2+5870 tap E
+@menu#2+5900 tap MouseRight
+@menu#2+5930 tap MouseLeft
+@menu#2+5960 tap E
+@menu#2+5990 tap MouseRight
+@menu#2+6020 tap MouseLeft
+@menu#2+6050 tap E
+@menu#2+6080 tap MouseRight
+@menu#2+6110 tap MouseLeft
+@menu#2+6140 tap E
+@menu#2+6170 tap MouseRight
+@menu#2+6200 tap MouseLeft
+@menu#2+6230 tap E
+@menu#2+6260 tap MouseRight
+@menu#2+6290 tap MouseLeft
+@menu#2+6300 tap Q
+@menu#2+6320 tap E
+@menu#2+6350 tap MouseRight
+@menu#2+6380 tap MouseLeft
+@menu#2+6410 tap E
+@menu#2+6440 tap MouseRight
+@menu#2+6470 tap MouseLeft
+@menu#2+6500 tap E
+@menu#2+6530 tap MouseRight
+@menu#2+6560 tap MouseLeft
+@menu#2+6590 tap E
+@menu#2+6620 tap MouseRight
+@menu#2+6650 tap MouseLeft
+@menu#2+6680 tap E
+@menu#2+6710 tap MouseRight
+@menu#2+6740 tap MouseLeft
+@menu#2+6770 tap E
+@menu#2+6800 tap MouseRight
+@menu#2+6830 tap MouseLeft
+@menu#2+6860 tap E
+@menu#2+6890 tap MouseRight
+@menu#2+6920 tap MouseLeft
+@menu#2+6950 tap E
+@menu#2+6980 tap MouseRight
+@menu#2+7000 tap Q
+@menu#2+7010 tap MouseLeft
+@menu#2+7040 tap E
+@menu#2+7070 tap MouseRight
+@menu#2+7100 tap MouseLeft
+@menu#2+7130 tap E
+@menu#2+7160 tap MouseRight
+@menu#2+7190 tap MouseLeft
+@menu#2+7220 tap E
+@menu#2+7250 tap MouseRight
+@menu#2+7280 tap MouseLeft
+@menu#2+7310 tap MouseRight
+@menu#2+7340 tap MouseLeft
+@menu#2+7370 tap E
+@menu#2+7400 tap MouseRight
+@menu#2+7430 tap MouseLeft
+@menu#2+7460 tap E
+@menu#2+7490 tap MouseRight
+@menu#2+7520 tap MouseLeft
+@menu#2+7550 tap E
+@menu#2+7580 tap MouseRight
+@menu#2+7610 tap MouseLeft
+@menu#2+7640 tap E
+@menu#2+7670 tap MouseRight
+@menu#2+7700 tap MouseLeft
+@menu#2+7700 tap Q
+@menu#2+7730 tap E
+@menu#2+7760 tap MouseRight
+@menu#2+7790 tap MouseLeft
+@menu#2+7820 tap E
+@menu#2+7850 tap MouseRight
+@menu#2+7880 tap MouseLeft
+@menu#2+7910 tap E
+@menu#2+7940 tap MouseRight
+@menu#2+7970 tap MouseLeft
+@menu#2+8000 tap E
+@menu#2+8030 tap MouseRight
+@menu#2+8060 tap MouseLeft
+@menu#2+8090 tap E
+@menu#2+8120 tap MouseRight
+@menu#2+8150 tap MouseLeft
+@menu#2+8180 tap E
+@menu#2+8210 tap MouseRight
+@menu#2+8240 tap MouseLeft
+@menu#2+8270 tap E
+@menu#2+8300 tap MouseRight
+@menu#2+8330 tap MouseLeft
+@menu#2+8360 tap E
+@menu#2+8390 tap MouseRight
+@menu#2+8400 tap Q
+@menu#2+8420 tap MouseLeft
+@menu#2+8450 tap E
+@menu#2+8480 tap MouseRight
+@menu#2+8510 tap MouseLeft
+@menu#2+8540 tap E
+@menu#2+8570 tap MouseRight
+@menu#2+8600 tap MouseLeft
+@menu#2+8630 tap E
+@menu#2+8660 tap MouseRight
+@menu#2+8690 tap MouseLeft
+@menu#2+8720 tap E
+@menu#2+8750 tap MouseRight
+@menu#2+8780 tap MouseLeft
+@menu#2+8810 tap E
+@menu#2+8840 tap MouseRight
+@menu#2+8870 tap MouseLeft
+@menu#2+8900 tap E
+@menu#2+8930 tap MouseRight
+@menu#2+8960 tap MouseLeft
+@menu#2+8990 tap E
+@menu#2+9020 tap MouseRight
+@menu#2+9050 tap MouseLeft
+@menu#2+9080 tap E
+@menu#2+9100 tap Q
+@menu#2+9110 tap MouseRight
+@menu#2+9140 tap MouseLeft
+@menu#2+9170 tap E
+@menu#2+9200 tap MouseRight
+@menu#2+9230 tap MouseLeft
+@menu#2+9260 tap E
+@menu#2+9290 tap MouseRight
+@menu#2+9320 tap MouseLeft
+@menu#2+9350 tap E
+@menu#2+9380 tap MouseRight
+@menu#2+9410 tap MouseLeft
+@menu#2+9440 tap E
+@menu#2+9470 tap MouseRight
+@menu#2+9500 tap MouseLeft
+@menu#2+9530 tap E
+@menu#2+9560 tap MouseRight
+@menu#2+9590 tap MouseLeft
+@menu#2+9620 tap E
+@menu#2+9650 tap MouseRight
+@menu#2+9680 tap MouseLeft
+@menu#2+9710 tap E
+@menu#2+9740 tap MouseRight
+@menu#2+9770 tap MouseLeft
+@menu#2+9800 tap E
+@menu#2+9800 down W
+@menu#2+9800 tap Q
+@menu#2+9810 tap E
+@menu#2+9825 tap E
+@menu#2+9840 tap E
+@menu#2+9855 tap E
+@menu#2+9845 up W
+@menu#2+9860 down D
+@menu#2+9870 tap E
+@menu#2+9885 tap E
+@menu#2+9900 tap E
+@menu#2+9915 tap E
+@menu#2+9905 up D
+@menu#2+9920 down S
+@menu#2+9930 tap E
+@menu#2+9945 tap E
+@menu#2+9960 tap E
+@menu#2+9975 tap E
+@menu#2+9965 up S
+@menu#2+9980 down S
+@menu#2+9990 tap E
+@menu#2+10005 tap E
+@menu#2+10020 tap E
+@menu#2+10035 tap E
+@menu#2+10025 up S
+@menu#2+10040 down A
+@menu#2+10050 tap E
+@menu#2+10065 tap E
+@menu#2+10080 tap E
+@menu#2+10095 tap E
+@menu#2+10085 up A
+@menu#2+10100 down A
+@menu#2+10110 tap E
+@menu#2+10125 tap E
+@menu#2+10140 tap E
+@menu#2+10155 tap E
+@menu#2+10145 up A
+@menu#2+10160 down W
+@menu#2+10170 tap E
+@menu#2+10185 tap E
+@menu#2+10200 tap E
+@menu#2+10215 tap E
+@menu#2+10205 up W
+@menu#2+10220 down W
+@menu#2+10230 tap E
+@menu#2+10245 tap E
+@menu#2+10260 tap E
+@menu#2+10275 tap E
+@menu#2+10265 up W
+@menu#2+10300 tap Q
+@menu#2+10400 tap Tab
+@menu#2+10480 capture status_after
+@menu#2+10500 tap PageDown
+@menu#2+10580 capture inventory_after
+"""
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay"]
+# The status screen opens after the fight (the Tab enters a menu before the capture): if the character died
+# (K24, "Game Over"), the Tab does nothing and the region_diff rules below would compare the Game Over
+# screen with the status screen, which differs everywhere and passed them (seen in 3 runs).
+log_sequence = ["@menu#2+10400 tap Tab", "[kuf-input] context: menu", "@menu#2+10480 capture status_after"]
+
+[format]
+render_scale = [2, 2]
+guest_coordinates = true
+
+[[region]]
+name = "status screen before the fight"
+capture = "status_before"
+rect = [570, 92, 760, 184]
+min_std = 15.0
+
+# EXP 0/100 -> EXP n/100 (enemies defeated).
+[[region_diff]]
+name = "EXP gained"
+a = "status_before"
+b = "status_after"
+rect = [570, 152, 760, 184]
+min_mean_diff = 3.0
+
+# Loot: the Gold number changed (glyph pixels only; measured 0.09 unchanged, >= 2.9 for 100 -> 109), or items
+# are listed. Either alone is legitimate: gold may not drop, and potions picked up can be used up by the Q
+# presses during the fight (seen in a run: Gold 100 -> 109, inventory empty).
+[[region_diff]]
+name = "gold picked up"
+a = "status_before"
+b = "status_after"
+rect = [910, 152, 1000, 184]
+metric = "text"
+min_mean_diff = 1.0
+any_of = "loot"
+
+[[region]]
+name = "items in the inventory after the fight"
+capture = "inventory_after"
+rect = [110, 140, 580, 320]
+min_std = 12.0
+any_of = "loot"
+
+[[range]]
+name = "all captures are real images"
+frames = [1, 1000000]
+min_distinct = 300

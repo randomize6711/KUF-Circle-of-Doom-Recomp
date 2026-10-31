@@ -1,0 +1,27 @@
+# A pc_settings.toml with invalid values (M6B): each invalid value falls back to its default with a warning,
+# the valid ones are used, the game starts normally, and the file is left as it is (nothing changed in game).
+
+[scenario]
+description = "pc_settings.toml with invalid values: defaults for those, the rest used"
+seconds = 45
+pc_settings_file = "tests/settings/invalid_pc_settings.toml.in"
+script = """
+500 tap Return
+700 press Return
+900 capture main_menu
+"""
+capture_frames = []
+pc_settings_expect = { "camera.modern_camera" = false, "camera.vertical_range_degrees" = 90, "mouse.sensitivity_vertical" = 7 }
+log_expect = [
+    "[kuf-settings] loaded /run-data/user/pc_settings.toml",
+    "camera.vertical_range_degrees: invalid value (default used)",
+    "camera.auto_recenter: invalid value (default used)",
+    "mouse.sensitivity_horizontal: invalid value (default used)",
+    "controller.camera_deadzone_percent: invalid value (default used)",
+    "[kuf-settings] camera: modern false range 85 recenter false mouse 4/7 invert false stick 3 deadzone 25%",
+    "[kuf-input] context: menu",
+]
+
+[format]
+width = 1280
+height = 720

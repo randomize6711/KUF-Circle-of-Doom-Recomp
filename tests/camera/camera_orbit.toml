@@ -1,0 +1,362 @@
+# The modern camera's vertical orbit (M6B correction), measured every frame (--kuf_trace_camera_orbit: the
+# rendered camera after the game's collision against the pivot, the game's camera target on the character).
+# CONTINUE from build/m6-saves/celine-shadows-depths-1. Slow sweeps (mouse, 10 counts = 1 degree per frame) from
+# the default view up to the upper limit and down to the lower limit and back; then fast ones (the whole range
+# in a few frames); then the right stick held up and down (controller).
+# Checks per segment (every frame): the camera stays aimed at the pivot; it follows the requested orbit
+# exactly (off orbit: the rendered eye against the orbit's eye; the game's position smoothing once cut a chord
+# here); slow moves are continuous (eye movement per frame and its change); the limits are reached; the eye
+# goes below the pivot when looking up but stays above the ground (30 units over the character's feet); the
+# camera never comes close to the character.
+
+[scenario]
+description = "Modern camera vertical orbit: continuity, aim at the character, height, collision, slow and fast"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_trace_camera_orbit=true", "--kuf_input_script_pad=xbox360"]
+script_file = "camera_orbit.kufscript"
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay"]
+
+[[scenario.log_value]]
+name = "slow_up: aim off the pivot"
+after = "log mark slow_up"
+before = "log mark top_slow"
+pattern = 'aim off pivot ([0-9.]+) deg'
+which = "max"
+max = 0.5
+
+[[scenario.log_value]]
+name = "slow_up: off the orbit"
+after = "log mark slow_up"
+before = "log mark top_slow"
+pattern = 'off orbit ([0-9.]+),'
+which = "max"
+max = 1.0
+
+[[scenario.log_value]]
+name = "slow_up: closest to the pivot"
+after = "log mark slow_up"
+before = "log mark top_slow"
+pattern = 'orbit: pitch -?[0-9.]+ deg, distance ([0-9.]+),'
+which = "min"
+min = 140.0
+
+[[scenario.log_value]]
+name = "slow_up: lowest eye above the feet"
+after = "log mark slow_up"
+before = "log mark top_slow"
+pattern = 'eye above feet (-?[0-9.]+),'
+which = "min"
+min = 25.0
+
+[[scenario.log_value]]
+name = "slow_down: aim off the pivot"
+after = "log mark slow_down"
+before = "log mark bottom_slow"
+pattern = 'aim off pivot ([0-9.]+) deg'
+which = "max"
+max = 0.5
+
+[[scenario.log_value]]
+name = "slow_down: off the orbit"
+after = "log mark slow_down"
+before = "log mark bottom_slow"
+pattern = 'off orbit ([0-9.]+),'
+which = "max"
+max = 1.0
+
+[[scenario.log_value]]
+name = "slow_down: closest to the pivot"
+after = "log mark slow_down"
+before = "log mark bottom_slow"
+pattern = 'orbit: pitch -?[0-9.]+ deg, distance ([0-9.]+),'
+which = "min"
+min = 140.0
+
+[[scenario.log_value]]
+name = "slow_down: lowest eye above the feet"
+after = "log mark slow_down"
+before = "log mark bottom_slow"
+pattern = 'eye above feet (-?[0-9.]+),'
+which = "min"
+min = 25.0
+
+[[scenario.log_value]]
+name = "bottom_slow: aim off the pivot"
+after = "log mark bottom_slow"
+before = "log mark level"
+pattern = 'aim off pivot ([0-9.]+) deg'
+which = "max"
+max = 0.5
+
+[[scenario.log_value]]
+name = "bottom_slow: off the orbit"
+after = "log mark bottom_slow"
+before = "log mark level"
+pattern = 'off orbit ([0-9.]+),'
+which = "max"
+max = 1.0
+
+[[scenario.log_value]]
+name = "bottom_slow: closest to the pivot"
+after = "log mark bottom_slow"
+before = "log mark level"
+pattern = 'orbit: pitch -?[0-9.]+ deg, distance ([0-9.]+),'
+which = "min"
+min = 140.0
+
+[[scenario.log_value]]
+name = "bottom_slow: lowest eye above the feet"
+after = "log mark bottom_slow"
+before = "log mark level"
+pattern = 'eye above feet (-?[0-9.]+),'
+which = "min"
+min = 25.0
+
+[[scenario.log_value]]
+name = "level: aim off the pivot"
+after = "log mark level"
+before = "log mark fast"
+pattern = 'aim off pivot ([0-9.]+) deg'
+which = "max"
+max = 0.5
+
+[[scenario.log_value]]
+name = "level: off the orbit"
+after = "log mark level"
+before = "log mark fast"
+pattern = 'off orbit ([0-9.]+),'
+which = "max"
+max = 1.0
+
+[[scenario.log_value]]
+name = "level: closest to the pivot"
+after = "log mark level"
+before = "log mark fast"
+pattern = 'orbit: pitch -?[0-9.]+ deg, distance ([0-9.]+),'
+which = "min"
+min = 140.0
+
+[[scenario.log_value]]
+name = "level: lowest eye above the feet"
+after = "log mark level"
+before = "log mark fast"
+pattern = 'eye above feet (-?[0-9.]+),'
+which = "min"
+min = 25.0
+
+[[scenario.log_value]]
+name = "fast: aim off the pivot"
+after = "log mark fast"
+before = "log mark stick"
+pattern = 'aim off pivot ([0-9.]+) deg'
+which = "max"
+max = 0.5
+
+[[scenario.log_value]]
+name = "fast: off the orbit"
+after = "log mark fast"
+before = "log mark stick"
+pattern = 'off orbit ([0-9.]+),'
+which = "max"
+max = 1.0
+
+[[scenario.log_value]]
+name = "fast: closest to the pivot"
+after = "log mark fast"
+before = "log mark stick"
+pattern = 'orbit: pitch -?[0-9.]+ deg, distance ([0-9.]+),'
+which = "min"
+min = 140.0
+
+[[scenario.log_value]]
+name = "fast: lowest eye above the feet"
+after = "log mark fast"
+before = "log mark stick"
+pattern = 'eye above feet (-?[0-9.]+),'
+which = "min"
+min = 25.0
+
+[[scenario.log_value]]
+name = "stick: aim off the pivot"
+after = "log mark stick"
+before = "log mark end"
+pattern = 'aim off pivot ([0-9.]+) deg'
+which = "max"
+max = 0.5
+
+[[scenario.log_value]]
+name = "stick: off the orbit"
+after = "log mark stick"
+before = "log mark end"
+pattern = 'off orbit ([0-9.]+),'
+which = "max"
+max = 1.0
+
+[[scenario.log_value]]
+name = "stick: closest to the pivot"
+after = "log mark stick"
+before = "log mark end"
+pattern = 'orbit: pitch -?[0-9.]+ deg, distance ([0-9.]+),'
+which = "min"
+min = 140.0
+
+[[scenario.log_value]]
+name = "stick: lowest eye above the feet"
+after = "log mark stick"
+before = "log mark end"
+pattern = 'eye above feet (-?[0-9.]+),'
+which = "min"
+min = 25.0
+
+[[scenario.log_value]]
+name = "slow_up: largest eye step"
+after = "log mark slow_up"
+before = "log mark top_slow"
+pattern = 'step ([0-9.]+),'
+which = "max"
+max = 45.0
+
+[[scenario.log_value]]
+name = "slow_up: largest step change"
+after = "log mark slow_up"
+before = "log mark top_slow"
+pattern = 'jerk ([0-9.]+),'
+which = "max"
+max = 15.0
+
+[[scenario.log_value]]
+name = "slow_down: largest eye step"
+after = "log mark slow_down"
+before = "log mark bottom_slow"
+pattern = 'step ([0-9.]+),'
+which = "max"
+max = 45.0
+
+[[scenario.log_value]]
+name = "slow_down: largest step change"
+after = "log mark slow_down"
+before = "log mark bottom_slow"
+pattern = 'jerk ([0-9.]+),'
+which = "max"
+max = 15.0
+
+[[scenario.log_value]]
+name = "bottom_slow: largest eye step"
+after = "log mark bottom_slow"
+before = "log mark level"
+pattern = 'step ([0-9.]+),'
+which = "max"
+max = 45.0
+
+[[scenario.log_value]]
+name = "bottom_slow: largest step change"
+after = "log mark bottom_slow"
+before = "log mark level"
+pattern = 'jerk ([0-9.]+),'
+which = "max"
+max = 15.0
+
+[[scenario.log_value]]
+name = "stick: largest eye step"
+after = "log mark stick"
+before = "log mark end"
+pattern = 'step ([0-9.]+),'
+which = "max"
+# The stick turns up to 1.7 degrees per frame; sliding in along the ground that is up to 60 units (the distance
+# no longer shrinks while the view is pitched: the collision's feedback is made in the game's terms).
+# Measured (M6B final verification): the largest step, 50.3, is where the eye meets the ground at the lower
+# limit: 19.1 units of it the turn itself (as before: 15-20) and 46.7 the game's ground slide pulling the eye in.
+# The approved orbit before the distance setting slid from 637 units (its distance had crept in while pitched)
+# and measured 37.3 under the bound of 45; at the game's own 707 units the same slide is longer per frame. The
+# bound keeps the same margin (60 / 50.3 as 45 / 37.3); a snap of the eye (tens to hundreds of units in one
+# frame) still fails it (tests/tools/test_camera_checks.py: a 75-unit jump).
+max = 60.0
+
+[[scenario.log_value]]
+name = "stick: largest step change"
+after = "log mark stick"
+before = "log mark end"
+pattern = 'jerk ([0-9.]+),'
+which = "max"
+# The script moves the stick from rest to full deflection, and releases it, in one frame (once while the camera
+# slides in along the ground at 40 units per frame): the eye starts and stops with the input. Bounded by the
+# largest step, so only a jump beyond a stop fails (the mouse sweeps above keep the tight bound).
+max = 60.0
+
+[[scenario.log_value]]
+name = "upper limit"
+after = "log mark top_slow"
+before = "log mark slow_down"
+pattern = 'orbit: pitch (-?[0-9.]+) deg'
+which = "min"
+min = 84.5
+max = 85.01
+
+[[scenario.log_value]]
+name = "upper limit: eye below the pivot"
+after = "log mark top_slow"
+before = "log mark slow_down"
+pattern = 'eye above feet (-?[0-9.]+),'
+which = "max"
+max = 60.0
+
+[[scenario.log_value]]
+name = "lower limit"
+after = "log mark bottom_slow"
+before = "log mark level"
+pattern = 'orbit: pitch (-?[0-9.]+) deg'
+which = "min"
+min = -85.01
+max = -84.5
+
+[[scenario.log_value]]
+name = "fast: upper limit reached"
+after = "log mark fast"
+before = "log mark stick"
+pattern = 'orbit: pitch (-?[0-9.]+) deg'
+which = "max"
+min = 84.5
+max = 85.01
+
+[[scenario.log_value]]
+name = "fast: lower limit reached"
+after = "log mark fast"
+before = "log mark stick"
+pattern = 'orbit: pitch (-?[0-9.]+) deg'
+which = "min"
+min = -85.01
+max = -84.5
+
+[[scenario.log_value]]
+name = "stick: down to the limit"
+after = "log mark stick"
+before = "log mark end"
+pattern = 'orbit: pitch (-?[0-9.]+) deg'
+which = "min"
+min = -85.01
+max = -84.5
+
+[[scenario.log_value]]
+name = "stick: up again"
+after = "log mark stick"
+before = "log mark end"
+pattern = 'orbit: pitch (-?[0-9.]+) deg'
+which = "last"
+min = 5.0
+max = 40.0
+
+[format]
+width = 1280
+height = 720
+
+# K38: every scripted look and stick change reaches exactly one game tick (the camera's per-tick trace: one line
+# per tick between items one tick apart). Before the fix the script applied its items at presents, and a tick
+# could see two items or none.
+[[scenario.input_ticks]]
+name = "scripted camera input"
+after = "log mark slow_up"
+before = "log mark end"
+item = ' look |pad axis'
+update = '\[kuf-cam\] orbit:'

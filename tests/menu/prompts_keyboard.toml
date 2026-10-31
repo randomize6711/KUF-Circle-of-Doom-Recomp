@@ -1,0 +1,32 @@
+# Button prompts for the device in use (M7 feature 6, docs/INPUT.md "Button prompts", src/runtime/prompt_text.cpp).
+# No controller at first: the title SETTINGS' help shows the keyboard's keys in place of the controller icons
+# (--kuf_trace_prompts logs each text so given). A virtual pad then connects and is used (D-pad down): prompts switch
+# to the controller's icons for texts looked up from then on (the next move's help).
+
+[scenario]
+description = "Button prompts: keyboard keys without a controller, icons once a controller is used"
+seconds = 75
+args = ["--kuf_input_script_pad=xbox360", "--kuf_trace_prompts=true"]
+script = """
+500 tap Return
+700 tap Escape
+800 press Down
+900 press Return
+1050 capture settings_keyboard
+1100 pad connect
+1200 pad press down
+1300 pad press down
+1400 capture settings_controller
+1450 pad press b
+1550 capture title_controller
+"""
+capture_frames = []
+log_sequence = [
+    "[kuf-input] button prompts: keyboard",
+    "[kuf-input] keyboard prompt:",
+    "[kuf-input] button prompts: controller",
+]
+
+[format]
+width = 1280
+height = 720

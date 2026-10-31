@@ -1,0 +1,110 @@
+# The camera's distance and field of view (M6B final settings; the Camera page of the categories, M7 feature 3),
+# in-game with the keyboard: CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only; the run gets a copy),
+# options menu (Escape), Settings, Down to PC Settings, Return: the categories; Down to Camera, Return (the labels show
+# the values: Distance 100%, Field of View 58). Distance +3 (130%), Down, Field of View +4 (Original -> 60 -> 65 -> 70
+# -> 75); Down three times to Modern Camera, Down does nothing. Back (Camera selected), Down to Display, Return (the
+# display page; tests/display covers it), Back, Up to Camera, Return: the changed values shown. Back, Back saves and
+# returns to the Settings page with its own labels. Back, Back: gameplay with the new camera: the orbit distance 130 %
+# of the game's (requested 919 units) and the projection 75 degrees horizontally (vertical 0.8149 rad at the screen's
+# 16:9). The next run (pc_settings_view_persist) starts from this run's pc_settings.toml.
+
+[scenario]
+description = "PC page 2: scrolling, Camera Distance and Field of View sliders, applied to the camera, saved"
+seconds = 200
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_trace_modern_camera=true", "--kuf_trace_projection=true", "--kuf_trace_camera_orbit=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+250 log mark before_menu
+@gameplay+300 press Escape
+@gameplay+400 press Down
+@gameplay+450 press Down
+@gameplay+500 press Down
+@gameplay+550 press Down
+@gameplay+650 press Return
+@gameplay+800 press Down
+@gameplay+830 press Down
+@gameplay+860 press Down
+@gameplay+890 press Down
+@gameplay+920 press Down
+@gameplay+950 press Down
+@gameplay+980 press Down
+@gameplay+1010 press Down
+@gameplay+1110 press Return
+@gameplay+1200 capture categories
+@gameplay+1230 press Down
+@gameplay+1260 press Return
+@gameplay+1330 capture camera_defaults
+@gameplay+1360 press Right
+@gameplay+1390 press Right
+@gameplay+1420 press Right
+@gameplay+1450 press Down
+@gameplay+1480 press Right
+@gameplay+1510 press Right
+@gameplay+1540 press Right
+@gameplay+1570 press Right
+@gameplay+1640 capture camera_changed
+@gameplay+1670 press Down
+@gameplay+1700 press Down
+@gameplay+1730 press Down
+@gameplay+1760 press Down
+@gameplay+1830 capture camera_last_row
+@gameplay+1860 press Escape
+@gameplay+1890 press Down
+@gameplay+1920 press Return
+@gameplay+2010 capture display_page
+@gameplay+2040 press Escape
+@gameplay+2070 press Up
+@gameplay+2100 press Return
+@gameplay+2170 capture camera_again
+@gameplay+2200 press Escape
+@gameplay+2230 press Escape
+@gameplay+2320 capture settings_page
+@gameplay+2350 press Escape
+@gameplay+2440 press Escape
+@gameplay+2590 log mark after_menu
+@gameplay+2640 capture gameplay_view
+@gameplay+2840 log mark end
+"""
+capture_frames = []
+expect_saves_unchanged = true
+pc_settings_expect = { "camera.distance_percent" = 130, "camera.field_of_view_degrees" = 75, "camera.modern_camera" = true, "mouse.sensitivity_horizontal" = 4, "controller.camera_sensitivity" = 5 }
+log_expect = [
+    "[kuf-input] context: gameplay",
+    "[kuf-settings] camera: modern true range 85 recenter false mouse 4/4 invert false stick 5 deadzone 25% distance 100% field of view original",
+    "[kuf-cam] field of view: key 0.6000 rad, used 0.8149 rad (46.69 degrees vertical, 75.00 horizontal at 16:9), setting 75",
+    "[kuf-cam] projection: fov 0.8149 rad aspect 1.7778",
+]
+log_sequence = [
+    "[kuf-pc-menu] PC Settings opened",
+    "[kuf-pc-menu] display page",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+    "[kuf-pc-menu] PC Settings closed",
+]
+
+# The camera before (the game's own distance) and after (130 %): the orbit's requested distance.
+[[scenario.log_value]]
+name = "distance before"
+after = "log mark before_menu"
+before = "press Escape"
+pattern = 'orbit: .*requested pitch -?[0-9.]+ distance ([0-9.]+)'
+min = 690.0
+max = 720.0
+
+[[scenario.log_value]]
+name = "distance after (130 %)"
+after = "log mark after_menu"
+before = "log mark end"
+pattern = 'orbit: .*requested pitch -?[0-9.]+ distance ([0-9.]+)'
+relative_to = "distance before"
+min = 205.0
+max = 220.0
+
+[format]
+width = 1280
+height = 720

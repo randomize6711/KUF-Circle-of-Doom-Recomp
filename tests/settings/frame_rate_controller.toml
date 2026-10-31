@@ -1,0 +1,71 @@
+# The frame-rate page with a controller (M6D D5): an SDL virtual Xbox 360 pad, as a player's. CONTINUE from the
+# Shadow Depths fixture; Back opens the options menu, D-pad to Settings, A, D-pad to PC Settings, A, D-pad down to
+# Display, A, D-pad down five times to FPS (M7 categories, UX fix 3). D-pad right three times: 120; D-pad down, A: Interpolation Off (A steps the value);
+# D-pad down, A: World Objects Off. B four times saves and returns to the game, which draws up to 120 frames
+# per second, each a copy of its tick.
+
+[scenario]
+description = "Frame-rate page with a controller: D-pad, A and B"
+seconds = 194
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_input_script_pad=xbox360", "--kuf_profile=true"]
+script = """
+100 pad connect
+500 pad press start
+700 pad press a
+850 pad press a
+1000 pad press down
+1100 pad press a
+1300 repeat 60 until gameplay pad press a
+@gameplay+300 pad press back
+@gameplay+400 pad press down
+@gameplay+450 pad press down
+@gameplay+500 pad press down
+@gameplay+550 pad press down
+@gameplay+650 pad press a
+@gameplay+800 pad press down
+@gameplay+830 pad press down
+@gameplay+860 pad press down
+@gameplay+890 pad press down
+@gameplay+920 pad press down
+@gameplay+950 pad press down
+@gameplay+980 pad press down
+@gameplay+1010 pad press down
+@gameplay+1110 pad press a
+@gameplay+1260 pad press down
+@gameplay+1290 pad press down
+@gameplay+1320 pad press a
+@gameplay+1420 pad press down
+@gameplay+1450 pad press down
+@gameplay+1480 pad press down
+@gameplay+1510 pad press down
+@gameplay+1540 pad press down
+@gameplay+1610 pad press right
+@gameplay+1640 pad press right
+@gameplay+1670 pad press right
+@gameplay+1700 capture fps_120
+@gameplay+1730 log mark at_120
+@gameplay+2030 pad press down
+@gameplay+2060 pad press a
+@gameplay+2210 pad press down
+@gameplay+2270 pad press a
+@gameplay+2330 pad press b
+@gameplay+2430 pad press b
+@gameplay+2530 pad press b
+@gameplay+2630 pad press b
+@gameplay+2830 log mark play_a
+@gameplay+3130 log mark play_b
+"""
+capture_frames = []
+expect_saves_unchanged = true
+pc_settings_expect = { "frame_rate.limit_fps" = 120, "frame_rate.interpolation" = false, "frame_rate.interpolate_objects" = false, "frame_rate.interpolate_animation" = true }
+log_expect = [
+    "[kuf-input] context: gameplay",
+    "frame rate 90 -> 120, interpolation true objects true animation true effects true",
+    "frame rate 120 -> 120, interpolation false objects true animation true effects true",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+]
+
+[format]
+width = 1280
+height = 720

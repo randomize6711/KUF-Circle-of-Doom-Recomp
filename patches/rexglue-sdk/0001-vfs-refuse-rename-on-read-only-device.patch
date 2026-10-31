@@ -1,0 +1,16 @@
+diff --git a/src/filesystem/entry.cpp b/src/filesystem/entry.cpp
+index 163c257..f3d83dd 100644
+--- a/src/filesystem/entry.cpp
++++ b/src/filesystem/entry.cpp
+@@ -136,6 +136,11 @@ bool Entry::Delete() {
+ }
+ 
+ X_STATUS Entry::Rename(const std::filesystem::path& file_path) {
++  // A read-only device (the game disc folder) must never be modified on the host.
++  if (is_read_only()) {
++    REXFS_ERROR("Refusing to rename '{}' on read-only device {}", path_, device_->mount_path());
++    return X_STATUS_ACCESS_DENIED;
++  }
+   // Store the string so split path string_views remain valid.
+   const std::string path_str = rex::path_to_utf8(file_path);
+   std::vector<std::string_view> path_parts = rex::string::utf8_split_path(path_str);

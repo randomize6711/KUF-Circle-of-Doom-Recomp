@@ -1,0 +1,144 @@
+# Performance workload (M6A): CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only; the run gets
+# a copy) and walk around Shadow Depths: forward for 6 s, turn the camera, repeat; about 3 minutes of
+# exploration with whatever enemies come along. Profile with tools/menu_test.py --run-prefix perf
+# --game-arg=--kuf_profile=true --game-arg=--kuf_profile_samples=true tests/perf/explore_shadows_depths.toml;
+# the gameplay frames are reported by tools/profile_report.py from the log's gameplay entry.
+
+[scenario]
+description = "Shadow Depths exploration loop (performance workload)"
+seconds = 420
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 down W
+@gameplay+480 up W
+@gameplay+490 down L
+@gameplay+515 up L
+@gameplay+530 down W
+@gameplay+710 up W
+@gameplay+720 down J
+@gameplay+745 up J
+@gameplay+760 down W
+@gameplay+940 up W
+@gameplay+950 down L
+@gameplay+975 up L
+@gameplay+990 down W
+@gameplay+1170 up W
+@gameplay+1180 down L
+@gameplay+1205 up L
+@gameplay+1220 down W
+@gameplay+1400 up W
+@gameplay+1410 down J
+@gameplay+1435 up J
+@gameplay+1450 down W
+@gameplay+1630 up W
+@gameplay+1640 down L
+@gameplay+1665 up L
+@gameplay+1680 down W
+@gameplay+1860 up W
+@gameplay+1870 down J
+@gameplay+1895 up J
+@gameplay+1910 down W
+@gameplay+2090 up W
+@gameplay+2100 down L
+@gameplay+2125 up L
+@gameplay+2140 down W
+@gameplay+2320 up W
+@gameplay+2330 down L
+@gameplay+2355 up L
+@gameplay+2370 down W
+@gameplay+2550 up W
+@gameplay+2560 down J
+@gameplay+2585 up J
+@gameplay+2600 down W
+@gameplay+2780 up W
+@gameplay+2790 down L
+@gameplay+2815 up L
+@gameplay+2830 down W
+@gameplay+3010 up W
+@gameplay+3020 down J
+@gameplay+3045 up J
+@gameplay+3060 down W
+@gameplay+3240 up W
+@gameplay+3250 down L
+@gameplay+3275 up L
+@gameplay+3290 down W
+@gameplay+3470 up W
+@gameplay+3480 down L
+@gameplay+3505 up L
+@gameplay+3520 down W
+@gameplay+3700 up W
+@gameplay+3710 down J
+@gameplay+3735 up J
+@gameplay+3750 down W
+@gameplay+3930 up W
+@gameplay+3940 down L
+@gameplay+3965 up L
+@gameplay+3980 down W
+@gameplay+4160 up W
+@gameplay+4170 down J
+@gameplay+4195 up J
+@gameplay+4210 down W
+@gameplay+4390 up W
+@gameplay+4400 down L
+@gameplay+4425 up L
+@gameplay+4440 down W
+@gameplay+4620 up W
+@gameplay+4630 down L
+@gameplay+4655 up L
+@gameplay+4670 down W
+@gameplay+4850 up W
+@gameplay+4860 down J
+@gameplay+4885 up J
+@gameplay+4900 down W
+@gameplay+5080 up W
+@gameplay+5090 down L
+@gameplay+5115 up L
+@gameplay+5130 down W
+@gameplay+5310 up W
+@gameplay+5320 down J
+@gameplay+5345 up J
+@gameplay+5360 down W
+@gameplay+5540 up W
+@gameplay+5550 down L
+@gameplay+5575 up L
+@gameplay+5590 down W
+@gameplay+5770 up W
+@gameplay+5780 down L
+@gameplay+5805 up L
+@gameplay+5820 down W
+@gameplay+6000 up W
+@gameplay+6010 down J
+@gameplay+6035 up J
+@gameplay+6050 down W
+@gameplay+6230 up W
+@gameplay+6240 down L
+@gameplay+6265 up L
+@gameplay+6280 down W
+@gameplay+6460 up W
+@gameplay+6470 down J
+@gameplay+6495 up J
+@gameplay+6510 down W
+@gameplay+6690 up W
+@gameplay+6700 down L
+@gameplay+6725 up L
+@gameplay+6740 down W
+@gameplay+6920 up W
+@gameplay+6930 down L
+@gameplay+6955 up L
+@gameplay+6970 down W
+@gameplay+7150 up W
+@gameplay+7160 down J
+@gameplay+7185 up J
+"""
+capture_frames = [9000]
+log_expect = ["[kuf-input] context: gameplay"]
+
+[format]
+width = 1280
+height = 720

@@ -1,0 +1,1367 @@
+From: kuf-cod-recomp
+Subject: [PATCH] content: transactional save packages, content_root, fatal CLI errors
+
+Saves (Xbox 360 content packages) were host directories written in place, and CREATE_ALWAYS deleted an
+existing package before the new one existed: a crash or kill while the game saved could leave a half-written
+save or none. Guest writes now go to a staging copy that replaces the package atomically
+(renameat2 RENAME_EXCHANGE, after fsync) on XamContentClose/XamContentFlush; CREATE_ALWAYS and
+TRUNCATE_EXISTING keep the old package until the replacement is committed. A manifest (size and SHA-256
+per file) is committed with each package and verified on open (content_damaged=refuse|load). Leftovers of
+an interrupted session are recovered on first access and never applied. Runtime files (.rex-*) are hidden
+from the guest. content_root puts saves in their own directory. content_test_kill (tests only) kills the
+process at a chosen commit stage. Every content call is logged with a [content] prefix.
+
+A CLI parse error used to apply none of the options and run on with defaults (paths included); it now
+exits with status 2 (help-style exits unchanged).
+
+diff --git a/include/rex/system/xam/content_manager.h b/include/rex/system/xam/content_manager.h
+index 949d185..867c708 100644
+--- a/include/rex/system/xam/content_manager.h
++++ b/include/rex/system/xam/content_manager.h
+@@ -12,8 +12,10 @@
+ #pragma once
+ 
+ #include <memory>
++#include <set>
+ #include <string>
+ #include <unordered_map>
++#include <unordered_set>
+ #include <vector>
+ #include <rex/math.h>
+ #include <rex/memory.h>
+@@ -118,8 +120,11 @@ static_assert_size(XCONTENT_AGGREGATE_DATA, 0x148);
+ 
+ class ContentPackage {
+  public:
++  // The guest device is mounted on `mount_path`: the package itself, or its staging copy when the package
++  // is transactional (content_transaction.h; committed to `package_path` on close).
+   ContentPackage(KernelState* kernel_state, const std::string_view root_name,
+-                 const XCONTENT_AGGREGATE_DATA& data, const std::filesystem::path& package_path);
++                 const XCONTENT_AGGREGATE_DATA& data, const std::filesystem::path& package_path,
++                 const std::filesystem::path& mount_path, bool transactional);
+   ~ContentPackage();
+ 
+   void LoadPackageLicenseMask(const std::filesystem::path header_path);
+@@ -130,6 +135,9 @@ class ContentPackage {
+ 
+   uint32_t GetPackageLicense() const { return license_; }
+ 
++  bool transactional() const { return transactional_; }
++  const std::string& root_name() const { return root_name_; }
++
+  private:
+   KernelState* kernel_state_;
+   std::string root_name_;
+@@ -137,6 +145,7 @@ class ContentPackage {
+   std::filesystem::path package_path_;
+   XCONTENT_AGGREGATE_DATA content_data_;
+   uint32_t license_ = 0;
++  bool transactional_ = false;
+ };
+ 
+ class ContentManager {
+@@ -152,11 +161,22 @@ class ContentManager {
+                                                  const XCONTENT_AGGREGATE_DATA& data);
+ 
+   bool ContentExists(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data);
++  // `replace`: the package may exist (CREATE_ALWAYS, TRUNCATE_EXISTING); it starts empty, and the old
++  // version is replaced only when the new one is committed.
+   X_RESULT CreateContent(const std::string_view root_name, uint64_t xuid,
+-                         const XCONTENT_AGGREGATE_DATA& data);
++                         const XCONTENT_AGGREGATE_DATA& data, bool replace = false);
+   X_RESULT OpenContent(const std::string_view root_name, uint64_t xuid,
+                        const XCONTENT_AGGREGATE_DATA& data, uint32_t& content_license);
+   X_RESULT CloseContent(const std::string_view root_name);
++  // XamContentFlush: commits the current state of an open package; it stays open.
++  X_RESULT FlushContent(const std::string_view root_name);
++  // Flush groups: a game whose one logical save is several file writes, each followed by its own
++  // XamContentFlush, can mark the whole save as one transaction. Flushes inside a group are held (the
++  // guest gets success, as the game would not act on a flush result anyway) and the packages flushed are
++  // committed once when the outermost group ends: an interruption inside the group keeps the previous
++  // complete version. Groups nest; `what` names the group in the log.
++  void BeginFlushGroup(std::string_view what);
++  void EndFlushGroup();
+   X_RESULT GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
+                                std::vector<uint8_t>* buffer);
+   X_RESULT SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
+@@ -195,6 +215,12 @@ class ContentManager {
+   FindOpenPackageByData(const XCONTENT_AGGREGATE_DATA& data);
+   ContentPackage* DetachPackage(std::unordered_map<string::string_key_case, ContentPackage*,
+                                                    string::string_key_case::Hash>::iterator it);
++  // Unmounts and deletes the package object; commits a transactional package.
++  X_RESULT ReleasePackage(ContentPackage* package, std::string_view why);
++  // Once per package root: handles what an interrupted session left (content_txn::Recover).
++  void RecoverRoot(const std::filesystem::path& package_root);
++  // Commits an open transactional package's current state (it stays open). Caller holds the lock.
++  X_RESULT CommitOpenPackage(ContentPackage* package, std::string_view why);
+ 
+   KernelState* kernel_state_;
+   std::filesystem::path root_path_;
+@@ -203,6 +229,11 @@ class ContentManager {
+   rex::thread::global_critical_region global_critical_region_;
+   std::unordered_map<string::string_key_case, ContentPackage*, string::string_key_case::Hash>
+       open_packages_;
++  std::set<std::filesystem::path> recovered_roots_;
++  int flush_group_depth_ = 0;
++  std::string flush_group_name_;
++  // Root names flushed inside the current group.
++  std::unordered_set<string::string_key_case, string::string_key_case::Hash> held_flushes_;
+ };
+ 
+ }  // namespace xam
+diff --git a/include/rex/system/xam/content_transaction.h b/include/rex/system/xam/content_transaction.h
+new file mode 100644
+index 0000000..3e72a91
+--- /dev/null
++++ b/include/rex/system/xam/content_transaction.h
+@@ -0,0 +1,104 @@
++/**
++ * Transactional content packages (kuf-cod-recomp patch).
++ *
++ * The runtime stores an Xbox 360 content package (a save) as a host directory and mounts it as a guest
++ * device. Without transactions the guest writes straight into that directory, so a crash or a kill while
++ * the game saves can leave a half-written save, and CREATE_ALWAYS deletes the old save before the new one
++ * exists. On the console, content writes become visible when the package is closed or flushed.
++ *
++ * Here the guest works on a staging copy next to the package (<package>.rex-staging). Commit makes the
++ * staging copy the package in one atomic step (rename, or renameat2 RENAME_EXCHANGE when a package
++ * exists), after the data is synced to disk. Whatever moment the process dies, the package directory is
++ * either the previous committed version or the new one, never a mix. A staging directory left over by an
++ * interrupted session is never loaded; recovery moves it aside as <package>.rex-interrupted (diagnostics
++ * only, one per package).
++ *
++ * A manifest (.rex-manifest: size and SHA-256 of every file) is committed with the package, so damage
++ * from outside (disk errors, partial copies, edits) is detected when the package is opened.
++ *
++ * Pure std::filesystem/POSIX code without runtime state, unit-tested by the kuf-cod-recomp test suite.
++ */
++#pragma once
++
++#include <cstdint>
++#include <filesystem>
++#include <span>
++#include <string>
++#include <string_view>
++#include <vector>
++
++namespace rex::system::xam::content_txn {
++
++inline constexpr std::string_view kStagingSuffix = ".rex-staging";
++inline constexpr std::string_view kInterruptedSuffix = ".rex-interrupted";
++inline constexpr std::string_view kPreviousSuffix = ".rex-previous";
++inline constexpr std::string_view kDamagedSuffix = ".rex-damaged";
++inline constexpr std::string_view kManifestName = ".rex-manifest";
++
++// True for host entries the runtime manages beside or inside packages (never guest content).
++bool IsInternalName(std::string_view name);
++
++std::filesystem::path StagingPath(const std::filesystem::path& package);
++
++enum class BeginMode {
++  kCreate,   // new package: empty staging directory
++  kOpen,     // existing package: staging starts as a copy of it
++  kReplace,  // CREATE_ALWAYS / TRUNCATE_EXISTING: empty staging; the old package stays until commit
++};
++
++// Prepares the staging directory. A leftover staging directory (an interrupted session that was not
++// recovered) is moved aside first. False with *error if the copy or the directory creation failed.
++bool Begin(const std::filesystem::path& package, BeginMode mode, std::string* error);
++
++struct CommitResult {
++  bool ok = false;
++  bool changed = false;  // false: staging was identical to the package, nothing replaced
++  size_t files = 0;
++  uint64_t bytes = 0;
++  std::vector<std::string> changed_files;  // files added, modified ("~") or removed ("-") by this commit
++  std::string error;
++};
++
++// Close: makes staging the package (atomic swap), removes staging. On failure the package is unchanged
++// and staging is left for recovery.
++CommitResult Commit(const std::filesystem::path& package);
++// Flush: the same for a copy of staging, which stays mounted.
++CommitResult Snapshot(const std::filesystem::path& package);
++// Discards staging (the package stays as it was).
++void Abort(const std::filesystem::path& package);
++
++// Verification of a committed package against its manifest.
++enum class Integrity { kOk, kNoManifest, kDamaged };
++Integrity Verify(const std::filesystem::path& package, std::string* detail);
++
++// The game deletes a package (e.g. the player chose "delete the corrupted save file"): a package that fails
++// verification is moved aside to <package>.rex-damaged (replacing an older one; never loaded) instead of
++// being erased, so its data stays available for manual recovery. Returns true if it was moved.
++bool SetAsideIfDamaged(const std::filesystem::path& package);
++
++// Recovery for one directory of packages (a content-type root), for what a previous session left:
++//  - a staging directory identical to its package (the session ended without uncommitted writes; games
++//    often keep their save package open until they exit): removed;
++//  - a staging directory with uncommitted changes (the session ended while the game was writing, or wrote
++//    without flushing): never applied, moved aside to <package>.rex-interrupted (replacing an older one);
++//  - <package>.rex-previous (a commit interrupted between its two renames, only without RENAME_EXCHANGE):
++//    restored if the package is missing, else removed; an unfinished flush copy: removed.
++struct RecoveryNote {
++  bool warning;  // false: routine cleanup
++  std::string text;
++};
++std::vector<RecoveryNote> Recover(const std::filesystem::path& package_root);
++
++// Writes a whole file atomically (temp file, fsync, rename, fsync of the directory).
++bool AtomicWriteFile(const std::filesystem::path& file, std::span<const uint8_t> data, std::string* error);
++
++// Test hook: called at points of a commit that changes the package ("changed": the guest's new data is
++// complete in staging, nothing is committed yet; "install": the new version is written and synced, right
++// before the atomic swap). Interrupted-save tests kill the process there. nullptr = none.
++using CommitHook = void (*)(const char* stage, const std::filesystem::path& package);
++void SetCommitHook(CommitHook hook);
++
++// SHA-256 of a byte range (lowercase hex). Exposed for tests.
++std::string Sha256Hex(std::span<const uint8_t> data);
++
++}  // namespace rex::system::xam::content_txn
+diff --git a/src/core/cvar.cpp b/src/core/cvar.cpp
+index 228728d..6c4d4e1 100644
+--- a/src/core/cvar.cpp
++++ b/src/core/cvar.cpp
+@@ -6,6 +6,7 @@
+  * @license     BSD 3-Clause License
+  */
+ 
++#include <cstdlib>
+ #include <algorithm>
+ #include <atomic>
+ #include <cctype>
+@@ -605,6 +606,11 @@ std::vector<std::string> Init(int argc, char** argv) {
+     // TODO(tomc): dumb workaround for the stupid chicken and its egg.
+     //             dont call rex logging funcs here for now.
+     fprintf(stderr, "cvar: CLI11  parse error: %s\n", e.what());
++    // kuf-cod-recomp: a failed parse applies none of the options (paths such as --content_root, timers);
++    // running on with defaults could put saves somewhere else. Only --help-style exits (code 0) continue.
++    if (e.get_exit_code() != 0) {
++      std::exit(2);
++    }
+   }
+ 
+   // Stash unrecognized --options for cvars that register later. Supported
+diff --git a/src/filesystem/devices/host_path_device.cpp b/src/filesystem/devices/host_path_device.cpp
+index f68b79a..930163c 100644
+--- a/src/filesystem/devices/host_path_device.cpp
++++ b/src/filesystem/devices/host_path_device.cpp
+@@ -21,6 +21,14 @@
+ 
+ namespace rex::filesystem {
+ 
++namespace {
++// Runtime bookkeeping inside host directories (content manifests, temporary files of atomic writes;
++// rex/system/xam/content_transaction.h) is not guest content: the guest never sees it.
++bool IsRuntimeName(const std::filesystem::path& name) {
++  return name.native().starts_with(".rex-");
++}
++}  // namespace
++
+ HostPathDevice::HostPathDevice(const std::string_view mount_path,
+                                const std::filesystem::path& host_path, bool read_only,
+                                bool allow_share_delete)
+@@ -92,7 +100,8 @@ Entry* HostPathDevice::ResolvePath(const std::string_view path) {
+ 
+       auto child_infos = rex::filesystem::ListFiles(current_entry->host_path());
+       auto match = std::find_if(child_infos.begin(), child_infos.end(), [&](const auto& info) {
+-        return rex::string::utf8_equal_case(rex::path_to_utf8(info.name), part);
++        return !IsRuntimeName(info.name) &&
++               rex::string::utf8_equal_case(rex::path_to_utf8(info.name), part);
+       });
+       if (match == child_infos.end()) {
+         return nullptr;
+@@ -116,6 +125,9 @@ Entry* HostPathDevice::ResolvePath(const std::string_view path) {
+ void HostPathDevice::PopulateEntry(HostPathEntry* parent_entry) {
+   auto child_infos = rex::filesystem::ListFiles(parent_entry->host_path());
+   for (auto& child_info : child_infos) {
++    if (IsRuntimeName(child_info.name)) {
++      continue;
++    }
+     auto child = HostPathEntry::Create(this, parent_entry,
+                                        parent_entry->host_path() / child_info.name, child_info);
+     parent_entry->children_.push_back(std::unique_ptr<Entry>(child));
+diff --git a/src/kernel/xam/xam_content.cpp b/src/kernel/xam/xam_content.cpp
+index 1fb1e16..13e5178 100644
+--- a/src/kernel/xam/xam_content.cpp
++++ b/src/kernel/xam/xam_content.cpp
+@@ -107,7 +107,8 @@ u32 XamContentCreateEnumerator_entry(u32 user_index, u32 device_id, u32 content_
+     // TODO(gibbed): disc drive content
+   }
+ 
+-  REXKRNL_DEBUG("XamContentCreateEnumerator: added {} items to enumerator", e->item_count());
++  REXKRNL_INFO("[content] XamContentCreateEnumerator type {:08X}: {} packages", uint32_t(content_type),
++               e->item_count());
+ 
+   *handle_out = e->handle();
+   return X_ERROR_SUCCESS;
+@@ -146,6 +147,7 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+               license_mask_ptr](uint32_t& extended_error, uint32_t& length) -> X_RESULT {
+     X_RESULT result = X_ERROR_INVALID_PARAMETER;
+     kDispositionState disposition = kDispositionState::Unknown;
++    bool replace = false;
+     switch (flags & 0xF) {
+       case 1:  // CREATE_NEW
+                // Fail if exists.
+@@ -160,16 +162,10 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+         // Close any existing mount under this root name first.
+         // Games may reuse the same root without explicitly closing.
+         content_manager->CloseContent(root_name);
+-        if (content_manager->ContentExists(xuid, content_data)) {
+-          content_manager->DeleteContent(xuid, content_data);
+-        }
+-        // Check filesystem state after deletion attempt to decide
+-        // whether to create fresh or open existing.
+-        if (content_manager->ContentExists(xuid, content_data)) {
+-          disposition = kDispositionState::Open;
+-        } else {
+-          disposition = kDispositionState::Create;
+-        }
++        // An existing package is replaced by an empty one, but only when the new one is committed
++        // (content_transaction.h): until then the old version stays on disk.
++        replace = true;
++        disposition = kDispositionState::Create;
+         break;
+       case 3:  // OPEN_EXISTING
+                // Open only if exists.
+@@ -193,12 +189,8 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+           result = X_ERROR_PATH_NOT_FOUND;
+         } else {
+           content_manager->CloseContent(root_name);
+-          content_manager->DeleteContent(xuid, content_data);
+-          if (content_manager->ContentExists(xuid, content_data)) {
+-            disposition = kDispositionState::Open;
+-          } else {
+-            disposition = kDispositionState::Create;
+-          }
++          replace = true;
++          disposition = kDispositionState::Create;
+         }
+         break;
+       default:
+@@ -208,7 +200,7 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+ 
+     uint32_t content_license = 0;
+     if (disposition == kDispositionState::Create) {
+-      result = content_manager->CreateContent(root_name, xuid, content_data);
++      result = content_manager->CreateContent(root_name, xuid, content_data, replace);
+       if (XSUCCEEDED(result)) {
+         content_manager->WriteContentHeaderFile(xuid, content_data);
+       }
+@@ -223,6 +215,11 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+     if (disposition_ptr) {
+       *disposition_ptr = static_cast<uint32_t>(disposition);
+     }
++    REXKRNL_INFO("[content] XamContentCreate '{}' as '{}:' flags {:#x} -> {} (result {:#x})",
++                 content_data.file_name(), root_name, uint32_t(flags),
++                 disposition == kDispositionState::Create ? "create"
++                 : disposition == kDispositionState::Open ? "open" : "none",
++                 uint32_t(result));
+ 
+     extended_error = X_HRESULT_FROM_WIN32(result);
+     length = static_cast<uint32_t>(disposition);
+@@ -269,7 +266,7 @@ u32 XamContentOpenFile_entry(u32 user_index, mapped_string root_name, mapped_str
+ }
+ 
+ u32 XamContentFlush_entry(mapped_string root_name, mapped_void overlapped_ptr) {
+-  X_RESULT result = X_ERROR_SUCCESS;
++  X_RESULT result = REX_KERNEL_STATE()->content_manager()->FlushContent(root_name.value());
+   if (overlapped_ptr) {
+     REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped_ptr.guest_address(), result);
+     return X_ERROR_IO_PENDING;
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+index fc46d86..489805a 100644
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -31,6 +31,7 @@ set(REXSYSTEM_SOURCES
+     # XAM services
+     xam/app_manager.cpp
+     xam/content_manager.cpp
++    xam/content_transaction.cpp
+     xam/user_profile.cpp
+ 
+     ppc_types.cpp
+diff --git a/src/system/kernel_state.cpp b/src/system/kernel_state.cpp
+index 697399c..f53ac80 100644
+--- a/src/system/kernel_state.cpp
++++ b/src/system/kernel_state.cpp
+@@ -16,6 +16,7 @@
+ 
+ #include <fmt/format.h>
+ #include <rex/assert.h>
++#include <rex/cvar.h>
+ #include <rex/image_info.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
+@@ -43,6 +44,9 @@
+ #include <rex/system/xthread.h>
+ #include <rex/system/xtimer.h>
+ 
++REXCVAR_DEFINE_STRING(content_root, "", "Kernel",
++                      "Host directory for saved games and other content (default: the user data root)");
++
+ namespace rex::system {
+ 
+ constexpr uint32_t kDeferredOverlappedDelayMillis = 100;
+@@ -68,11 +72,16 @@ KernelState::KernelState(Runtime* emulator)
+   user_profile_ = std::make_unique<xam::UserProfile>();
+   user_profile_->set_kernel_state(this);
+ 
+-  auto user_data_root = emulator_->user_data_root();
+-  if (!user_data_root.empty()) {
+-    user_data_root = std::filesystem::absolute(user_data_root);
++  // Saves and other content: --content_root, else the user data root.
++  std::filesystem::path content_root = REXCVAR_GET(content_root);
++  if (content_root.empty()) {
++    content_root = emulator_->user_data_root();
+   }
+-  content_manager_ = std::make_unique<xam::ContentManager>(this, user_data_root);
++  if (!content_root.empty()) {
++    content_root = std::filesystem::absolute(content_root);
++  }
++  REXSYS_INFO("[content] saves and other content in {}", rex::path_to_utf8(content_root));
++  content_manager_ = std::make_unique<xam::ContentManager>(this, content_root);
+ 
+   if (shared_kernel_state_ != nullptr) {
+     REXSYS_ERROR("KernelState constructed but shared_kernel_state_ already set");
+diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
+index bd6c797..eb7c0a5 100644
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -10,26 +10,84 @@
+  */
+ 
+ #include <array>
++#include <csignal>
++#include <cstdlib>
+ #include <cstring>
+ #include <queue>
+ #include <string>
+ 
+ #include <fmt/format.h>
+ 
++#include <rex/cvar.h>
+ #include <rex/filesystem.h>
++#include <rex/logging.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/stfs_container_device.h>
+ #include <rex/string.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xam/content_device.h>
+ #include <rex/system/xam/content_manager.h>
++#include <rex/system/xam/content_transaction.h>
+ #include <rex/system/xfile.h>
+ #include <rex/system/xobject.h>
+ 
++REXCVAR_DEFINE_BOOL(content_transactions, true, "Kernel",
++                    "Guest writes to content packages (saves) go to a staging copy that replaces the "
++                    "package atomically on close or flush, so an interrupted save keeps the previous one");
++REXCVAR_DEFINE_STRING(content_test_kill, "", "Kernel",
++                      "TESTS ONLY: <stage>:<n> kills the process with SIGKILL at the n-th package commit that "
++                      "changes data, at stage 'changed' (the save is written, not committed) or 'install' "
++                      "(committed copy complete, before the atomic swap); 'flush:<n>' at the start of the "
++                      "n-th XamContentFlush of an open package (before it is committed or held)");
++REXCVAR_DEFINE_STRING(content_damaged, "refuse", "Kernel",
++                      "Opening a package whose files do not match its manifest: refuse (the game sees "
++                      "the content as corrupt) or load (with an error in the log)");
++
+ namespace rex {
+ namespace system {
+ namespace xam {
+ 
++namespace {
++constexpr X_RESULT kErrorFileCorrupt = 1392;  // ERROR_FILE_CORRUPT
++
++// content_test_kill: the stage and the count of changed commits at which to die.
++std::string g_kill_stage;
++int g_kill_at = 0;
++int g_changed_commits = 0;
++int g_flushes = 0;
++void KillHook(const char* stage, const std::filesystem::path& package) {
++  if (std::string_view(stage) == "changed") {
++    ++g_changed_commits;
++  }
++  if (g_kill_stage == stage && g_changed_commits == g_kill_at) {
++    REXKRNL_WARN("[content] TEST: killing the process at commit {} stage '{}' of {}", g_changed_commits,
++                 stage, rex::path_to_utf8(package.filename()));
++    rex::FlushLogging();
++    std::raise(SIGKILL);
++  }
++}
++void FlushKillHook(const std::filesystem::path& package) {
++  if (g_kill_stage == "flush" && ++g_flushes == g_kill_at) {
++    REXKRNL_WARN("[content] TEST: killing the process at flush {} of {}", g_flushes,
++                 rex::path_to_utf8(package.filename()));
++    rex::FlushLogging();
++    std::raise(SIGKILL);
++  }
++}
++
++std::string Describe(const XCONTENT_AGGREGATE_DATA& data) {
++  return fmt::format("'{}' (type {:08X})", data.file_name(), uint32_t(XContentType(data.content_type)));
++}
++
++// "; changed KD_1350, ~GlobalSetting" (new, ~modified, -removed) for the commit log lines.
++std::string ChangedList(const content_txn::CommitResult& result) {
++  if (result.changed_files.empty()) return {};
++  std::string out = "; changed";
++  for (const auto& f : result.changed_files) out += (out.size() > 9 ? ", " : " ") + f;
++  return out;
++}
++}  // namespace
++
+ static const char* kThumbnailFileName = "__thumbnail.png";
+ 
+ static const char* kGameUserContentDirName = "profile";
+@@ -40,13 +98,18 @@ static int content_device_id_ = 0;
+ 
+ ContentPackage::ContentPackage(KernelState* kernel_state, const std::string_view root_name,
+                                const XCONTENT_AGGREGATE_DATA& data,
+-                               const std::filesystem::path& package_path)
+-    : kernel_state_(kernel_state), root_name_(root_name), package_path_(package_path), license_(0) {
++                               const std::filesystem::path& package_path,
++                               const std::filesystem::path& mount_path, bool transactional)
++    : kernel_state_(kernel_state),
++      root_name_(root_name),
++      package_path_(package_path),
++      license_(0),
++      transactional_(transactional) {
+   device_path_ = fmt::format("\\Device\\Content\\{0}\\", ++content_device_id_);
+   content_data_ = data;
+ 
+   auto fs = kernel_state_->file_system();
+-  auto device = std::make_unique<rex::filesystem::HostPathDevice>(device_path_, package_path, false,
++  auto device = std::make_unique<rex::filesystem::HostPathDevice>(device_path_, mount_path, false,
+                                                                   /*allow_share_delete=*/true);
+   device->Initialize();
+   fs->RegisterDevice(std::move(device));
+@@ -81,7 +144,15 @@ void ContentPackage::LoadPackageLicenseMask(const std::filesystem::path header_p
+ }
+ 
+ ContentManager::ContentManager(KernelState* kernel_state, const std::filesystem::path& root_path)
+-    : kernel_state_(kernel_state), root_path_(root_path) {}
++    : kernel_state_(kernel_state), root_path_(root_path) {
++  const std::string kill = REXCVAR_GET(content_test_kill);
++  if (auto colon = kill.find(':'); colon != std::string::npos) {
++    g_kill_stage = kill.substr(0, colon);
++    g_kill_at = std::atoi(kill.c_str() + colon + 1);
++    content_txn::SetCommitHook(&KillHook);
++    REXKRNL_WARN("[content] TEST: content_test_kill={} (the process will be killed during a save)", kill);
++  }
++}
+ 
+ ContentManager::~ContentManager() = default;
+ 
+@@ -148,12 +219,16 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
+   // Search path:
+   // content_root/xuid/title_id/type_name/*
+   auto package_root = ResolvePackageRoot(xuid, content_type, title_id);
++  RecoverRoot(package_root);
+   auto file_infos = rex::filesystem::ListFiles(package_root);
+   for (const auto& file_info : file_infos) {
+     if (file_info.type != rex::filesystem::FileInfo::Type::kDirectory) {
+       // Directories only.
+       continue;
+     }
++    if (content_txn::IsInternalName(rex::path_to_utf8(file_info.name))) {
++      continue;  // staging copies and other runtime bookkeeping, never content
++    }
+ 
+     XCONTENT_AGGREGATE_DATA content_data;
+     if (XSUCCEEDED(ReadContentHeaderFile(rex::path_to_utf8(file_info.name), xuid, title_id,
+@@ -179,13 +254,19 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
+   if (!std::filesystem::exists(package_path)) {
+     return nullptr;
+   }
+-  auto package = std::make_unique<ContentPackage>(kernel_state_, root_name, data, package_path);
++  auto package = std::make_unique<ContentPackage>(kernel_state_, root_name, data, package_path,
++                                                  package_path, false);
+   return package;
+ }
+ 
+ bool ContentManager::ContentExists(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
+   auto path = ResolvePackagePath(xuid, data);
+-  return std::filesystem::exists(path);
++  if (std::filesystem::exists(path)) {
++    return true;
++  }
++  // A package created in this session exists for the guest while it is open, before its first commit.
++  auto global_lock = global_critical_region_.Acquire();
++  return FindOpenPackageByData(data) != open_packages_.end();
+ }
+ 
+ X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGATE_DATA data,
+@@ -208,17 +289,18 @@ X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGAT
+     }
+   }
+ 
+-  rex::filesystem::CreateEmptyFile(header_path);
+-
+-  auto file = rex::filesystem::OpenFile(header_path, "wb");
+-  if (!file) {
+-    return X_ERROR_FILE_NOT_FOUND;
+-  }
+-  fwrite(&data, 1, sizeof(XCONTENT_AGGREGATE_DATA), file);
++  std::vector<uint8_t> bytes(sizeof(XCONTENT_AGGREGATE_DATA));
++  std::memcpy(bytes.data(), &data, bytes.size());
+   if (license_mask != 0) {
+-    fwrite(&license_mask, 1, sizeof(license_mask), file);
++    auto at = bytes.size();
++    bytes.resize(at + sizeof(license_mask));
++    std::memcpy(bytes.data() + at, &license_mask, sizeof(license_mask));
++  }
++  std::string error;
++  if (!content_txn::AtomicWriteFile(header_path, bytes, &error)) {
++    REXKRNL_ERROR("[content] header {}: {}", rex::path_to_utf8(header_path), error);
++    return X_ERROR_ACCESS_DENIED;
+   }
+-  fclose(file);
+   return X_ERROR_SUCCESS;
+ }
+ 
+@@ -256,7 +338,7 @@ X_RESULT ContentManager::ReadContentHeaderFile(const std::string_view file_name,
+ }
+ 
+ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_t xuid,
+-                                       const XCONTENT_AGGREGATE_DATA& data) {
++                                       const XCONTENT_AGGREGATE_DATA& data, bool replace) {
+   {
+     auto global_lock = global_critical_region_.Acquire();
+     if (open_packages_.count(string::string_key_case(root_name))) {
+@@ -265,13 +347,41 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
+   }
+ 
+   auto package_path = ResolvePackagePath(xuid, data);
+-  if (std::filesystem::exists(package_path)) {
++  RecoverRoot(package_path.parent_path());
++  const bool exists = std::filesystem::exists(package_path);
++  if (exists && !replace) {
+     return X_ERROR_ALREADY_EXISTS;
+   }
+-  if (!std::filesystem::create_directories(package_path)) {
+-    return X_ERROR_ACCESS_DENIED;
++  std::unique_ptr<ContentPackage> package;
++  if (REXCVAR_GET(content_transactions)) {
++    std::string error;
++    auto mode = exists ? content_txn::BeginMode::kReplace : content_txn::BeginMode::kCreate;
++    if (!content_txn::Begin(package_path, mode, &error)) {
++      REXKRNL_ERROR("[content] create {}: {}", Describe(data), error);
++      return X_ERROR_ACCESS_DENIED;
++    }
++    package = std::make_unique<ContentPackage>(kernel_state_, root_name, data, package_path,
++                                               content_txn::StagingPath(package_path), true);
++    if (!exists) {
++      // A new package exists as soon as it is created, as on the console (an empty one, committed now);
++      // a replaced one keeps its old version until the new one is committed.
++      auto r = content_txn::Snapshot(package_path);
++      if (!r.ok) {
++        REXKRNL_ERROR("[content] create {}: {}", Describe(data), r.error);
++        return X_ERROR_ACCESS_DENIED;
++      }
++    }
++    REXKRNL_INFO("[content] {} {} as '{}:' (staged{})", exists ? "replace" : "create", Describe(data),
++                 root_name, exists ? "; the old version stays until the new one is committed" : "");
++  } else {
++    if (exists) {
++      DeleteContent(xuid, data);
++    }
++    if (!std::filesystem::create_directories(package_path)) {
++      return X_ERROR_ACCESS_DENIED;
++    }
++    package = ResolvePackage(root_name, xuid, data);
+   }
+-  auto package = ResolvePackage(root_name, xuid, data);
+   assert_not_null(package);
+ 
+   {
+@@ -295,10 +405,41 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t
+   }
+ 
+   auto package_path = ResolvePackagePath(xuid, data);
++  RecoverRoot(package_path.parent_path());
+   if (!std::filesystem::exists(package_path)) {
+     return X_ERROR_FILE_NOT_FOUND;
+   }
+-  auto package = ResolvePackage(root_name, xuid, data);
++  std::string detail;
++  switch (content_txn::Verify(package_path, &detail)) {
++    case content_txn::Integrity::kOk:
++      break;
++    case content_txn::Integrity::kNoManifest:
++      REXKRNL_INFO("[content] {} has no manifest (written before transactions or copied in); not verified",
++                   Describe(data));
++      break;
++    case content_txn::Integrity::kDamaged:
++      if (REXCVAR_GET(content_damaged) != "load") {
++        REXKRNL_ERROR("[content] {} is damaged, refusing to open it (content_damaged=refuse): {}",
++                      Describe(data), detail);
++        return kErrorFileCorrupt;
++      }
++      REXKRNL_ERROR("[content] {} is damaged, opening it anyway (content_damaged=load): {}", Describe(data),
++                    detail);
++      break;
++  }
++  std::unique_ptr<ContentPackage> package;
++  if (REXCVAR_GET(content_transactions)) {
++    std::string error;
++    if (!content_txn::Begin(package_path, content_txn::BeginMode::kOpen, &error)) {
++      REXKRNL_ERROR("[content] open {}: {}", Describe(data), error);
++      return X_ERROR_ACCESS_DENIED;
++    }
++    package = std::make_unique<ContentPackage>(kernel_state_, root_name, data, package_path,
++                                               content_txn::StagingPath(package_path), true);
++    REXKRNL_INFO("[content] open {} as '{}:' (staged)", Describe(data), root_name);
++  } else {
++    package = ResolvePackage(root_name, xuid, data);
++  }
+   assert_not_null(package);
+   package->LoadPackageLicenseMask(ResolvePackageHeaderPath(
+       data.file_name(), xuid, kernel_state_->title_id(), data.content_type));
+@@ -325,10 +466,101 @@ X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
+     }
+     package = DetachPackage(it);
+   }
+-  delete package;
++  return ReleasePackage(package, "close");
++}
++
++X_RESULT ContentManager::FlushContent(const std::string_view root_name) {
++  auto global_lock = global_critical_region_.Acquire();
++  auto it = open_packages_.find(string::string_key_case(root_name));
++  if (it == open_packages_.end()) {
++    REXKRNL_WARN("[content] flush '{}:': not open", root_name);
++    return X_ERROR_SUCCESS;  // as before transactions: flushing is never an error for the guest
++  }
++  auto* package = it->second;
++  if (!package->transactional()) {
++    return X_ERROR_SUCCESS;
++  }
++  FlushKillHook(package->package_path());
++  if (flush_group_depth_ > 0) {
++    held_flushes_.insert(string::string_key_case(root_name));
++    REXKRNL_INFO("[content] flush {}: held until the end of {}", Describe(package->GetPackageContentData()),
++                 flush_group_name_);
++    return X_ERROR_SUCCESS;
++  }
++  return CommitOpenPackage(package, "flush");
++}
++
++X_RESULT ContentManager::CommitOpenPackage(ContentPackage* package, std::string_view why) {
++  auto result = content_txn::Snapshot(package->package_path());
++  const auto what = Describe(package->GetPackageContentData());
++  if (!result.ok) {
++    REXKRNL_ERROR("[content] {} {} failed, the previous version stays: {}", why, what, result.error);
++    return X_ERROR_ACCESS_DENIED;
++  }
++  REXKRNL_INFO("[content] {} {}: {} ({} files, {} bytes{})", why, what, result.changed ? "committed" : "unchanged",
++               result.files, result.bytes, ChangedList(result));
+   return X_ERROR_SUCCESS;
+ }
+ 
++void ContentManager::BeginFlushGroup(std::string_view what) {
++  auto global_lock = global_critical_region_.Acquire();
++  if (flush_group_depth_++ == 0) {
++    flush_group_name_ = what;
++  }
++}
++
++void ContentManager::EndFlushGroup() {
++  auto global_lock = global_critical_region_.Acquire();
++  if (flush_group_depth_ == 0 || --flush_group_depth_ > 0) {
++    return;
++  }
++  const std::string why = "flush (" + flush_group_name_ + ")";
++  for (const auto& root_name : held_flushes_) {
++    auto it = open_packages_.find(root_name);
++    if (it == open_packages_.end()) {
++      continue;  // closed inside the group: committed by the close
++    }
++    if (it->second->transactional()) {
++      CommitOpenPackage(it->second, why);
++    }
++  }
++  held_flushes_.clear();
++}
++
++X_RESULT ContentManager::ReleasePackage(ContentPackage* package, std::string_view why) {
++  const bool transactional = package->transactional();
++  const auto package_path = package->package_path();
++  const auto what = Describe(package->GetPackageContentData());
++  delete package;  // unmounts; the guest's handles were released by DetachPackage
++  if (!transactional) {
++    return X_ERROR_SUCCESS;
++  }
++  auto result = content_txn::Commit(package_path);
++  if (!result.ok) {
++    REXKRNL_ERROR("[content] {} {}: commit failed, the previous version stays: {}", why, what, result.error);
++    return X_ERROR_ACCESS_DENIED;
++  }
++  REXKRNL_INFO("[content] {} {}: {} ({} files, {} bytes{})", why, what,
++               result.changed ? "committed" : "unchanged", result.files, result.bytes, ChangedList(result));
++  return X_ERROR_SUCCESS;
++}
++
++void ContentManager::RecoverRoot(const std::filesystem::path& package_root) {
++  {
++    auto global_lock = global_critical_region_.Acquire();
++    if (!recovered_roots_.insert(package_root).second) {
++      return;
++    }
++  }
++  for (const auto& note : content_txn::Recover(package_root)) {
++    if (note.warning) {
++      REXKRNL_WARN("[content] recovery in {}: {}", rex::path_to_utf8(package_root), note.text);
++    } else {
++      REXKRNL_INFO("[content] recovery in {}: {}", rex::path_to_utf8(package_root), note.text);
++    }
++  }
++}
++
+ X_RESULT ContentManager::GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
+                                              std::vector<uint8_t>* buffer) {
+   auto global_lock = global_critical_region_.Acquire();
+@@ -352,6 +584,10 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+                                              std::vector<uint8_t> buffer) {
+   auto global_lock = global_critical_region_.Acquire();
+   auto package_path = ResolvePackagePath(xuid, data);
++  auto open = FindOpenPackageByData(data);
++  if (open != open_packages_.end() && open->second->transactional()) {
++    package_path = content_txn::StagingPath(package_path);  // committed with the rest of the package
++  }
+   std::filesystem::create_directories(package_path);
+   if (std::filesystem::exists(package_path)) {
+     auto thumb_path = package_path / kThumbnailFileName;
+@@ -374,7 +610,14 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
+ 
+   auto package_path = ResolvePackagePath(xuid, data);
+   std::error_code ec;
+-  auto dir_removed = std::filesystem::remove_all(package_path, ec);
++  uintmax_t dir_removed = 0;
++  if (content_txn::SetAsideIfDamaged(package_path)) {
++    dir_removed = 1;
++    REXKRNL_WARN("[content] the game deletes {}, which is damaged: kept aside as '{}{}' (not loaded)",
++                 Describe(data), data.file_name(), content_txn::kDamagedSuffix);
++  } else {
++    dir_removed = std::filesystem::remove_all(package_path, ec);
++  }
+   if (ec) {
+     return X_ERROR_ACCESS_DENIED;
+   }
+@@ -386,6 +629,7 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
+   bool header_removed = std::filesystem::remove(header_path, ec2);
+ 
+   if (dir_removed > 0 || header_removed) {
++    REXKRNL_INFO("[content] deleted {} (requested by the game)", Describe(data));
+     return X_ERROR_SUCCESS;
+   }
+   return X_ERROR_FILE_NOT_FOUND;
+@@ -401,8 +645,7 @@ X_RESULT ContentManager::UnmountContent(uint64_t xuid, const XCONTENT_AGGREGATE_
+     }
+     package = DetachPackage(it);
+   }
+-  delete package;
+-  return X_ERROR_SUCCESS;
++  return ReleasePackage(package, "unmount");
+ }
+ 
+ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
+@@ -416,7 +659,11 @@ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
+       package = DetachPackage(it);
+     }
+   }
+-  delete package;
++  if (package) {
++    const auto path = package->package_path();
++    delete package;
++    content_txn::Abort(path);  // the package is deleted anyway; drop uncommitted changes
++  }
+ 
+   // Delete phase: remove package directory and .header file
+   auto package_path = ResolvePackagePath(xuid, data);
+diff --git a/src/system/xam/content_transaction.cpp b/src/system/xam/content_transaction.cpp
+new file mode 100644
+index 0000000..fe3f39f
+--- /dev/null
++++ b/src/system/xam/content_transaction.cpp
+@@ -0,0 +1,480 @@
++/**
++ * Transactional content packages (kuf-cod-recomp patch). See content_transaction.h.
++ */
++
++#include <rex/system/xam/content_transaction.h>
++
++#include <algorithm>
++#include <array>
++#include <cerrno>
++#include <cstdio>
++#include <cstring>
++#include <fstream>
++#include <map>
++#include <sstream>
++#include <system_error>
++
++#include <fcntl.h>
++#include <linux/fs.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++namespace rex::system::xam::content_txn {
++namespace fs = std::filesystem;
++
++namespace {
++
++// --- SHA-256 (FIPS 180-4), small and dependency-free ------------------------------------------------
++class Sha256 {
++ public:
++  Sha256() { Reset(); }
++  void Reset() {
++    h_ = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
++    len_ = 0;
++    used_ = 0;
++  }
++  void Update(const uint8_t* p, size_t n) {
++    len_ += n;
++    while (n) {
++      size_t take = std::min(n, size_t(64) - used_);
++      std::memcpy(buf_.data() + used_, p, take);
++      used_ += take;
++      p += take;
++      n -= take;
++      if (used_ == 64) {
++        Block(buf_.data());
++        used_ = 0;
++      }
++    }
++  }
++  std::string HexDigest() {
++    uint64_t bits = len_ * 8;
++    uint8_t pad = 0x80;
++    Update(&pad, 1);
++    uint8_t zero = 0;
++    while (used_ != 56) Update(&zero, 1);
++    uint8_t lenbuf[8];
++    for (int i = 0; i < 8; ++i) lenbuf[i] = uint8_t(bits >> (56 - 8 * i));
++    Update(lenbuf, 8);
++    static const char* kHex = "0123456789abcdef";
++    std::string out;
++    for (uint32_t v : h_) {
++      for (int i = 3; i >= 0; --i) {
++        uint8_t b = uint8_t(v >> (8 * i));
++        out += kHex[b >> 4];
++        out += kHex[b & 15];
++      }
++    }
++    return out;
++  }
++
++ private:
++  static uint32_t Rotr(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
++  void Block(const uint8_t* p) {
++    static constexpr uint32_t k[64] = {
++        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
++        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
++        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
++        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
++        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
++        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
++        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
++        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
++    uint32_t w[64];
++    for (int i = 0; i < 16; ++i) {
++      w[i] = uint32_t(p[4 * i]) << 24 | uint32_t(p[4 * i + 1]) << 16 | uint32_t(p[4 * i + 2]) << 8 |
++             uint32_t(p[4 * i + 3]);
++    }
++    for (int i = 16; i < 64; ++i) {
++      uint32_t s0 = Rotr(w[i - 15], 7) ^ Rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
++      uint32_t s1 = Rotr(w[i - 2], 17) ^ Rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
++      w[i] = w[i - 16] + s0 + w[i - 7] + s1;
++    }
++    uint32_t a = h_[0], b = h_[1], c = h_[2], d = h_[3], e = h_[4], f = h_[5], g = h_[6], h = h_[7];
++    for (int i = 0; i < 64; ++i) {
++      uint32_t t1 = h + (Rotr(e, 6) ^ Rotr(e, 11) ^ Rotr(e, 25)) + ((e & f) ^ (~e & g)) + k[i] + w[i];
++      uint32_t t2 = (Rotr(a, 2) ^ Rotr(a, 13) ^ Rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
++      h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
++    }
++    h_[0] += a; h_[1] += b; h_[2] += c; h_[3] += d; h_[4] += e; h_[5] += f; h_[6] += g; h_[7] += h;
++  }
++  std::array<uint32_t, 8> h_;
++  std::array<uint8_t, 64> buf_;
++  uint64_t len_;
++  size_t used_;
++};
++
++std::string Suffixed(const fs::path& package, std::string_view suffix) {
++  return package.filename().string() + std::string(suffix);
++}
++fs::path Sibling(const fs::path& package, std::string_view suffix) {
++  return package.parent_path() / Suffixed(package, suffix);
++}
++
++bool FsyncPath(const fs::path& path, bool directory) {
++  int fd = ::open(path.c_str(), (directory ? O_RDONLY | O_DIRECTORY : O_RDONLY) | O_CLOEXEC);
++  if (fd < 0) return false;
++  bool ok = ::fsync(fd) == 0;
++  ::close(fd);
++  return ok;
++}
++
++// Relative path -> file content digest and size, for every regular file below `dir` (the manifest itself
++// excluded).
++struct FileDigest {
++  uint64_t size = 0;
++  std::string sha256;
++  bool operator==(const FileDigest&) const = default;
++};
++using Tree = std::map<std::string, FileDigest>;
++
++bool HashFile(const fs::path& file, FileDigest* out) {
++  std::ifstream in(file, std::ios::binary);
++  if (!in) return false;
++  Sha256 sha;
++  std::array<char, 65536> buf;
++  uint64_t size = 0;
++  while (in) {
++    in.read(buf.data(), buf.size());
++    auto n = static_cast<size_t>(in.gcount());
++    sha.Update(reinterpret_cast<const uint8_t*>(buf.data()), n);
++    size += n;
++  }
++  if (in.bad()) return false;
++  out->size = size;
++  out->sha256 = sha.HexDigest();
++  return true;
++}
++
++bool ScanTree(const fs::path& dir, Tree* out, std::string* error) {
++  std::error_code ec;
++  if (!fs::is_directory(dir, ec)) {
++    if (error) *error = "not a directory: " + dir.string();
++    return false;
++  }
++  for (auto it = fs::recursive_directory_iterator(dir, ec); !ec && it != fs::recursive_directory_iterator();
++       it.increment(ec)) {
++    if (!it->is_regular_file(ec)) continue;
++    auto rel = fs::relative(it->path(), dir, ec).generic_string();
++    if (ec) break;
++    if (rel == kManifestName) continue;
++    FileDigest d;
++    if (!HashFile(it->path(), &d)) {
++      if (error) *error = "cannot read " + it->path().string();
++      return false;
++    }
++    (*out)[rel] = std::move(d);
++  }
++  if (ec) {
++    if (error) *error = "cannot list " + dir.string() + ": " + ec.message();
++    return false;
++  }
++  return true;
++}
++
++std::string ManifestText(const Tree& tree) {
++  std::ostringstream s;
++  s << "rex-content-manifest 1\n";
++  for (const auto& [rel, d] : tree) s << d.sha256 << ' ' << d.size << ' ' << rel << '\n';
++  return s.str();
++}
++
++bool ParseManifest(const fs::path& file, Tree* out) {
++  std::ifstream in(file);
++  std::string line;
++  if (!std::getline(in, line) || line != "rex-content-manifest 1") return false;
++  while (std::getline(in, line)) {
++    std::istringstream ls(line);
++    FileDigest d;
++    std::string rel;
++    if (!(ls >> d.sha256 >> d.size) || d.sha256.size() != 64) return false;
++    ls.get();
++    std::getline(ls, rel);
++    if (rel.empty()) return false;
++    (*out)[rel] = d;
++  }
++  return true;
++}
++
++bool CopyTree(const fs::path& from, const fs::path& to, std::string* error) {
++  std::error_code ec;
++  fs::create_directories(to, ec);
++  if (!ec) fs::copy(from, to, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
++  if (ec) {
++    if (error) *error = "copy " + from.string() + " -> " + to.string() + ": " + ec.message();
++    return false;
++  }
++  fs::remove(to / kManifestName, ec);  // rewritten at commit
++  return true;
++}
++
++bool SyncTree(const fs::path& dir) {
++  std::error_code ec;
++  bool ok = true;
++  for (auto it = fs::recursive_directory_iterator(dir, ec); !ec && it != fs::recursive_directory_iterator();
++       it.increment(ec)) {
++    ok &= FsyncPath(it->path(), it->is_directory(ec));
++  }
++  return ok && !ec && FsyncPath(dir, true);
++}
++
++int RenameExchange(const fs::path& a, const fs::path& b) {
++#ifdef SYS_renameat2
++  return static_cast<int>(::syscall(SYS_renameat2, AT_FDCWD, a.c_str(), AT_FDCWD, b.c_str(), RENAME_EXCHANGE));
++#else
++  errno = ENOSYS;
++  return -1;
++#endif
++}
++
++// Moves `from` (a complete, synced tree with manifest) into place as `package`.
++bool Install(const fs::path& from, const fs::path& package, std::string* error) {
++  std::error_code ec;
++  const fs::path parent = package.parent_path();
++  if (!fs::exists(package, ec)) {
++    if (::rename(from.c_str(), package.c_str()) != 0) {
++      if (error) *error = "rename " + from.string() + ": " + std::strerror(errno);
++      return false;
++    }
++    FsyncPath(parent, true);
++    return true;
++  }
++  if (RenameExchange(from, package) == 0) {
++    FsyncPath(parent, true);
++    fs::remove_all(from, ec);  // now the previous version
++    FsyncPath(parent, true);
++    return true;
++  }
++  // No RENAME_EXCHANGE (old kernel or filesystem): previous version aside, then the new one in. A crash
++  // between the two renames leaves <package>.rex-previous, which Recover() moves back.
++  const fs::path previous = Sibling(package, kPreviousSuffix);
++  fs::remove_all(previous, ec);
++  if (::rename(package.c_str(), previous.c_str()) != 0) {
++    if (error) *error = "rename " + package.string() + ": " + std::strerror(errno);
++    return false;
++  }
++  if (::rename(from.c_str(), package.c_str()) != 0) {
++    if (error) *error = "rename " + from.string() + ": " + std::strerror(errno);
++    ::rename(previous.c_str(), package.c_str());
++    return false;
++  }
++  FsyncPath(parent, true);
++  fs::remove_all(previous, ec);
++  FsyncPath(parent, true);
++  return true;
++}
++
++CommitHook g_commit_hook = nullptr;
++
++CommitResult CommitFrom(const fs::path& staging, const fs::path& package, bool keep_staging) {
++  CommitResult result;
++  Tree tree;
++  if (!ScanTree(staging, &tree, &result.error)) return result;
++  for (const auto& [rel, d] : tree) {
++    ++result.files;
++    result.bytes += d.size;
++  }
++  Tree current;
++  std::error_code ec;
++  const bool have_current = fs::exists(package, ec) && ScanTree(package, &current, nullptr);
++  if (have_current && current == tree && Verify(package, nullptr) == Integrity::kOk) {
++    result.ok = true;  // nothing changed
++    if (!keep_staging) fs::remove_all(staging, ec);
++    return result;
++  }
++  for (const auto& [rel, d] : tree) {
++    auto it = current.find(rel);
++    if (it == current.end()) result.changed_files.push_back(rel);
++    else if (!(it->second == d)) result.changed_files.push_back("~" + rel);
++  }
++  for (const auto& [rel, d] : current) {
++    if (!tree.contains(rel)) result.changed_files.push_back("-" + rel);
++  }
++  if (g_commit_hook) g_commit_hook("changed", package);
++  fs::path source = staging;
++  if (keep_staging) {
++    source = Sibling(package, ".rex-snapshot");
++    fs::remove_all(source, ec);
++    if (!CopyTree(staging, source, &result.error)) return result;
++  }
++  const std::string text = ManifestText(tree);
++  if (!AtomicWriteFile(source / kManifestName,
++                       std::span(reinterpret_cast<const uint8_t*>(text.data()), text.size()),
++                       &result.error)) {
++    return result;
++  }
++  if (!SyncTree(source)) {
++    result.error = "fsync failed in " + source.string();
++    return result;
++  }
++  if (g_commit_hook) g_commit_hook("install", package);
++  if (!Install(source, package, &result.error)) return result;
++  result.ok = true;
++  result.changed = true;
++  return result;
++}
++
++}  // namespace
++
++bool IsInternalName(std::string_view name) {
++  return name.starts_with(".rex-") || name.ends_with(kStagingSuffix) || name.ends_with(kInterruptedSuffix) ||
++         name.ends_with(kPreviousSuffix) || name.ends_with(kDamagedSuffix) || name.ends_with(".rex-snapshot");
++}
++
++bool SetAsideIfDamaged(const fs::path& package) {
++  std::error_code ec;
++  if (!fs::is_directory(package, ec) || Verify(package, nullptr) != Integrity::kDamaged) return false;
++  const fs::path aside = Sibling(package, kDamagedSuffix);
++  fs::remove_all(aside, ec);
++  fs::rename(package, aside, ec);
++  return !ec;
++}
++
++fs::path StagingPath(const fs::path& package) { return Sibling(package, kStagingSuffix); }
++
++bool Begin(const fs::path& package, BeginMode mode, std::string* error) {
++  std::error_code ec;
++  const fs::path staging = StagingPath(package);
++  if (fs::exists(staging, ec)) {
++    const fs::path aside = Sibling(package, kInterruptedSuffix);
++    fs::remove_all(aside, ec);
++    fs::rename(staging, aside, ec);
++    if (ec) fs::remove_all(staging, ec);
++  }
++  if (mode == BeginMode::kOpen) return CopyTree(package, staging, error);
++  fs::create_directories(staging, ec);
++  if (ec && error) *error = "create " + staging.string() + ": " + ec.message();
++  return !ec;
++}
++
++CommitResult Commit(const fs::path& package) { return CommitFrom(StagingPath(package), package, false); }
++
++CommitResult Snapshot(const fs::path& package) { return CommitFrom(StagingPath(package), package, true); }
++
++void Abort(const fs::path& package) {
++  std::error_code ec;
++  fs::remove_all(StagingPath(package), ec);
++}
++
++Integrity Verify(const fs::path& package, std::string* detail) {
++  Tree expected;
++  std::error_code ec;
++  const fs::path manifest = package / kManifestName;
++  if (!fs::exists(manifest, ec)) return Integrity::kNoManifest;
++  if (!ParseManifest(manifest, &expected)) {
++    if (detail) *detail = "unreadable manifest";
++    return Integrity::kDamaged;
++  }
++  Tree actual;
++  std::string error;
++  if (!ScanTree(package, &actual, &error)) {
++    if (detail) *detail = error;
++    return Integrity::kDamaged;
++  }
++  if (actual == expected) return Integrity::kOk;
++  if (detail) {
++    std::ostringstream s;
++    for (const auto& [rel, d] : expected) {
++      auto it = actual.find(rel);
++      if (it == actual.end()) {
++        s << rel << ": missing; ";
++      } else if (it->second.size != d.size) {
++        s << rel << ": size " << it->second.size << ", expected " << d.size << "; ";
++      } else if (it->second.sha256 != d.sha256) {
++        s << rel << ": content differs; ";
++      }
++    }
++    for (const auto& [rel, d] : actual) {
++      if (!expected.count(rel)) s << rel << ": unexpected file; ";
++    }
++    *detail = s.str();
++  }
++  return Integrity::kDamaged;
++}
++
++std::vector<RecoveryNote> Recover(const fs::path& package_root) {
++  std::vector<RecoveryNote> notes;
++  std::error_code ec;
++  if (!fs::is_directory(package_root, ec)) return notes;
++  std::vector<fs::path> entries;
++  for (const auto& e : fs::directory_iterator(package_root, ec)) entries.push_back(e.path());
++  for (const auto& path : entries) {
++    const std::string name = path.filename().string();
++    auto strip = [&](std::string_view suffix) { return package_root / name.substr(0, name.size() - suffix.size()); };
++    if (name.ends_with(kPreviousSuffix)) {
++      const fs::path package = strip(kPreviousSuffix);
++      if (!fs::exists(package, ec)) {
++        fs::rename(path, package, ec);
++        notes.push_back({true, "restored " + package.filename().string() + " from an interrupted commit"});
++      } else {
++        fs::remove_all(path, ec);
++        notes.push_back({true, "removed the previous version of " + package.filename().string() +
++                                   " left by an interrupted commit"});
++      }
++    } else if (name.ends_with(".rex-snapshot")) {
++      fs::remove_all(path, ec);
++      notes.push_back(
++          {true, "removed an unfinished flush copy of " + strip(".rex-snapshot").filename().string()});
++    }
++  }
++  for (const auto& path : entries) {
++    const std::string name = path.filename().string();
++    if (!name.ends_with(kStagingSuffix) || !fs::exists(path, ec)) continue;
++    const fs::path package = package_root / name.substr(0, name.size() - kStagingSuffix.size());
++    Tree staged, committed;
++    if (fs::exists(package, ec) && ScanTree(path, &staged, nullptr) && ScanTree(package, &committed, nullptr) &&
++        staged == committed) {
++      fs::remove_all(path, ec);
++      notes.push_back({false, "removed the staging copy of " + package.filename().string() +
++                                  " (no uncommitted changes)"});
++      continue;
++    }
++    const fs::path aside = Sibling(package, kInterruptedSuffix);
++    fs::remove_all(aside, ec);
++    fs::rename(path, aside, ec);
++    if (ec) fs::remove_all(path, ec);
++    notes.push_back({true, "uncommitted changes to " + package.filename().string() +
++                               " from an interrupted session were not applied (kept as " +
++                               aside.filename().string() + "); the last committed version is used"});
++  }
++  return notes;
++}
++
++bool AtomicWriteFile(const fs::path& file, std::span<const uint8_t> data, std::string* error) {
++  const fs::path tmp = file.parent_path() / (".rex-tmp-" + file.filename().string());
++  int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
++  if (fd < 0) {
++    if (error) *error = "open " + tmp.string() + ": " + std::strerror(errno);
++    return false;
++  }
++  size_t done = 0;
++  while (done < data.size()) {
++    ssize_t n = ::write(fd, data.data() + done, data.size() - done);
++    if (n < 0) {
++      if (errno == EINTR) continue;
++      break;
++    }
++    done += static_cast<size_t>(n);
++  }
++  bool ok = done == data.size() && ::fsync(fd) == 0;
++  ok &= ::close(fd) == 0;
++  if (ok) ok = ::rename(tmp.c_str(), file.c_str()) == 0;
++  if (!ok) {
++    if (error) *error = "write " + file.string() + ": " + std::strerror(errno);
++    ::unlink(tmp.c_str());
++    return false;
++  }
++  FsyncPath(file.parent_path(), true);
++  return true;
++}
++
++void SetCommitHook(CommitHook hook) { g_commit_hook = hook; }
++
++std::string Sha256Hex(std::span<const uint8_t> data) {
++  Sha256 sha;
++  sha.Update(data.data(), data.size());
++  return sha.HexDigest();
++}
++
++}  // namespace rex::system::xam::content_txn

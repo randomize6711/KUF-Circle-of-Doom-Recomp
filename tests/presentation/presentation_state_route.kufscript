@@ -1,0 +1,79 @@
+# presentation_route.kufscript without its freezes (the game-state comparisons: state_compare.py; a freeze needs
+# render-only frames, which the 30 fps reference does not have).
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 log mark start
+@gameplay+300 capture start
+@gameplay+300 down W
+@gameplay+320 log mark walk
+@gameplay+379 log mark walk_end
+@gameplay+380 up W
+@gameplay+400 log mark turn
+@gameplay+400 look 60 0
+@gameplay+401 look 60 0
+@gameplay+402 look 60 0
+@gameplay+403 look 60 0
+@gameplay+404 look 60 0
+@gameplay+405 look 60 0
+@gameplay+406 look 60 0
+@gameplay+407 look 60 0
+@gameplay+408 look 60 0
+@gameplay+409 look 60 0
+@gameplay+410 look 60 0
+@gameplay+411 look 60 0
+@gameplay+412 look 60 0
+@gameplay+413 look 60 0
+@gameplay+414 look 60 0
+@gameplay+415 look 60 0
+@gameplay+416 look 60 0
+@gameplay+417 look 60 0
+@gameplay+418 look 60 0
+@gameplay+419 look 60 0
+@gameplay+420 look 60 0
+@gameplay+421 look 60 0
+@gameplay+422 look 60 0
+@gameplay+423 look 60 0
+@gameplay+424 look 60 0
+@gameplay+425 look 60 0
+@gameplay+426 look 60 0
+@gameplay+427 look 60 0
+@gameplay+428 look 60 0
+@gameplay+429 look 60 0
+@gameplay+430 log mark turn_end
+@gameplay+459 log mark flick
+@gameplay+460 look 2700 0
+@gameplay+470 log mark flick_end
+@gameplay+479 log mark orbit
+@gameplay+480 look 0 -30
+@gameplay+481 look 0 -30
+@gameplay+482 look 0 -30
+@gameplay+483 look 0 -30
+@gameplay+484 look 0 -30
+@gameplay+485 look 0 -30
+@gameplay+486 look 0 -30
+@gameplay+487 look 0 -30
+@gameplay+488 look 0 -30
+@gameplay+489 look 0 -30
+@gameplay+490 look 0 -30
+@gameplay+491 look 0 -30
+@gameplay+492 look 0 -30
+@gameplay+493 look 0 -30
+@gameplay+494 look 0 -30
+@gameplay+495 look 0 -30
+@gameplay+496 look 0 -30
+@gameplay+497 look 0 -30
+@gameplay+498 look 0 -30
+@gameplay+499 look 0 -30
+@gameplay+500 log mark orbit_end
+@gameplay+520 look 0 600
+@gameplay+540 look 1800 0
+@gameplay+559 log mark centre
+@gameplay+560 down V
+@gameplay+590 up V
+@gameplay+620 log mark centred
+@gameplay+640 log mark end
+@gameplay+640 capture end

@@ -1,0 +1,27 @@
+# A pc_settings.toml with invalid frame-rate values (M6D D5): each falls back to its default with a warning (the
+# original 30 fps; interpolation on), the valid one is used, no render-only frames are drawn, the game starts.
+
+[scenario]
+description = "pc_settings.toml with invalid frame-rate values: the original 30 fps, the valid value kept"
+seconds = 45
+pc_settings_file = "tests/settings/frame_rate_invalid_pc_settings.toml.in"
+script = """
+500 tap Return
+700 press Return
+900 capture main_menu
+"""
+capture_frames = []
+pc_settings_expect = { "frame_rate.limit_fps" = 29, "frame_rate.interpolate_effects" = false }
+log_expect = [
+    "[kuf-settings] loaded /run-data/user/pc_settings.toml",
+    "frame_rate.limit_fps: invalid value (default used)",
+    "frame_rate.interpolation: invalid value (default used)",
+    "frame_rate.interpolate_objects: invalid value (default used)",
+    "[kuf-settings] frame rate: 30 (original) interpolation true objects true animation true effects false",
+    "[kuf-input] context: menu",
+]
+log_absent = ["[kuf-pacing] render-only frames"]
+
+[format]
+width = 1280
+height = 720

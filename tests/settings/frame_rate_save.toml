@@ -1,0 +1,86 @@
+# Saving, the title and loading after a frame-rate change (M6D D5): CONTINUE from the Shadow Depths fixture (the run's
+# copy), 120 fps set in the menu, gameplay, the game's Quit save (options > Quit > save and return to the Title
+# Screen > Yes), the title, CONTINUE (the save just written), gameplay (its third entry: closing the menu was the second): still 120 frames per second, the game
+# loaded, no crash (the render-only frames' kept data released through the save's object releases, K46).
+
+[scenario]
+description = "120 fps set in the menu, Quit save, title, CONTINUE: the frame rate kept, the save loads"
+seconds = 300
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_profile=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 press Escape
+@gameplay+400 press Down
+@gameplay+450 press Down
+@gameplay+500 press Down
+@gameplay+550 press Down
+@gameplay+650 press Return
+@gameplay+800 press Down
+@gameplay+830 press Down
+@gameplay+860 press Down
+@gameplay+890 press Down
+@gameplay+920 press Down
+@gameplay+950 press Down
+@gameplay+980 press Down
+@gameplay+1010 press Down
+@gameplay+1110 press Return
+@gameplay+1260 press Down
+@gameplay+1290 press Down
+@gameplay+1320 press Return
+@gameplay+1420 press Down
+@gameplay+1450 press Down
+@gameplay+1480 press Down
+@gameplay+1510 press Down
+@gameplay+1540 press Down
+@gameplay+1610 press Right
+@gameplay+1640 press Right
+@gameplay+1670 press Right
+@gameplay+1700 log mark at_120
+@gameplay+1760 press Escape
+@gameplay+1860 press Escape
+@gameplay+1960 press Escape
+@gameplay+2060 press Escape
+@gameplay+2260 log mark play_a
+@gameplay+2270 down W
+@gameplay+2570 log mark play_b
+@gameplay+2580 up W
+@gameplay+2640 tap Escape
+@gameplay+2740 tap Down
+@gameplay+2770 tap Down
+@gameplay+2800 tap Down
+@gameplay+2830 tap Down
+@gameplay+2860 tap Down
+@gameplay+2940 press Return
+@gameplay+3060 press Return
+@prompt#2+100 capture title_after_save
+@prompt#2+200 tap Return
+@prompt#2+400 press Return
+@prompt#2+550 press Return
+@prompt#2+700 press Down
+@prompt#2+800 press Return
+@prompt#2+1000 repeat 60 until gameplay#3 press Return
+@gameplay#3+200 log mark play_c
+@gameplay#3+210 down W
+@gameplay#3+510 log mark play_d
+@gameplay#3+520 up W
+@gameplay#3+600 log mark end
+"""
+capture_frames = []
+pc_settings_expect = { "frame_rate.limit_fps" = 120 }
+log_expect = [
+    "frame rate 90 -> 120, interpolation true",
+    "(save message 0x41127)",
+    "[kuf-input] context: start prompt",
+]
+log_sequence = ["frame rate 90 -> 120", "committed", "[kuf-input] context: start prompt", "[kuf-input] context: gameplay",
+                "log mark play_d"]
+
+[format]
+width = 1280
+height = 720

@@ -1,0 +1,15 @@
+# Codegen settings for default.xex v1 (top-level keys; included before the [functions] tables).
+
+# CRT setjmp/longjmp (identified in M2; jmp_buf layout: f14-f31 @0, r1 @144, r13-r31 @152, cr @304,
+# lr @308, unwind flag @312). Recompiled code cannot return through the guest longjmp's `blr` to the
+# setjmp site, so call sites use ReXGlue's native ppc_setjmp/ppc_longjmp keyed by the guest buffer.
+# Without this the XGraphics shader compiler's error recovery corrupted the stack (KNOWN_ISSUES K2).
+setjmp_address = 0x82A184F0
+longjmp_address = 0x828008C0
+
+# M6C (src/runtime/display.cpp): the 2D renderer (sub_8222C360) has written one quad's four clip-space vertices
+# (r25 - 32, stride 24) where its two conversion paths meet; the hook places HUD and menus in a centred 16:9 box.
+[[midasm_hook]]
+name = "KufUiQuadHook"
+address = 0x8222C9B4
+registers = ["r25", "r30"]

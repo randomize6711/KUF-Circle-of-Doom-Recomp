@@ -1,0 +1,47 @@
+# Movies at 21:9 (3440x1440, simulated): the title loop and the attract movie are drawn by the game's movie player
+# over the whole frame, so while one plays the output is treated as 16:9 (docs/DISPLAY.md): the presenter
+# pillarboxes the frame and the 2D quads over it ("Press START") are not moved into the HUD box. Between the two
+# movies (the title scene stops one and plays the next) the output is briefly widened again. No input: boot, the
+# title loop, the attract movie from about 70 s. The captures are the game's 1280x720 frame.
+# Native rendering (M6C follow-up): the scenario display_movie with Render Native, i.e. the frame rendered at
+# 3x2 (3840x1440); its rules see the captures reduced to 1280x720 (capture_check guest_coordinates).
+
+[scenario]
+description = "Render Native (3840x1440): Movies at 21:9: shown at 16:9 (pillarboxed), the title's 2D left in place"
+seconds = 110
+args = ["--kuf_display_size=3440x1440"]
+script = """
+400 capture title
+2400 capture attract
+"""
+capture_frames = []
+log_sequence = [
+    "render scale 3x2 (frame 3840x1440); Render Native",
+    "[kuf-display] output 3440x1440 (21:9), drawn for aspect 2.3889",
+    "[kuf-display] movie d:\\data\\title\\COD_TITLE_LOOP.wmv: shown at 16:9",
+    "[kuf-display] presented at 16:9",
+    "[kuf-display] movie stopped",
+    "[kuf-display] presented stretched to the output",
+    "[kuf-display] movie d:\\data\\title\\COD_ATTRACT.wmv: shown at 16:9",
+    "[kuf-display] presented at 16:9",
+]
+
+[format]
+render_scale = [3, 2]
+guest_coordinates = true
+
+# The "Press START" button glyph at its 16:9 place (x 522-548); moved into the 21:9 HUD box it would be at
+# x 553-573, so the strip left of that is empty only if the quad was not moved.
+[[region]]
+name = "Press START glyph at its 16:9 place"
+capture = "title"
+rect = [520, 522, 550, 548]
+metric = "text"
+mean = [20.0, 255.0]      # measured 97 (0 with the glyph moved into the box)
+
+[[region]]
+name = "the attract movie is shown (its left edge is not black)"
+capture = "attract"
+rect = [0, 0, 120, 720]
+metric = "luma"
+mean = [8.0, 255.0]       # measured 28

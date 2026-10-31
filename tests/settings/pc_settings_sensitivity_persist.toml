@@ -1,0 +1,86 @@
+# The expanded sensitivity levels survive a restart (M6B final verification): a new process starts with the
+# pc_settings.toml that pc_settings_sensitivity wrote (mouse 20/20, stick 20; ctest orders them). The levels are
+# loaded at start and used by the camera: 100 mouse counts turn the view 150 degrees (1.5 degrees a count, the top
+# level; --kuf_trace_modern_camera). Then PC Settings, Restore Defaults (the categories' last row) and Back: the file holds the defaults
+# again (mouse 4/4, stick 5).
+
+[scenario]
+description = "Expanded sensitivity loaded after a restart and used; Restore Defaults resets it"
+seconds = 195
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+pc_settings_from_run = "pc_settings_sensitivity"
+args = ["--kuf_trace_modern_camera=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 log mark start
+@gameplay+330 look 100 0
+@gameplay+360 log mark mouse_right
+@gameplay+380 log mark mouse_done
+@gameplay+500 press Escape
+@gameplay+600 press Down
+@gameplay+650 press Down
+@gameplay+700 press Down
+@gameplay+750 press Down
+@gameplay+850 press Return
+@gameplay+1000 press Down
+@gameplay+1030 press Down
+@gameplay+1060 press Down
+@gameplay+1090 press Down
+@gameplay+1120 press Down
+@gameplay+1150 press Down
+@gameplay+1180 press Down
+@gameplay+1210 press Down
+@gameplay+1300 capture pc_row_selected
+@gameplay+1330 press Return
+@gameplay+1430 capture categories
+@gameplay+1460 press Down
+@gameplay+1490 press Down
+@gameplay+1520 press Down
+@gameplay+1550 press Down
+@gameplay+1580 press Down
+@gameplay+1610 press Down
+@gameplay+1620 capture restore_defaults_selected
+@gameplay+1650 press Return
+@gameplay+1750 capture defaults_restored
+@gameplay+1780 press Escape
+@gameplay+1870 press Escape
+@gameplay+1940 press Escape
+@gameplay+2040 capture closed
+"""
+capture_frames = []
+expect_saves_unchanged = true
+pc_settings_expect = { "mouse.sensitivity_horizontal" = 4, "mouse.sensitivity_vertical" = 4, "controller.camera_sensitivity" = 5, "camera.distance_percent" = 100, "camera.field_of_view_degrees" = 0, "camera.modern_camera" = true }
+log_expect = [
+    "[kuf-input] context: gameplay",
+    "[kuf-settings] loaded /run-data/user/pc_settings.toml",
+    "[kuf-settings] camera: modern true range 85 recenter false mouse 20/20 invert false stick 20 deadzone 25% distance 100% field of view original",
+    "[kuf-pc-menu] PC settings restored to the defaults",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+]
+
+[[scenario.log_value]]
+name = "start yaw"
+after = "log mark start"
+before = "look 100 0"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+which = "last"
+
+[[scenario.log_value]]
+name = "mouse right 100 counts at the loaded level 20"
+after = "log mark mouse_right"
+before = "log mark mouse_done"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+which = "last"
+relative_to = "start yaw"
+angle = true
+min = 149.50
+max = 150.50
+
+[format]
+width = 1280
+height = 720

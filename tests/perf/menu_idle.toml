@@ -1,0 +1,18 @@
+# Performance workload (M6A): cold start to the main menu, then the menu idles (animated background) until
+# the end. Run with profiling: tools/menu_test.py --run-prefix perf --game-arg=--kuf_profile=true
+# --game-arg=--kuf_profile_samples=true tests/perf/menu_idle.toml, then tools/profile_report.py with
+# --from-s 35 (after the menu has been reached and settled).
+
+[scenario]
+description = "Main menu idle (performance workload)"
+seconds = 100
+script = """
+500 tap Return
+700 tap Escape
+"""
+capture_frames = [900, 2900]
+log_expect = ["[kuf-input] game no longer waits for START"]
+
+[format]
+width = 1280
+height = 720

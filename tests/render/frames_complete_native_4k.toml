@@ -1,0 +1,29 @@
+# M6D D3b-1 (docs/HIGH_FPS.md section 14): render-only frames are complete, Render Native at 3840x2160. The game is held for 3 s (the
+# input script's freeze) while render-only frames (--kuf_render_builds=1) draw the last tick again; the tick's own frame
+# (idle_tick) and three render-only frames (idle_1-3) are captured, and tests/render/frames_check.py requires them to
+# show the same scene and HUD and the render-only frames to be the same (effects held at the tick's moment). The freeze
+# report (freeze-idle.txt) and the log give the builds' rand() and PhysX calls (none). CONTINUE from
+# build/m6-saves/celine-shadows-depths-1 (read only). Interpolation off (M6D D3b-3, docs/HIGH_FPS.md section 15): with it the
+# tick's own frame is drawn between the ticks before it (alpha about 0.08) and the held frames at the tick, so they
+# differ by design; presentation_check.py checks held frames against the tick (alpha 1) with interpolation on.
+
+[scenario]
+description = "Render-only frames show the tick exactly: Render Native at 3840x2160"
+seconds = 120
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_size=3840x2160", "--kuf_render_builds=1", "--kuf_frame_interpolation=false"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 capture start
+@gameplay+300 freeze 3 idle
+@gameplay+400 capture after
+"""
+capture_frames = []
+expect_saves_unchanged = true
+log_expect = ["[kuf-pacing] D3a diagnostic --kuf_render_builds=1",
+              "PhysX simulate in the builds 0", "rand() calls in the builds 0"]

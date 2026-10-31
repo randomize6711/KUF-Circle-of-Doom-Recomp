@@ -1,0 +1,54 @@
+# Render resolution reference (M6C follow-up): the 2560x1440 (16:9) output with Render 1x, i.e. the game's
+# 1280x720 frame scaled to the output, as before native rendering. The render_native_* scenarios of this shape
+# are compared with it by tests/display/render_compare.py (colours, post-processing, the lighting cube maps, the
+# resolves). CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only); the GPU trace (SDK patch 0009)
+# dumps the resolves of one gameplay frame and the cube maps the game builds at level load. The traced frame is the
+# tick frame after the script's trace at @gameplay+340 (K35: a swap number is not the same moment in every run).
+
+[scenario]
+description = "Render 1x at 2560x1440 (16:9): frame 1280x720"
+seconds = 120
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_size=2560x1440", "--kuf_pc_settings=display.render_scale=1", "--gpu_trace_frame=2000000000", "--gpu_trace_dir=/run-data/user"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+250 log mark hud
+@gameplay+300 capture hud
+@gameplay+330 capture scene
+@gameplay+340 trace
+@gameplay+400 press Escape
+@gameplay+500 capture pause
+@gameplay+560 press Escape
+@gameplay+700 log mark end
+"""
+capture_frames = []
+expect_saves_unchanged = true
+log_expect = [
+    "render scale 1x1 (frame 1280x720); Render 1x",
+    "[kuf-display] output 2560x1440 (16:9), drawn for aspect 1.7778",
+]
+
+[format]
+render_scale = [1, 1]
+guest_coordinates = true
+
+# "Paused" at its 16:9 place (bottom left of the pause screen: glyphs at x 80-175, y 642-668).
+[[region]]
+name = "Paused at its 16:9 place"
+capture = "pause"
+rect = [80, 638, 175, 672]
+metric = "text"
+mean = [3.0, 255.0]
+
+# The HP gauge (red) at its 16:9 place, bottom left of the HUD.
+[[region]]
+name = "HP gauge at its 16:9 place"
+capture = "hud"
+rect = [240, 624, 320, 634]
+metric = "red_minus_blue"
+mean = [60.0, 255.0]

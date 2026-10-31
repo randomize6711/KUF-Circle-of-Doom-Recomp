@@ -1,0 +1,13 @@
+# M6D K46 regression (docs/HIGH_FPS.md 14.8): at 120 fps, every 30 ticks the tick's saved scene setup list (the list
+# whose stale index crashed in sub_821A2FD8 after an in-game save) gains an index whose renderer object entry is
+# empty (an object listed, then released after the lists were saved) and an index now holding another object (the
+# index reused): --kuf_debug_restore_stale_every. Through a walk, the game's Quit save, the title and a new game's
+# autosaves, the render-only builds must leave every such record out and keep running (k46_check.py).
+[scenario]
+description = "M6D K46: released and reused object indices left out of render-only builds through saves at 120 fps"
+seconds = 180
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script_file = "k46_released_route.kufscript"
+args = ["--kuf_frame_rate=120", "--kuf_debug_restore_stale_every=30"]
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay", "(save message 0x41127)", "test records in the saved scene setup list"]

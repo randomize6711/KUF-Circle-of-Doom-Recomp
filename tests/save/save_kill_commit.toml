@@ -1,0 +1,15 @@
+# Interrupted save 2 (tools/menu_test.py, M5B): stage 2's run (save_continue.kufscript: load stage 1's save,
+# re-equip the RB slot, save through Quit), but the process is killed with SIGKILL in the middle of the
+# runtime's commit: the new version is completely written and synced beside the package, right before the
+# atomic swap (content_test_kill, stage "install"). save_after_kill_commit.toml
+# then starts from what is left on disk.
+
+[scenario]
+description = "killed (SIGKILL) during the commit, right before the atomic swap"
+seconds = 240
+script_file = "save_continue.kufscript"
+saves_from_run = "save_new"
+args = ["--content_test_kill=install:1"]
+expect_exit = 137
+log_expect = ["[content] TEST: killing the process at commit 1 stage 'install'"]
+rules_from = "save_continue.toml"

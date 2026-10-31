@@ -1,0 +1,12 @@
+# Campaign stage 2 (M6): a new process with stage 1's saves (after its Quit > save); every reading equals
+# stage 1's: saving in Shadow Depths and restarting keeps the area, character, equipment, inventory and quest.
+[scenario]
+description = "restart after saving in Shadow Depths: area, status, equipment, inventory, quest unchanged"
+seconds = 280
+script_file = "shadows_depths.kufscript"
+saves_from_run = "shadows_depths_continue"
+rules_from = "shadows_depths_rules.toml"
+log_expect = ["[content] XamContentCreate 'Circle of Doom - Character Save' as 'savedisk:' flags 0x13 -> open"]
+log_sequence = ["[kuf-input] context: gameplay", "@gameplay+2160 press Return", "(type 00000001): committed",
+                "[kuf-input] context: start prompt"]
+expect_saves = ["B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/CL_*"]

@@ -1,0 +1,39 @@
+# Menu architecture investigation (M6A), not registered with ctest: which in-game button opens the options
+# menu. CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only; the run gets a copy), then Start
+# (F1) and Back (Tab) from gameplay, with captures.
+#   python3 -I tools/menu_test.py --run-prefix arch --game-arg=--kuf_trace_menu=true tests/menu_arch/ingame_menu_explore.toml
+
+[scenario]
+description = "In-game menus: Start and Back from gameplay (exploration)"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 capture ingame
+@gameplay+320 press F1
+@gameplay+450 capture start_menu
+@gameplay+500 press Right
+@gameplay+580 capture start_right1
+@gameplay+600 press Right
+@gameplay+680 capture start_right2
+@gameplay+700 press Right
+@gameplay+780 capture start_right3
+@gameplay+800 press Escape
+@gameplay+900 press Escape
+@gameplay+1000 capture after_escape
+@gameplay+1020 press Tab
+@gameplay+1150 capture back_menu
+@gameplay+1200 press Escape
+@gameplay+1300 capture done
+"""
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay"]
+
+[format]
+width = 1280
+height = 720

@@ -1,0 +1,10 @@
+# Damaged saves (save_damaged_*.toml): Press START; "If a storage device is not selected, you cannot save the
+# game progress. Do you want to select a storage device now?" > Yes (the game opens its save package);
+# the runtime refuses a package that fails verification, and the game shows its own message "The save file
+# appears to be corrupted. Press A to select a different storage device or B to delete the corrupted save
+# file and create a new save file."; A (there is no other device) shows it again.
+500 tap Return
+700 press Return
+850 capture corrupted_dialog
+900 press Return
+1050 capture corrupted_again

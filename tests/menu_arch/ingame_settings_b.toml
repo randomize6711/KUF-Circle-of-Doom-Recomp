@@ -1,0 +1,52 @@
+# Menu architecture investigation (M6A), not registered with ctest: the in-game Settings (options menu,
+# opened with Back (Escape) in play: Sleep, Change Regions (greyed, still selectable by Down), View Quests,
+# Controls, Settings, Quit; four Downs reach Settings) with
+# --kuf_trace_menu=true. CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only; the run gets a copy).
+# ingame_settings_baseline: open Settings and Back without a change; _a: Brightness two steps left and Blood
+# switched; _b: Skin one step right and Vibration switched. Comparing the runs' GlobalSetting shows the offsets.
+#   python3 -I tools/menu_test.py --run-prefix arch --game-arg=--kuf_trace_menu=true tests/menu_arch/ingame_settings_*.toml
+
+[scenario]
+description = "In-game Settings: Skin and Vibration changed"
+seconds = 160
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 press Escape
+@gameplay+400 press Down
+@gameplay+450 press Down
+@gameplay+500 press Down
+@gameplay+550 press Down
+@gameplay+620 capture options_on_settings
+@gameplay+650 press Return
+@gameplay+800 capture settings_open
+@gameplay+900 press Down
+@gameplay+960 press Down
+@gameplay+1020 press Down
+@gameplay+1080 press Down
+@gameplay+1140 capture skin_row
+@gameplay+1170 press Right
+@gameplay+1230 capture skin_changed
+@gameplay+1260 press Down
+@gameplay+1320 press Down
+@gameplay+1380 press Down
+@gameplay+1440 capture vibration_row
+@gameplay+1470 press Right
+@gameplay+1530 capture vibration_changed
+@gameplay+1600 capture before_back
+@gameplay+1650 press Escape
+@gameplay+1850 capture after_back
+@gameplay+1900 press Escape
+@gameplay+2050 capture closed
+"""
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay", "[kuf-menu] > profile-option:bind-controls"]
+
+[format]
+width = 1280
+height = 720

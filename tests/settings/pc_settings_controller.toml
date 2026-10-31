@@ -1,0 +1,75 @@
+# PC Settings with a controller (M6B; category pages M7 feature 3): an SDL virtual Xbox 360 pad, as a player's
+# controller. CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only), Back opens the options menu, D-pad to
+# Settings, A opens it, D-pad down to PC Settings, A opens the categories, A opens Controls: Stick Sensitivity +2 with
+# D-pad right (7), Stick Dead Zone +1 with the left stick pushed right (30 %). B to the categories, D-pad down to
+# Camera, A: down to Modern Camera, Off with D-pad right. B to the categories, B returns to Settings (file written),
+# B closes Settings, B closes the options menu.
+
+[scenario]
+description = "PC Settings page with a controller: D-pad, left stick, A and B"
+seconds = 185
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_input_script_pad=xbox360"]
+script = """
+100 pad connect
+500 pad press start
+700 pad press a
+850 pad press a
+1000 pad press down
+1100 pad press a
+1300 repeat 60 until gameplay pad press a
+@gameplay+300 pad press back
+@gameplay+400 pad press down
+@gameplay+450 pad press down
+@gameplay+500 pad press down
+@gameplay+550 pad press down
+@gameplay+650 pad press a
+@gameplay+800 pad press down
+@gameplay+830 pad press down
+@gameplay+860 pad press down
+@gameplay+890 pad press down
+@gameplay+920 pad press down
+@gameplay+950 pad press down
+@gameplay+980 pad press down
+@gameplay+1010 pad press down
+@gameplay+1080 capture pc_row_selected
+@gameplay+1110 pad press a
+@gameplay+1210 capture categories
+@gameplay+1240 pad press a
+@gameplay+1310 pad press down
+@gameplay+1340 pad press down
+@gameplay+1370 pad press right
+@gameplay+1400 pad press right
+@gameplay+1430 pad press down
+@gameplay+1460 pad axis leftx 32767
+@gameplay+1466 pad axis leftx 0
+@gameplay+1520 capture controls_changed
+@gameplay+1550 pad press b
+@gameplay+1610 pad press down
+@gameplay+1640 pad press a
+@gameplay+1710 pad press down
+@gameplay+1740 pad press down
+@gameplay+1770 pad press down
+@gameplay+1800 pad press down
+@gameplay+1830 pad press right
+@gameplay+1900 capture camera_changed
+@gameplay+1930 pad press b
+@gameplay+1990 pad press b
+@gameplay+2090 capture settings_page
+@gameplay+2120 pad press b
+@gameplay+2220 pad press b
+@gameplay+2320 capture closed
+"""
+capture_frames = []
+expect_saves_unchanged = true
+pc_settings_expect = { "camera.modern_camera" = false, "controller.camera_sensitivity" = 7, "controller.camera_deadzone_percent" = 30, "mouse.sensitivity_horizontal" = 4 }
+log_expect = [
+    "[kuf-input] context: gameplay",
+    "[kuf-pc-menu] PC Settings opened",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+    "[kuf-pc-menu] PC Settings closed",
+]
+
+[format]
+width = 1280
+height = 720

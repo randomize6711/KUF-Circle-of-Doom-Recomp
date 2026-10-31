@@ -1,0 +1,12 @@
+# M6D D3b-3: interpolation at Render Native 5120x1440 (32:9), 240 requested
+# CONTINUE from the Shadow Depths fixture along presentation_route.kufscript (its segments and checks:
+# presentation_check.py and state_compare.py; docs/HIGH_FPS.md section 15).
+[scenario]
+description = "M6D D3b-3: interpolation at Render Native 5120x1440 (32:9), 240 requested"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script_file = "presentation_route.kufscript"
+args = ["--kuf_display_size=5120x1440", "--kuf_frame_rate=240", "--kuf_trace_presentation=true", "--kuf_trace_presentation_bones=true", "--kuf_freeze_alpha_sweep=true", "--kuf_trace_hud_from=1700", "--kuf_trace_effect_clock=true"]
+capture_frames = []
+expect_saves_unchanged = true
+log_expect = ["[kuf-input] context: gameplay"]

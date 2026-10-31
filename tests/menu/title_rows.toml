@@ -1,0 +1,50 @@
+# The title list's own rows (M7 feature 4, src/runtime/title_menu.cpp): Check for Updates and Quit Game below
+# CREDITS, the list moved up a row each. The pointer goes to CREDITS (the keyboard's Downs depend on which rows are
+# available); Down: Check for Updates; Select: the updater (here tests/menu/fake_updater.sh, --kuf_updater) answers
+# 9.9.9 and the update box offers it (M7 updater); Return (Install) installs it, the box then says it is installed
+# (no restart offered without the launcher's KUF_RESTART_FILE); Escape closes it. The pointer to Quit Game (hover on an
+# added row); Select asks in the game's message box (M7 UX fix 6); Escape answers No; Select asks again, Select answers
+# Yes: the process ends as when the window is closed.
+
+[scenario]
+description = "Title list rows: Check for Updates (fake updater) and Quit Game"
+seconds = 80
+copy_in = ["tests/menu/fake_updater.sh"]
+args = ["--kuf_updater=/run-data/in/fake_updater.sh"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+950 capture title_list
+1000 mouse 640 605 1280 720
+1100 capture on_credits
+1150 press Down
+1250 capture on_updates
+1300 press Return
+1450 capture checked
+1500 press Return
+1650 capture installed
+1680 press Escape
+1700 mouse 640 661 1280 720
+1800 press Return
+1900 capture quit_question
+1950 press Escape
+2000 capture quit_no
+2050 press Return
+2150 press Return
+"""
+capture_frames = []
+log_expect = [
+    "[kuf-title] title list extended: Check for Updates, Quit Game",
+    "[kuf-title] update check: exit 0",
+    "latest '9.9.9'",
+    "[kuf-title] update dialog 0: Yes",
+    "[kuf-title] update install: exit 0",
+]
+log_sequence = [
+    "[kuf-title] Quit Game: asking",
+    "[kuf-title] Quit Game: No",
+    "[kuf-title] Quit Game: asking",
+    "[kuf-title] Quit Game: Yes",
+    "[kuf-title] Quit Game",
+]

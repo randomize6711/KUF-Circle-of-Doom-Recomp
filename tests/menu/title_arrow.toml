@@ -1,0 +1,37 @@
+# The selection arrow beside every title list row (M7 UI polish, src/runtime/title_menu.cpp --kuf_title_arrow). The
+# game's own seven rows carry state bit 0x80, which keeps the toolkit's selection arrow off them (in the original only
+# the port's added rows had it: the player's screenshots arrow1/arrow2); the port clears it while the list shows, so
+# the arrow follows the selection on every row. NEW GAME at start, Down (SETTINGS: CONTINUE and LEADERBOARD are greyed
+# without saves and skipped), the pointer to CREDITS, to QUIT GAME, Up with the keyboard (CHECK FOR UPDATES).
+# The check: the arrow's column (x 345-385, left of the rows) is brightest beside the selected row.
+
+[scenario]
+description = "Title list: the selection arrow beside every row (keyboard, mouse, the added rows)"
+seconds = 45
+args = ["--kuf_storage_prompt=auto"]
+script = """
+500 tap Return
+700 capture new_game
+750 press Down
+850 capture settings
+900 mouse 640 610 1280 720
+1000 capture credits_hover
+1050 mouse 640 666 1280 720
+1150 capture quit_hover
+1200 press Up
+1300 capture updates_up
+"""
+capture_frames = []
+
+[format]
+width = 1280
+height = 720
+
+[[highlight]]
+name = "arrow beside the selected row"
+metric = "luma"
+x = [345, 385]
+rows = [442, 470, 498, 526, 554, 582, 610, 638, 666]
+half_height = [10, 12]
+min_margin = 8.0
+expect = { "700" = 0, "850" = 3, "1000" = 6, "1150" = 8, "1300" = 7 }

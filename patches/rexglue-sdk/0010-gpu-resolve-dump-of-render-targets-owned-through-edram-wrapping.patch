@@ -1,0 +1,186 @@
+GPU fix (M6D D3b-0, KNOWN_ISSUES K34): on the host render target path, a resolve read zeros from a render target
+that owns the resolved tiles through EDRAM addressing wrapping. A render target owns the tiles from its base up to
+its base plus the EDRAM tile count (2048), so with an estimated extent reaching past the end of the EDRAM it owns
+tiles below its base: in Kingdom Under Fire: Circle of Doom, the 640-pitch 4x MSAA depth-only passes at tile 720
+(scissor 8192x8192) claim the whole EDRAM, the frame's 1280x720 colour at tile 0 included, and the colour is moved
+into the depth buffer by the ownership transfer. Normally the HUD's draws transfer it back before the final resolve;
+a frame without them resolves tiles 0-719 from the depth buffer. Before a resolve the owning render targets are
+dumped to the EDRAM buffer with dispatches whose offsets are relative to the dump area's base; the dump shader reads
+the render target at (dump base + offset + tile) - render target base, so for tiles owned through wrapping the index
+was negative (outside the render target: zeros, a black frame). Likewise a dump area that wraps, owned there by a
+render target that does not, was read one period too far.
+
+GetResolveCopyRectanglesToDump now builds each owner's rectangles with ResolveCopyDumpRectangle::AppendForOwnedRange,
+which splits the owned range at the render target's base and gives each rectangle the period correction
+(source_period_offset_tiles) that GetDispatches adds to its dispatch offsets, so the dump base plus the offset is the
+tile's index in the render target's own addressing period. The EDRAM buffer is written at the same tiles as before
+(the shader wraps that index); ranges that need no correction dump exactly as before. Shared by the Vulkan and
+D3D12 backends (the D3D12 one is not built or tested here). Tested by tests/gpu/test_resolve_dump_wrap.cpp (the
+shader's addressing for every dumped tile) and tests/render (the frames on fbo against the fsi path).
+
+diff --git a/include/rex/graphics/pipeline/render_target/cache.h b/include/rex/graphics/pipeline/render_target/cache.h
+index 3bbd52e..7bc02bd 100644
+--- a/include/rex/graphics/pipeline/render_target/cache.h
++++ b/include/rex/graphics/pipeline/render_target/cache.h
+@@ -394,16 +394,89 @@ class RenderTargetCache {
+     uint32_t rows;
+     uint32_t row_first_start;
+     uint32_t row_last_end;
++    // Added (modulo 2^32) to the offset of every dispatch so that the dump base
++    // plus the offset is the tile's index in the EDRAM addressing period of the
++    // render target: from its base tile up to the base plus the EDRAM tile
++    // count. Rows are relative to the dump base, so if the render target owns
++    // the tiles only through EDRAM addressing wrapping (the tiles are below its
++    // base), or the dump area wraps but the render target's range does not, the
++    // dump-base-relative tile index alone would be one EDRAM period off and
++    // address outside the render target (reading zeros).
++    uint32_t source_period_offset_tiles;
+     ResolveCopyDumpRectangle(RenderTarget* render_target, uint32_t row_first, uint32_t rows,
+-                             uint32_t row_first_start, uint32_t row_last_end)
++                             uint32_t row_first_start, uint32_t row_last_end,
++                             uint32_t source_period_offset_tiles = 0)
+         : render_target(render_target),
+           row_first(row_first),
+           rows(rows),
+           row_first_start(row_first_start),
+-          row_last_end(row_last_end) {}
++          row_last_end(row_last_end),
++          source_period_offset_tiles(source_period_offset_tiles) {}
++    // Appends the rectangles to dump for the tiles [range_start, range_end) of
++    // the current EDRAM addressing period, owned by render_target (whose base is
++    // rt_base), from a dump area with the given base, pitch and used row length
++    // in tiles. range_local_offset is 0 for the part of the dump area in the
++    // period of its base, and xenos::kEdramTileCount for the part after the
++    // dump area's EDRAM addressing wraps around.
++    //
++    // A render target owns the tiles from its base up to the base plus the
++    // EDRAM tile count, so the tiles of the range below its base are owned
++    // through EDRAM addressing wrapping (for instance, a depth buffer whose
++    // estimated extent reached past the end of the EDRAM into a color buffer at
++    // 0). The range is split at the base, and each part is dumped with the tile
++    // indices of the render target's addressing period
++    // (source_period_offset_tiles).
++    static void AppendForOwnedRange(RenderTarget* render_target, uint32_t rt_base,
++                                    uint32_t range_start, uint32_t range_end, uint32_t base,
++                                    uint32_t pitch, uint32_t row_length,
++                                    uint32_t range_local_offset,
++                                    std::vector<ResolveCopyDumpRectangle>& rectangles_out) {
++      uint32_t part_starts[2] = {range_start, rt_base};
++      uint32_t part_ends[2] = {rt_base, range_end};
++      if (range_start >= rt_base || range_end <= rt_base) {
++        part_ends[0] = range_end;
++        part_starts[1] = part_ends[1];
++      }
++      for (uint32_t part = 0; part < 2; ++part) {
++        if (part_starts[part] >= part_ends[part]) {
++          continue;
++        }
++        uint32_t range_local_start = range_local_offset + part_starts[part] - base;
++        uint32_t range_local_end = range_local_offset + part_ends[part] - base;
++        assert_true(range_local_start < range_local_end);
++
++        uint32_t rows_start = range_local_start / pitch;
++        uint32_t rows_end = (range_local_end + (pitch - 1)) / pitch;
++        uint32_t row_first_start = range_local_start - rows_start * pitch;
++        if (row_first_start >= row_length) {
++          // The first row starts within the pitch padding.
++          if (rows_start + 1 < rows_end) {
++            // Multiple rows - start at the second.
++            ++rows_start;
++            row_first_start = 0;
++          } else {
++            // Single row - nothing to dump.
++            continue;
++          }
++        }
++
++        // The dump base plus a dispatch's offset is range_local_offset plus the
++        // tile index in the current EDRAM addressing period; the render target
++        // needs it in its own period.
++        uint32_t rt_period_offset = part_starts[part] < rt_base ? xenos::kEdramTileCount : 0;
++        // Don't include pitch padding in the last row.
++        uint32_t row_last_end = pitch - (rows_end * pitch - range_local_end);
++        rectangles_out.emplace_back(render_target, rows_start, rows_end - rows_start,
++                                    row_first_start,
++                                    row_last_end < row_length ? row_last_end : row_length,
++                                    rt_period_offset - range_local_offset);
++      }
++    }
+     struct Dispatch {
+       // Base plus offset may exceed the EDRAM tile count in case of EDRAM
+-      // addressing wrapping.
++      // addressing wrapping. It is in the addressing period of the render
++      // target being dumped (from its base tile up to the base plus the EDRAM
++      // tile count).
+       uint32_t offset;
+       uint32_t width_tiles;
+       uint32_t height_tiles;
+@@ -419,7 +492,7 @@ class RenderTargetCache {
+       uint32_t dispatch_count = 0;
+       if (rows == 1 || row_first_start) {
+         Dispatch& dispatch_first = dispatches_out[dispatch_count++];
+-        dispatch_first.offset = row_first * pitch_tiles + row_first_start;
++        dispatch_first.offset = row_first * pitch_tiles + row_first_start + source_period_offset_tiles;
+         dispatch_first.width_tiles = (rows == 1 ? row_last_end : row_length_used) - row_first_start;
+         dispatch_first.height_tiles = 1;
+         if (rows == 1) {
+@@ -437,13 +510,13 @@ class RenderTargetCache {
+       }
+       if (mid_rows) {
+         Dispatch& dispatch_mid = dispatches_out[dispatch_count++];
+-        dispatch_mid.offset = mid_row_first * pitch_tiles;
++        dispatch_mid.offset = mid_row_first * pitch_tiles + source_period_offset_tiles;
+         dispatch_mid.width_tiles = row_length_used;
+         dispatch_mid.height_tiles = mid_rows;
+       }
+       if (row_last_end != row_length_used) {
+         Dispatch& dispatch_last = dispatches_out[dispatch_count++];
+-        dispatch_last.offset = (row_first + rows - 1) * pitch_tiles;
++        dispatch_last.offset = (row_first + rows - 1) * pitch_tiles + source_period_offset_tiles;
+         dispatch_last.width_tiles = row_last_end;
+         dispatch_last.height_tiles = 1;
+       }
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 953c5fd..9b91f86 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -877,34 +877,14 @@ void RenderTargetCache::GetResolveCopyRectanglesToDump(
+         it = it_next;
+       }
+ 
+-      uint32_t range_local_start =
+-          range_local_offset + std::max(range_global_start, extent_start) - base;
+-      uint32_t range_local_end =
+-          range_local_offset + std::min(it->second.end_tiles, extent_end) - base;
+-      assert_true(range_local_start < range_local_end);
+-
+-      uint32_t rows_start = range_local_start / pitch;
+-      uint32_t rows_end = (range_local_end + (pitch - 1)) / pitch;
+-      uint32_t row_first_start = range_local_start - rows_start * pitch;
+-      if (row_first_start >= row_length) {
+-        // The first row starts within the pitch padding.
+-        if (rows_start + 1 < rows_end) {
+-          // Multiple rows - start at the second.
+-          ++rows_start;
+-          row_first_start = 0;
+-        } else {
+-          // Single row - nothing to dump.
+-          continue;
+-        }
+-      }
+-
+       auto it_rt = render_targets_.find(rt_key);
+       assert_true(it_rt != render_targets_.cend());
+       assert_not_null(it_rt->second);
+-      // Don't include pitch padding in the last row.
+-      rectangles_out.emplace_back(
+-          it_rt->second, rows_start, rows_end - rows_start, row_first_start,
+-          std::min(pitch - (rows_end * pitch - range_local_end), row_length));
++
++      ResolveCopyDumpRectangle::AppendForOwnedRange(
++          it_rt->second, rt_key.base_tiles, range_global_start,
++          std::min(it->second.end_tiles, extent_end), base, pitch, row_length, range_local_offset,
++          rectangles_out);
+     }
+   };
+   uint32_t resolve_area_end = base + (rows - 1) * pitch + row_length;

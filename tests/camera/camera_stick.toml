@@ -1,0 +1,141 @@
+# Modern camera with a controller's right stick (M6B), an SDL virtual Xbox 360 pad. Default settings: dead zone
+# 25 %, response curve (deflection beyond the dead zone)^1.5, 75 degrees per second horizontally at full
+# deflection, 65 % of that vertically, per second of real time. CONTINUE from build/m6-saves/celine-shadows-depths-1.
+#   right stick full right for 2 s: +150 degrees (2 x 75)
+#   23 % deflection (inside the dead zone) for 2 s: no turn
+#   50 % deflection for 2 s: ((0.5 - 0.25) / 0.75)^1.5 x 75 x 2 = 28.9 degrees
+#   right stick full up for 1 s: the view rises by 48.75 degrees and stays when the stick is released
+#   full left for 2 s: back by 150 degrees
+
+[scenario]
+description = "Modern camera, controller: speed, dead zone, response curve, vertical hold"
+seconds = 120
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_input_script_pad=xbox360", "--kuf_trace_modern_camera=true"]
+script = """
+100 pad connect
+500 pad press start
+700 pad press a
+850 pad press a
+1000 pad press down
+1100 pad press a
+1300 repeat 60 until gameplay pad press a
+@gameplay+300 log mark start
+@gameplay+330 pad axis rightx 32767
+@gameplay+390 pad axis rightx 0
+@gameplay+420 log mark full_right
+@gameplay+450 pad axis rightx 7500
+@gameplay+510 pad axis rightx 0
+@gameplay+540 log mark deadzone
+@gameplay+570 pad axis rightx 16384
+@gameplay+630 pad axis rightx 0
+@gameplay+660 log mark half_right
+@gameplay+690 pad axis righty -32767
+@gameplay+720 pad axis righty 0
+@gameplay+750 log mark up_1s
+@gameplay+750 capture up_1s
+@gameplay+840 log mark up_held
+@gameplay+840 capture up_held_3s
+@gameplay+870 pad axis rightx -32767
+@gameplay+930 pad axis rightx 0
+@gameplay+960 log mark full_left
+@gameplay+1000 log mark end
+"""
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay"]
+
+[[scenario.log_value]]
+name = "start yaw"
+after = "log mark start"
+before = "pad axis rightx 32767"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+
+[[scenario.log_value]]
+name = "start pitch"
+after = "log mark start"
+before = "pad axis rightx 32767"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+
+[[scenario.log_value]]
+name = "full right 2 s"
+after = "log mark full_right"
+before = "pad axis rightx 7500"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+relative_to = "start yaw"
+angle = true
+min = 140.0
+max = 160.0
+
+[[scenario.log_value]]
+name = "yaw before the dead zone test"
+after = "log mark full_right"
+before = "pad axis rightx 7500"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+
+# The game's own camera motion (it settles slowly while the character stands) passes through between the
+# player's turns: up to a few tenths of a degree in 2 s; a stick turn outside the dead zone would be 30+ degrees.
+[[scenario.log_value]]
+name = "23 % for 2 s (dead zone)"
+after = "log mark deadzone"
+before = "pad axis rightx 16384"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+relative_to = "yaw before the dead zone test"
+angle = true
+min = -1.0
+max = 1.0
+
+[[scenario.log_value]]
+name = "50 % for 2 s"
+after = "log mark half_right"
+before = "pad axis righty -32767"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+relative_to = "yaw before the dead zone test"
+angle = true
+min = 25.0
+max = 33.0
+
+[[scenario.log_value]]
+name = "up 1 s"
+after = "log mark up_1s"
+before = "log mark up_held"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+which = "first"
+relative_to = "start pitch"
+min = 44.0
+max = 53.5
+
+[[scenario.log_value]]
+name = "up 1 s, measured again"
+after = "log mark up_1s"
+before = "log mark up_held"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+which = "first"
+
+[[scenario.log_value]]
+name = "held 3 s after release (no snap back)"
+after = "log mark up_held"
+before = "pad axis rightx -32767"
+pattern = 'view: pitch (-?[0-9.]+) deg'
+relative_to = "up 1 s, measured again"
+min = -0.2
+max = 0.2
+
+[[scenario.log_value]]
+name = "yaw before turning back"
+after = "log mark half_right"
+before = "pad axis rightx -32767"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+
+[[scenario.log_value]]
+name = "full left 2 s"
+after = "log mark full_left"
+before = "log mark end"
+pattern = 'view: pitch -?[0-9.]+ deg, yaw (-?[0-9.]+) deg'
+relative_to = "yaw before turning back"
+angle = true
+min = -160.0
+max = -140.0
+
+[format]
+width = 1280
+height = 720

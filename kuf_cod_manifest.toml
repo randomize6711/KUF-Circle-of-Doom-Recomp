@@ -1,0 +1,13 @@
+# Codegen manifest for KUF: Circle of Doom.
+# The XEX is a hash-verified, read-only copy staged by tools/stage_input.sh (never the original disc folder).
+# Version-specific knowledge (function boundaries, switch tables, hooks) lives in config/<version>/.
+
+[project]
+name = "kuf_cod"
+sdk_version = "0.10.0"
+game_root = "build/input/v1"
+
+[entrypoint]
+file_path = "build/input/v1/default.xex"
+out_directory_path = "generated/default"
+includes = ["config/v1/codegen.toml", "config/v1/functions.toml", "config/v1/indirect_functions.toml"]

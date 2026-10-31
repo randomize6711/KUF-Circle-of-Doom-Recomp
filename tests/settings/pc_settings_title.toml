@@ -1,0 +1,87 @@
+# PC Settings in the title screen's SETTINGS (M6B; category pages M7 feature 3), with the keyboard (Escape on the
+# storage prompt, as in the other menu tests). M7 UX fix 5: Change Storage Device is gone and PC Settings is in its
+# place. SETTINGS opens on SFX Volume; seven Downs to Vibration; Down to PC Settings; Down there does nothing; Return
+# opens the categories. Return opens Controls: Mouse Horizontal +1 (5). Back, Down to Camera, Return; Down to
+# Modern Camera (the fifth row) and Right (Off). Back (Camera selected), Down five times to Restore Defaults (the PC
+# Settings row). Back: SETTINGS again with its own labels, PC Settings selected, pc_settings.toml written; Up to
+# Vibration; Back to the main menu (the game's own options unchanged).
+
+[scenario]
+description = "PC Settings in the title SETTINGS: navigation past Change Storage Device, page, save"
+seconds = 112
+script = """
+500 tap Return
+700 tap Escape
+800 press Down
+900 press Return
+1000 capture settings
+1020 press Down
+1050 press Down
+1080 press Down
+1110 press Down
+1140 press Down
+1170 press Down
+1200 press Down
+1250 capture vibration
+1280 press Down
+1330 capture storage_row
+1360 press Down
+1420 capture pc_row
+1450 press Return
+1550 capture pc_page
+1580 press Return
+1650 capture controls
+1680 press Right
+1710 press Escape
+1740 press Down
+1770 press Return
+1840 press Down
+1870 press Down
+1900 press Down
+1930 press Down
+1960 press Right
+2010 capture modern_off
+2040 press Escape
+2070 press Down
+2100 press Down
+2130 press Down
+2160 press Down
+2190 press Down
+2260 capture restore_defaults_row
+2290 press Escape
+2390 capture settings_again
+2420 press Up
+2490 capture storage_row_again
+2520 press Escape
+2620 capture main_menu
+"""
+capture_frames = []
+pc_settings_expect = { "mouse.sensitivity_horizontal" = 5, "camera.modern_camera" = false, "camera.vertical_range_degrees" = 85 }
+log_expect = [
+    "[kuf-pc-menu] title SETTINGS layout extended",
+    "[kuf-pc-menu] title SETTINGS: Change Storage Device removed (PC Settings in its place)",
+    "[kuf-pc-menu] PC Settings opened (title SETTINGS)",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+    "[kuf-pc-menu] PC Settings closed",
+]
+
+[format]
+width = 1280
+height = 720
+
+# SETTINGS rows (the arrow cursor left of the selected label): SFX, Music, Voice, Brightness, Skin, Camera,
+# Blood, Vibration, PC Settings (y 564, where Change Storage Device was; the captures named storage_row show it), and
+# one row below (nothing there now).
+[[highlight]]
+name = "title settings and PC page"
+metric = "luma"
+x = [120, 180]
+rows = [150, 197, 243, 336, 382, 428, 474, 519, 564, 610]
+half_height = 10
+min_margin = 8.0
+expect = { "settings" = 0, "vibration" = 7, "storage_row" = 8, "pc_row" = 8, "pc_page" = 0, "controls" = 0, "modern_off" = 4, "restore_defaults_row" = 8, "settings_again" = 8, "storage_row_again" = 7 }
+
+[[range]]
+name = "all captures are real images"
+frames = [1, 1000000]
+min_distinct = 300

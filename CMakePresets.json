@@ -1,0 +1,40 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_C_FLAGS": "-march=x86-64-v2",
+                "CMAKE_CXX_FLAGS": "-march=x86-64-v2",
+                "REXSDK_DIR": "${sourceDir}/thirdparty/rexglue-sdk"
+            }
+        },
+        { "name": "linux-base", "hidden": true, "inherits": "base",
+          "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" } },
+        { "name": "windows-base", "hidden": true, "inherits": "base",
+          "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" } },
+        { "name": "linux-amd64-debug", "inherits": "linux-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
+        { "name": "linux-amd64-relwithdebinfo", "inherits": "linux-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } },
+        { "name": "linux-amd64-release", "inherits": "linux-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
+        { "name": "linux-amd64-audit", "inherits": "linux-base",
+          "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "KUFCOD_IMPORT_AUDIT": "ON" } },
+        { "name": "win-amd64-debug", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
+        { "name": "win-amd64-relwithdebinfo", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } },
+        { "name": "win-amd64-release", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } }
+    ],
+    "buildPresets": [
+        { "name": "linux-amd64-debug", "configurePreset": "linux-amd64-debug" },
+        { "name": "linux-amd64-relwithdebinfo", "configurePreset": "linux-amd64-relwithdebinfo" },
+        { "name": "linux-amd64-release", "configurePreset": "linux-amd64-release" },
+        { "name": "linux-amd64-audit", "configurePreset": "linux-amd64-audit" },
+        { "name": "win-amd64-debug", "configurePreset": "win-amd64-debug" },
+        { "name": "win-amd64-relwithdebinfo", "configurePreset": "win-amd64-relwithdebinfo" },
+        { "name": "win-amd64-release", "configurePreset": "win-amd64-release" }
+    ]
+}

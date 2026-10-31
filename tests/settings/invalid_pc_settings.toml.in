@@ -1,0 +1,16 @@
+# Valid TOML with invalid values on purpose (tests/settings/pc_settings_invalid.toml): every bad value falls back
+# to its default; the good ones and the unknown keys are kept.
+version = 1
+future_setting = "kept"
+[camera]
+modern_camera = false
+vertical_range_degrees = 90
+auto_recenter = "sometimes"
+[mouse]
+sensitivity_horizontal = 0
+sensitivity_vertical = 7
+[controller]
+camera_deadzone_percent = 12
+camera_sensitivity = 3
+[display]
+resolution = "kept too"

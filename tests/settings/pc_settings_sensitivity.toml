@@ -1,0 +1,112 @@
+# The expanded sensitivity range through the menu (M6B final verification; category pages M7 feature 3), in-game with
+# the keyboard: CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only; the run gets a copy), options menu
+# (Escape), Settings, PC Settings, Controls. Mouse Horizontal Right x17 (4 -> 20, the maximum: the last Right does
+# nothing), Down, Mouse Vertical Right x17 (4 -> 20), Down, Stick Sensitivity Right x16 (5 -> 20). Back to the
+# categories, Back saves; the file holds the levels (20/20/20; the other settings at their defaults). The next run
+# (pc_settings_sensitivity_persist) starts from this run's pc_settings.toml.
+
+[scenario]
+description = "Expanded sensitivity: every sensitivity row to its maximum in the menu, saved"
+seconds = 232
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 press Escape
+@gameplay+400 press Down
+@gameplay+450 press Down
+@gameplay+500 press Down
+@gameplay+550 press Down
+@gameplay+650 press Return
+@gameplay+800 press Down
+@gameplay+830 press Down
+@gameplay+860 press Down
+@gameplay+890 press Down
+@gameplay+920 press Down
+@gameplay+950 press Down
+@gameplay+980 press Down
+@gameplay+1010 press Down
+@gameplay+1100 capture pc_row_selected
+@gameplay+1130 press Return
+@gameplay+1200 press Return
+@gameplay+1230 capture pc_page_defaults
+@gameplay+1260 press Right
+@gameplay+1290 press Right
+@gameplay+1320 press Right
+@gameplay+1350 press Right
+@gameplay+1380 press Right
+@gameplay+1410 press Right
+@gameplay+1440 press Right
+@gameplay+1470 press Right
+@gameplay+1500 press Right
+@gameplay+1530 press Right
+@gameplay+1560 press Right
+@gameplay+1590 press Right
+@gameplay+1620 press Right
+@gameplay+1650 press Right
+@gameplay+1680 press Right
+@gameplay+1710 press Right
+@gameplay+1740 press Right
+@gameplay+1770 press Down
+@gameplay+1800 press Right
+@gameplay+1830 press Right
+@gameplay+1860 press Right
+@gameplay+1890 press Right
+@gameplay+1920 press Right
+@gameplay+1950 press Right
+@gameplay+1980 press Right
+@gameplay+2010 press Right
+@gameplay+2040 press Right
+@gameplay+2070 press Right
+@gameplay+2100 press Right
+@gameplay+2130 press Right
+@gameplay+2160 press Right
+@gameplay+2190 press Right
+@gameplay+2220 press Right
+@gameplay+2250 press Right
+@gameplay+2280 press Right
+@gameplay+2310 press Down
+@gameplay+2340 press Right
+@gameplay+2370 press Right
+@gameplay+2400 press Right
+@gameplay+2430 press Right
+@gameplay+2460 press Right
+@gameplay+2490 press Right
+@gameplay+2520 press Right
+@gameplay+2550 press Right
+@gameplay+2580 press Right
+@gameplay+2610 press Right
+@gameplay+2640 press Right
+@gameplay+2670 press Right
+@gameplay+2700 press Right
+@gameplay+2730 press Right
+@gameplay+2760 press Right
+@gameplay+2790 press Right
+@gameplay+2880 capture pc_page_max
+@gameplay+2910 press Escape
+@gameplay+2970 press Escape
+@gameplay+3070 capture settings_page
+@gameplay+3100 press Escape
+@gameplay+3200 press Escape
+@gameplay+3300 capture closed
+"""
+capture_frames = []
+expect_saves_unchanged = true
+pc_settings_expect = { "mouse.sensitivity_horizontal" = 20, "mouse.sensitivity_vertical" = 20, "controller.camera_sensitivity" = 20, "camera.distance_percent" = 100, "camera.field_of_view_degrees" = 0, "camera.modern_camera" = true, "controller.camera_deadzone_percent" = 25 }
+log_expect = [
+    "[kuf-input] context: gameplay",
+    "[kuf-settings] no /run-data/user/pc_settings.toml yet: defaults",
+]
+log_sequence = [
+    "[kuf-pc-menu] PC Settings opened",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+    "[kuf-pc-menu] PC Settings closed",
+]
+
+[format]
+width = 1280
+height = 720

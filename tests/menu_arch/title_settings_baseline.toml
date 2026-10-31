@@ -1,0 +1,38 @@
+# Menu architecture investigation (M6A), not registered with ctest: the title menu's SETTINGS with
+# --kuf_trace_menu=true (src/runtime/menu_trace.cpp). Fresh profile: Yes at the storage prompt (the game
+# creates its save package with GlobalSetting), one Down from NEW GAME to SETTINGS (CONTINUE and LEADERBOARD
+# are greyed), SFX volume three steps left, down to Camera, change it, Back to the main menu,
+# SETTINGS again. title_settings_baseline.toml does the same without changing anything: compare the two runs'
+# GlobalSetting to see what Save wrote.
+#   python3 -I tools/menu_test.py --run-prefix arch --game-arg=--kuf_trace_menu=true tests/menu_arch/title_settings_trace.toml
+
+[scenario]
+description = "Title SETTINGS: open, no change, Back (trace baseline)"
+seconds = 100
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1180 capture main_menu_settings
+1200 press Return
+1320 capture settings_open
+1520 capture sfx_changed
+1550 press Down
+1600 press Down
+1650 press Down
+1700 press Down
+1750 press Down
+1820 capture camera_row
+1920 capture camera_changed
+1950 press Escape
+2080 capture back_to_menu
+2200 press Return
+2330 capture settings_reopened
+"""
+capture_frames = []
+log_expect = ["[kuf-menu] > title-option:bind-controls"]
+
+[format]
+width = 1280
+height = 720

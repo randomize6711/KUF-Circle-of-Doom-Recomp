@@ -1,0 +1,7 @@
+# Exploration only (not in ctest): what CONTINUE from the Shadow's Depths save shows.
+[scenario]
+description = "explore: CONTINUE from the Shadow's Depths save (manual session m6-play-1)"
+seconds = 200
+script_file = "explore_shadows_depths.kufscript"
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+log_expect = ["[kuf-input] context: gameplay"]

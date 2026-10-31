@@ -1,0 +1,4 @@
+# Not valid TOML on purpose (tests/settings/pc_settings_malformed.toml).
+version = 1
+[camera
+modern_camera = maybe

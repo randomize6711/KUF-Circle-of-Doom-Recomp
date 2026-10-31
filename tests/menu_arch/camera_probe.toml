@@ -1,0 +1,57 @@
+# Camera investigation for M6B (M6A, not registered with ctest): the original camera's range with the right
+# stick (keyboard I/K/J/L). CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only; the run gets a copy):
+# look up for 3 s, wait; look down for 4 s, wait; turn right for 12 s, wait 11 s. Captures along the way
+# (pitch limits, continuous turning, automatic recentring).
+#   python3 -I tools/menu_test.py --run-prefix cam tests/menu_arch/camera_probe.toml
+
+[scenario]
+description = "Camera range probe (look up, down, turn right; recentring)"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 capture start
+@gameplay+330 down I
+@gameplay+360 capture up_1s
+@gameplay+390 capture up_2s
+@gameplay+420 capture up_3s
+@gameplay+422 up I
+@gameplay+430 capture up_released
+@gameplay+580 capture up_after_5s
+@gameplay+630 down K
+@gameplay+660 capture down_1s
+@gameplay+690 capture down_2s
+@gameplay+720 capture down_3s
+@gameplay+750 capture down_4s
+@gameplay+752 up K
+@gameplay+760 capture down_released
+@gameplay+910 capture down_after_5s
+@gameplay+960 down L
+@gameplay+990 capture right_1s
+@gameplay+1020 capture right_2s
+@gameplay+1050 capture right_3s
+@gameplay+1080 capture right_4s
+@gameplay+1110 capture right_5s
+@gameplay+1140 capture right_6s
+@gameplay+1170 capture right_7s
+@gameplay+1200 capture right_8s
+@gameplay+1230 capture right_9s
+@gameplay+1260 capture right_10s
+@gameplay+1290 capture right_11s
+@gameplay+1320 capture right_12s
+@gameplay+1322 up L
+@gameplay+1330 capture right_released
+@gameplay+1480 capture right_after_5s
+@gameplay+1660 capture right_after_11s
+"""
+capture_frames = []
+log_expect = ["[kuf-input] context: gameplay"]
+
+[format]
+width = 1280
+height = 720

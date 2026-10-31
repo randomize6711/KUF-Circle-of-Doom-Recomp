@@ -1,0 +1,30 @@
+# Interrupted save 3, between the two steps of one save (tools/menu_test.py, K22): stage 2's run
+# (save_continue.kufscript: load stage 1's save, re-equip the RB slot, save through Quit), killed with SIGKILL
+# at the save's second XamContentFlush (content_test_kill=flush:2). The game's save message (0x41127) writes
+# the character file and flushes, then writes GlobalSetting and flushes; with kuf_atomic_saves (default) both
+# flushes are held and committed together when the message ends, so nothing of this save may be committed:
+# the package is byte-identical to stage 1's, and the new character file exists only in the uncommitted
+# working copy. save_after_kill_between.toml then starts from what is left on disk.
+
+[scenario]
+description = "killed between the character-file and GlobalSetting steps of one save: nothing committed"
+seconds = 240
+script_file = "save_continue.kufscript"
+saves_from_run = "save_new"
+args = ["--content_test_kill=flush:2"]
+expect_exit = 137
+# The first flush is held; the kill comes at the start of the second, before it is held or committed.
+log_sequence = ["held until the end of save message 0x41127", "[content] TEST: killing the process at flush 2"]
+log_absent = ["(type 00000001): committed"]
+expect_saves_unchanged = true
+rules_from = "save_continue.toml"
+
+[[scenario.files]]
+a = "saves:B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/KD_*"
+b = "input:B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/KD_*"
+same = true
+
+[[scenario.files]]
+a = "saves:B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save.rex-staging/KD_*"
+b = "input:B13EBABEBABEBABE/424507D1/00000001/Circle of Doom - Character Save/KD_*"
+same = false

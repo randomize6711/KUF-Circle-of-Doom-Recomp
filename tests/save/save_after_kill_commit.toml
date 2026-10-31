@@ -1,0 +1,14 @@
+# Restart after an interrupted save (tools/menu_test.py, M5B): a new process starts with what save_kill_commit
+# left on disk. The runtime must not apply the interrupted save (recovery notes in the log); the game loads
+# the last committed save, which is stage 1's (save_new.toml): every check of save_continue.toml against
+# stage 1's readings. The run then saves again (the same second change), which must commit normally.
+
+[scenario]
+description = "restart after the kill: last valid save loads (stage 1 state), saving works again"
+seconds = 240
+script_file = "save_continue.kufscript"
+saves_from_run = "save_kill_commit"
+compare_run = "save_new"
+log_expect = ["from an interrupted session were not applied", "removed an unfinished flush copy"]
+log_sequence = ["@gameplay+2120 press Return", "(type 00000001): committed", "[kuf-input] context: start prompt"]
+rules_from = "save_continue.toml"
