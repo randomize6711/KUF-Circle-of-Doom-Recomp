@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Kingdom Under Fire: Circle of Doom Setup
+Comment=Installs the native PC version (requires your own game files)
+Exec=kuf-setup
+Icon=kuf-setup
+Terminal=false
+Categories=Game;

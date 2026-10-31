@@ -39,6 +39,7 @@
 #                               [--pad /dev/input/by-id/...-event-joystick] [--gdb script.gdb]
 #                               [--saves-from dir | --save-dir dir [--save-dir-confirm]]
 #                               [--cache-from dir] [--input-script file] [--pc-settings-from file|dir]
+#                               [--copy-in file] [--copy-dir dir]
 #                               [-- extra kuf_cod args]
 #   --gdb runs the game under `gdb -batch -x script` inside the same sandbox (output in gdb.txt).
 set -euo pipefail
@@ -58,6 +59,7 @@ CACHE_FROM=""
 INPUT_SCRIPT=""
 PC_SETTINGS_FROM=""
 COPY_IN=()
+COPY_DIRS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -p) PRESET="$2"; shift 2 ;;
@@ -75,6 +77,7 @@ while [ $# -gt 0 ]; do
     --input-script) INPUT_SCRIPT="$(realpath -e "$2")"; shift 2 ;;
     --pc-settings-from) PC_SETTINGS_FROM="$(realpath -e "$2")"; shift 2 ;;
     --copy-in) COPY_IN+=("$(realpath -e "$2")"); shift 2 ;;
+    --copy-dir) COPY_DIRS+=("$(realpath -e "$2")"); shift 2 ;;
     --) shift; break ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -166,6 +169,11 @@ fi
 for f in "${COPY_IN[@]}"; do  # test helpers (e.g. a fake updater): /run-data/in/<name>, executable bits kept
   [ -f "$f" ] && ! inside "$f" "$GAME_REAL" || { echo "--copy-in must be a file outside the game folder: $f" >&2; exit 1; }
   mkdir -p "$RUN/in" && cp -p "$f" "$RUN/in/"
+done
+for d in "${COPY_DIRS[@]}"; do  # a test directory (e.g. a disposable install for the updater): /run-data/in/<name>
+  [ -d "$d" ] && ! inside "$d" "$GAME_REAL" && ! inside "$GAME_REAL" "$d" ||
+    { echo "--copy-dir must be a directory outside the game folder: $d" >&2; exit 1; }
+  mkdir -p "$RUN/in" && cp -a "$d" "$RUN/in/"
 done
 if [ -n "$PC_SETTINGS_FROM" ]; then
   cp "$PC_SETTINGS_FROM" "$RUN/user/pc_settings.toml"

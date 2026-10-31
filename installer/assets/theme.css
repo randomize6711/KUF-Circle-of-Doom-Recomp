@@ -1,0 +1,177 @@
+/* The setup's look (GTK 3 CSS): dark charcoal, bronze and aged gold, ember red. Original theme for this project.
+   Font: X360 by Redge (bundled; "100% Free" at dafont.com) throughout. No animations. */
+
+@define-color kuf_night #0b0807;
+@define-color kuf_char #17110e;
+@define-color kuf_panel rgba(24, 17, 13, 0.92);
+@define-color kuf_bronze #b8863b;
+@define-color kuf_gold #e0b866;
+@define-color kuf_dim_gold #8a6a3a;
+@define-color kuf_ember #e8641a;
+@define-color kuf_blood #b3200c;
+@define-color kuf_text #eadfc8;
+@define-color kuf_muted #b4a588;
+
+window.kuf {
+  background-color: @kuf_night;
+  background-image:
+    radial-gradient(ellipse at 50% 115%, rgba(179, 32, 12, 0.55), rgba(232, 100, 26, 0.12) 45%, rgba(0, 0, 0, 0) 70%),
+    radial-gradient(ellipse at 50% 0%, rgba(184, 134, 59, 0.10), rgba(0, 0, 0, 0) 60%),
+    linear-gradient(to bottom, #120c0a, #0b0807 55%, #150b07);
+  color: @kuf_text;
+  font-family: "X360 by Redge", sans-serif;
+  font-size: 15px;
+}
+
+.frame {
+  border: 2px solid @kuf_bronze;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.8), inset 0 0 0 4px rgba(122, 83, 32, 0.45), 0 0 30px rgba(0, 0, 0, 0.6);
+  margin: 18px;
+}
+
+.title-small {
+  font-family: "X360 by Redge", sans-serif;
+  font-size: 15px;
+  letter-spacing: 6px;
+  color: @kuf_gold;
+}
+.title-big {
+  font-family: "X360 by Redge", sans-serif;
+  font-weight: 700;
+  font-size: 40px;
+  letter-spacing: 4px;
+  color: #f3dfaa;
+  text-shadow: 0 0 18px rgba(232, 100, 26, 0.45), 0 2px 2px #000000;
+}
+.edition {
+  font-family: "X360 by Redge", sans-serif;
+  font-size: 16px;
+  letter-spacing: 3px;
+  color: @kuf_muted;
+}
+.page-title {
+  font-family: "X360 by Redge", sans-serif;
+  font-weight: 700;
+  font-size: 24px;
+  letter-spacing: 2px;
+  color: @kuf_gold;
+}
+.body { color: @kuf_text; font-size: 15px; }
+.muted { color: @kuf_muted; font-size: 14px; }
+.ok { color: #9fd38a; }
+.bad { color: #ff8a6a; }
+.warn { color: #f0c060; }
+
+.panel {
+  background-color: @kuf_panel;
+  border: 1px solid @kuf_dim_gold;
+  border-radius: 4px;
+}
+
+.step { font-family: "X360 by Redge", sans-serif; font-size: 13px; letter-spacing: 1px; color: #6f5c40; padding: 2px 8px; }
+.step.current { color: @kuf_gold; border-bottom: 2px solid @kuf_ember; }
+.step.done { color: @kuf_dim_gold; }
+
+.frame button, dialog button, messagedialog button {
+  font-family: "X360 by Redge", sans-serif;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 1px;
+  color: @kuf_text;
+  min-height: 46px;
+  min-width: 150px;
+  padding: 6px 22px;
+  border-radius: 4px;
+  border: 1px solid @kuf_bronze;
+  background-image: linear-gradient(to bottom, #3a271a, #22160f);
+  box-shadow: inset 0 1px rgba(224, 184, 102, 0.25), 0 2px 4px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 1px 1px #000000;
+  outline-color: @kuf_ember;
+  outline-width: 2px;
+  outline-offset: 3px;
+  -gtk-outline-radius: 6px;
+}
+.frame button:hover, dialog button:hover {
+  border-color: @kuf_gold;
+  background-image: linear-gradient(to bottom, #4a311e, #2a1a10);
+  box-shadow: inset 0 1px rgba(224, 184, 102, 0.35), 0 0 12px rgba(232, 100, 26, 0.45);
+}
+.frame button:active, dialog button:active { background-image: linear-gradient(to bottom, #1e130c, #2c1c12); }
+.frame button:focus, dialog button:focus { border-color: @kuf_ember; }
+.frame button:disabled, dialog button:disabled { color: #6a5d4c; border-color: #4a3a26; background-image: linear-gradient(to bottom, #1d1510, #17110d); box-shadow: none; }
+.frame button.primary, dialog button.primary {
+  color: #fff3d6;
+  border-color: @kuf_gold;
+  background-image: linear-gradient(to bottom, #8e2a10, #5a1608);
+  box-shadow: inset 0 1px rgba(255, 200, 120, 0.35), 0 0 14px rgba(232, 100, 26, 0.35);
+}
+.frame button.primary:hover, dialog button.primary:hover { background-image: linear-gradient(to bottom, #a8361a, #6a1c0b); }
+.frame button.primary:disabled, dialog button.primary:disabled { color: #8a7a66; background-image: linear-gradient(to bottom, #3a1c12, #2a140c); box-shadow: none; }
+.frame button.small, dialog button.small { min-height: 36px; min-width: 110px; font-size: 14px; }
+
+entry {
+  font-size: 15px;
+  min-height: 40px;
+  color: @kuf_text;
+  background-color: #0f0b09;
+  border: 1px solid @kuf_dim_gold;
+  border-radius: 3px;
+  padding: 0 10px;
+  caret-color: @kuf_ember;
+}
+entry:focus { border-color: @kuf_ember; box-shadow: 0 0 8px rgba(232, 100, 26, 0.4); }
+
+checkbutton { font-size: 16px; padding: 6px 4px; }
+checkbutton label { color: @kuf_text; padding-left: 8px; }
+checkbutton check {
+  min-width: 22px;
+  min-height: 22px;
+  border: 1px solid @kuf_bronze;
+  border-radius: 3px;
+  background-color: #120d0a;
+  background-image: none;
+}
+checkbutton check:checked { background-color: @kuf_blood; border-color: @kuf_gold; color: #fff3d6; }
+checkbutton:focus check { box-shadow: 0 0 0 2px @kuf_ember; }
+checkbutton:disabled label { color: #6a5d4c; }
+
+combobox button { min-width: 260px; min-height: 40px; font-family: "X360 by Redge", sans-serif; font-weight: 400; font-size: 15px; }
+
+progressbar trough {
+  min-height: 22px;
+  border: 1px solid @kuf_bronze;
+  border-radius: 3px;
+  background-color: #0f0b09;
+}
+progressbar progress {
+  min-height: 20px;
+  border: none;
+  border-radius: 2px;
+  background-image: linear-gradient(to right, #6a1608, @kuf_blood 40%, @kuf_ember 85%, #ffc35a);
+  box-shadow: 0 0 10px rgba(232, 100, 26, 0.6);
+}
+
+scrolledwindow, viewport { background-color: transparent; background-image: none; border: none; }
+textview, textview text { background-color: #0f0b09; color: @kuf_muted; }
+textview text { font-family: monospace; font-size: 13px; }
+
+.divider { min-height: 16px; }
+
+dialog, messagedialog { background-color: @kuf_char; color: @kuf_text; }
+messagedialog .titlebar, dialog .titlebar { background-image: none; background-color: @kuf_char; }
+
+/* The window's title bar (client-side decorations on Wayland): dark, with the gold title. */
+headerbar, .titlebar {
+  background-image: linear-gradient(to bottom, #1d1410, #120c0a);
+  background-color: #120c0a;
+  border-bottom: 1px solid @kuf_dim_gold;
+  box-shadow: none;
+  color: @kuf_gold;
+}
+headerbar .title, .titlebar .title { font-family: "X360 by Redge", sans-serif; font-size: 14px; color: @kuf_gold; }
+headerbar button, .titlebar button {
+  min-height: 24px; min-width: 24px; padding: 2px; border: none; background-image: none; background-color: transparent;
+  color: @kuf_muted; box-shadow: none;
+}
+headerbar button:hover, .titlebar button:hover { color: @kuf_gold; background-color: rgba(184, 134, 59, 0.18); }

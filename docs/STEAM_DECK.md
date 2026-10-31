@@ -68,8 +68,14 @@ and available version, release date and notes); Install downloads with progress 
 then offers Restart (docs/SETTINGS.md "Title menu rows"). With `--json` the updater prints one result line, and for
 `update` progress lines before it (`{"progress": bytes, "total": bytes}`, `{"stage": "verifying"}`); SIGTERM / SIGINT
 during the download cancel it (exit 5, nothing changed; leftovers of a killed run are removed at the next run).
-Restart: the launcher sets `KUF_RESTART_FILE`; the game writes it and quits; the launcher then starts the install's
-stable `kuf-cod` again, which runs the version now current.
+Restart: the launcher sets `KUF_RESTART_FILE` (or `--kuf_restart_file`); the game writes it and quits; the launcher
+then starts the install's stable `kuf-cod` again, which runs the version now current.
+
+Trying the whole flow without GitHub (done 2026-10-31): build two versions (`KUFCOD_RELEASE_VERSION=0.7.1` /
+`0.7.2`, `package_linux.sh`), install the older into a disposable root with a throwaway key's `allowed_signers`, put
+the newer and its signature with a `releases.json` in a local folder, and start the game in the sandbox with
+`--copy-dir <that folder>` and `--kuf_updater=` a wrapper running `kuf_update.py --source-dir ... --source-rate 3072`
+(slow enough to see progress and cancel) plus `--kuf_restart_file=...`.
 
 Updates are off until the install knows where releases come from and which key signs them:
 `install.sh --repo owner/name --signers allowed_signers` (or edit `app/update.conf` and copy `allowed_signers`).

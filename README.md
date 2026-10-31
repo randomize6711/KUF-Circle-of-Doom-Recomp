@@ -60,7 +60,10 @@ come from git (cmake/kuf_version.cmake) and are shown in the title screen's SETT
 
 ## Installing and updating
 
-A build can be packaged and installed for everyday play (the planned installer will wrap these steps):
+**The graphical setup** (installer/README.md): `installer/appimage/build_appimage.sh` builds
+`build/installer/KingdomUnderFire-CircleOfDoom-Setup-<version>-x86_64.AppImage`, a themed installer that checks and
+copies your game files, installs the game for your user, adds menu / desktop / Steam shortcuts if you want them, and
+repairs or uninstalls it (players' guide: docs/INSTALL_GUIDE.md). Without it, from a terminal:
 
 ```sh
 tools/package/package_linux.sh --version 0.7.0       # build/packages/kuf-cod-recomp-0.7.0-linux-x86_64.tar.gz

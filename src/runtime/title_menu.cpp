@@ -61,6 +61,9 @@ REXCVAR_DEFINE_BOOL(kuf_title_arrow, true, "KUF/Settings",
                     "hide it with their state bit 0x80)");
 REXCVAR_DEFINE_BOOL(kuf_title_menu_rows, true, "KUF/Settings",
                     "Check for Updates and Quit Game below CREDITS in the title list (M7)");
+REXCVAR_DEFINE_STRING(kuf_restart_file, "", "KUF/Settings",
+                      "M7 updater: the file the game writes before quitting for Restart (default: $KUF_RESTART_FILE, "
+                      "which the launcher of an installed package sets and acts on)");
 REXCVAR_DEFINE_STRING(kuf_updater, "", "KUF/Settings",
                       "The updater command for Check for Updates (default: $KUF_UPDATER, which the launcher sets)");
 
@@ -209,6 +212,15 @@ int RunUpdater(const std::string& cmd, const std::string& args,
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+// The launcher's restart file (--kuf_restart_file, else $KUF_RESTART_FILE); empty: no restart offered.
+std::string RestartFile() {
+  std::string file = REXCVAR_GET(kuf_restart_file);
+  if (file.empty()) {
+    if (const char* env = std::getenv("KUF_RESTART_FILE")) file = env;
+  }
+  return file;
+}
+
 void StartCheck() {
   const std::string cmd = UpdaterCommand();
   {
@@ -275,7 +287,7 @@ void StartInstall() {
     if (r.exit == 0) {
       g_update = Update::kInstalled;
       g_want[kUpdates] = "UPDATE " + latest + " INSTALLED";
-      g_dialog_pending = std::getenv("KUF_RESTART_FILE") ? Dialog::kRestart : Dialog::kInstalledNoRestart;
+      g_dialog_pending = RestartFile().empty() ? Dialog::kInstalledNoRestart : Dialog::kRestart;
     } else if (r.exit == 5) {
       g_update = Update::kAvailable;  // still available: Select offers it again
       g_want[kUpdates] = "UPDATE " + latest + " AVAILABLE";
@@ -324,9 +336,9 @@ void AskUpdate(PPCContext& ctx, uint8_t* base, uint32_t menu, kuf::updates::Dial
 }
 
 void RestartGame() {
-  const char* marker = std::getenv("KUF_RESTART_FILE");
-  if (!marker) return;
-  if (FILE* f = std::fopen(marker, "w")) {
+  const std::string marker = RestartFile();
+  if (marker.empty()) return;
+  if (FILE* f = std::fopen(marker.c_str(), "w")) {
     std::fputs("restart after update\n", f);
     std::fclose(f);
     REXLOG_INFO("[kuf-title] restarting for the update");
@@ -632,7 +644,7 @@ bool BeforeInput(PPCContext& ctx, uint8_t* base) {
           AskUpdate(ctx, base, menu, Dialog::kCancelAsk);
         } else if (state == Update::kInstalled) {
           AskUpdate(ctx, base, menu,
-                    std::getenv("KUF_RESTART_FILE") ? Dialog::kRestart : Dialog::kInstalledNoRestart);
+                    RestartFile().empty() ? Dialog::kInstalledNoRestart : Dialog::kRestart);
         } else if (state != Update::kChecking) {
           StartCheck();
         }

@@ -92,6 +92,12 @@ player's manual test.
 | 4 | Scrollbars | IMPLEMENTED on the Settings list pages (K70) |
 Waiting for the player's manual test.
 
+## Installer milestone (2026-10-31)
+The graphical setup (installer/, AppImage) is IMPLEMENTED: GTK 3 wizard with the project's own theme (Cinzel, original
+artwork), game-file validation (137 files, SHA-256), transactional install into the updater's layout, menu / desktop /
+Steam shortcuts, repair, uninstall, system-requirement check. Unit tests and a full isolated installation pass;
+waiting for the player's manual test (K71). Build: installer/appimage/build_appimage.sh.
+
 ## Next exact action
 **Now:** the player tests the overhaul manually (checklist in the report); only then automated in-game tests.
 Earlier:

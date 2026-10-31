@@ -44,6 +44,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 
@@ -267,8 +268,9 @@ class GitHubSource:
 class DirectorySource:
     """Tests and offline use: releases.json and the assets in a local directory (--source-dir)."""
 
-    def __init__(self, path):
+    def __init__(self, path, rate_kib=0):
         self.path = path
+        self.rate = rate_kib * 1024
 
     def releases(self):
         return json.load(open(os.path.join(self.path, "releases.json")))
@@ -285,6 +287,8 @@ class DirectorySource:
                 done += len(chunk)
                 if progress:
                     progress(done, size)
+                if self.rate:
+                    time.sleep(len(chunk) / self.rate)
 
 
 # ---- choosing a release ----
@@ -412,6 +416,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--install-root", required=True)
     ap.add_argument("--source-dir", help="read releases.json and assets from this directory (tests, offline)")
+    ap.add_argument("--source-rate", type=int, default=0,
+                    help="with --source-dir: copy at most this many KiB per second (to try progress and cancel)")
     ap.add_argument("--prerelease", action="store_true", help="also consider pre-releases")
     ap.add_argument("--allow-downgrade", action="store_true")
     ap.add_argument("--json", action="store_true", help="print the result as one JSON line (the game's check)")
@@ -469,7 +475,7 @@ def main(argv=None):
             parse_version(version)
             install_package(install, args.package, args.signature, version, args.allow_downgrade)
             return report(0, current=version, message=f"installed {version}")
-        source = DirectorySource(args.source_dir) if args.source_dir else GitHubSource(install.conf["repo"])
+        source = DirectorySource(args.source_dir, args.source_rate) if args.source_dir else GitHubSource(install.conf["repo"])
         best = newest_release(install, source, args.prerelease)
         if best is None:
             return report(3, current=current, latest=None, message="no signed release found")

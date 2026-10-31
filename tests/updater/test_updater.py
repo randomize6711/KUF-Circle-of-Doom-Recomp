@@ -446,6 +446,7 @@ def _(t):
                        text=True)
     args = r.stdout.splitlines()
     assert r.returncode == 0 and f"--game_data_root={game}" in args and "--fullscreen=false" in args, args
+    assert "--gpu_plugin=xenos" in args, "the launcher turns the GPU on (without it the game stops on its first frame)"
     data = os.path.join(t, "data", "kuf-cod-recomp", "data")
     assert f"--content_root={data}/saves" in args and f"--user_data_root={data}/user" in args, args
     r = subprocess.run([launcher], env=env, capture_output=True, text=True)

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An ornamental divider for the setup's headings (original artwork for this project). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 32" width="640" height="32">
+  <defs>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b8863b" stop-opacity="0"/>
+      <stop offset="0.35" stop-color="#c99a4b"/>
+      <stop offset="0.65" stop-color="#c99a4b"/>
+      <stop offset="1" stop-color="#b8863b" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="20" y="15" width="600" height="2" fill="url(#line)"/>
+  <path d="M320 4 L332 16 L320 28 L308 16 Z" fill="#7a5320" stroke="#e0b866" stroke-width="2"/>
+  <path d="M320 10 L326 16 L320 22 L314 16 Z" fill="#e8641a"/>
+  <path d="M296 16 L304 10 L304 22 Z M344 16 L336 10 L336 22 Z" fill="#c99a4b"/>
+</svg>

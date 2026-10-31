@@ -67,9 +67,13 @@ mkdir -p "$DATA/user" "$DATA/saves" "$DATA/cache" "$DATA/logs"
 if [[ "$(basename "$(dirname "$HERE")")" == "versions" && -x "$HERE/../../kuf-update" ]]; then
   export KUF_INSTALL_ROOT="$(cd "$HERE/../.." && pwd)" KUF_UPDATER="$(cd "$HERE/../.." && pwd)/kuf-update"
 fi
+# The GPU (the game's renderer): always on for play; it is off by default in the binary (the automated tests run
+# without it). A --gpu_plugin given by the caller wins.
+GPU_ARGS=(--gpu_plugin=xenos)
+[[ " ${ARGS[*]} " == *" --gpu_plugin="* ]] && GPU_ARGS=()
 GAME=("$HERE/bin/kuf_cod" --game_data_root="$GAME_DIR" --user_data_root="$DATA/user" --content_root="$DATA/saves"
   --cache_root="$DATA/cache" --log_file="$DATA/logs/kuf_cod.log" --log_max_file_size_mb=64 --log_max_files=3
-  "${ARGS[@]}")
+  "${GPU_ARGS[@]}" "${ARGS[@]}")
 if [[ -z "${KUF_INSTALL_ROOT:-}" || ! -x "$KUF_INSTALL_ROOT/kuf-cod" ]]; then
   exec "${GAME[@]}"  # not an install: no restart after an update
 fi
