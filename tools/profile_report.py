@@ -260,8 +260,17 @@ def main():
     for r in csv.DictReader(open(os.path.join(prof, "threads.csv"))):
         names.setdefault(int(r["tid"]), r["name"])
     if os.path.exists(os.path.join(prof, "samples.bin")):
-        report["samples"] = read_samples(prof, frame_from, frame_to, Symbols(prof, args.bin_dir), names,
-                                         "kuf_cod", args.top)
+        symbols = Symbols(prof, args.bin_dir)
+        # Function names come from the binaries in --bin-dir: a later build has other addresses (M8: a profile read
+        # with the next build's libraries named the wrong functions). The run's profile is older than any rebuild.
+        recorded = os.path.getmtime(os.path.join(prof, "samples.bin"))
+        newer = sorted({os.path.basename(m[4]) for m in symbols.maps
+                        if m[4].startswith(args.bin_dir) and os.path.exists(m[4]) and os.path.getmtime(m[4]) > recorded})
+        if newer:
+            print(f"WARNING: {', '.join(newer)} in {args.bin_dir} were built after this profile was recorded: the "
+                  "host function names below are not reliable (guest sub_ names in kuf_cod neither)", file=sys.stderr)
+            report["symbols_unreliable"] = newer
+        report["samples"] = read_samples(prof, frame_from, frame_to, symbols, names, "kuf_cod", args.top)
 
     f = report["frames"]
     print(f"profile {report['run']}: {report['from_s']:.0f}-{report['to_s']:.0f} s")

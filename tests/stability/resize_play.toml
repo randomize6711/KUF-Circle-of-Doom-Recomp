@@ -1,0 +1,98 @@
+# M8 stability (tools/stability.py): the window resized every 4 s during play at 120 fps (16:9, 21:9, 4:3, 5:4,
+# 32:9 and back), 24 times, while walking and turning in Shadow Depths (CONTINUE from the fixture; a copy).
+
+[scenario]
+description = "M8 stability: window resized every 4 s during play"
+seconds = 220
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_frame_rate=120"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 10 until gameplay press Return
+@gameplay+280 down W
+@gameplay+300 sdl resize 1280 720
+@gameplay+420 sdl resize 1920 1080
+@gameplay+460 up W
+@gameplay+470 down L
+@gameplay+495 up L
+@gameplay+510 down W
+@gameplay+540 sdl resize 2560 1080
+@gameplay+660 sdl resize 1600 1200
+@gameplay+690 up W
+@gameplay+700 down J
+@gameplay+725 up J
+@gameplay+740 down W
+@gameplay+780 sdl resize 3840 2160
+@gameplay+900 sdl resize 1280 1024
+@gameplay+920 up W
+@gameplay+930 down L
+@gameplay+955 up L
+@gameplay+970 down W
+@gameplay+1020 sdl resize 5120 1440
+@gameplay+1140 sdl resize 2560 1440
+@gameplay+1150 up W
+@gameplay+1160 down J
+@gameplay+1185 up J
+@gameplay+1200 down W
+@gameplay+1260 sdl resize 1280 720
+@gameplay+1380 sdl resize 1920 1080
+@gameplay+1380 up W
+@gameplay+1390 down L
+@gameplay+1415 up L
+@gameplay+1430 down W
+@gameplay+1500 sdl resize 2560 1080
+@gameplay+1610 up W
+@gameplay+1620 sdl resize 1600 1200
+@gameplay+1620 down J
+@gameplay+1645 up J
+@gameplay+1660 down W
+@gameplay+1740 sdl resize 3840 2160
+@gameplay+1840 up W
+@gameplay+1850 down L
+@gameplay+1860 sdl resize 1280 1024
+@gameplay+1875 up L
+@gameplay+1890 down W
+@gameplay+1980 sdl resize 5120 1440
+@gameplay+2070 up W
+@gameplay+2080 down J
+@gameplay+2100 sdl resize 2560 1440
+@gameplay+2105 up J
+@gameplay+2120 down W
+@gameplay+2220 sdl resize 1280 720
+@gameplay+2300 up W
+@gameplay+2310 down L
+@gameplay+2335 up L
+@gameplay+2340 sdl resize 1920 1080
+@gameplay+2350 down W
+@gameplay+2460 sdl resize 2560 1080
+@gameplay+2530 up W
+@gameplay+2540 down J
+@gameplay+2565 up J
+@gameplay+2580 sdl resize 1600 1200
+@gameplay+2580 down W
+@gameplay+2700 sdl resize 3840 2160
+@gameplay+2760 up W
+@gameplay+2770 down L
+@gameplay+2795 up L
+@gameplay+2810 down W
+@gameplay+2820 sdl resize 1280 1024
+@gameplay+2940 sdl resize 5120 1440
+@gameplay+2990 up W
+@gameplay+3000 down J
+@gameplay+3025 up J
+@gameplay+3040 down W
+@gameplay+3060 sdl resize 2560 1440
+@gameplay+3220 up W
+@gameplay+3230 down L
+@gameplay+3255 up L
+@gameplay+3270 down W
+@gameplay+3450 up W
+@gameplay+3460 down J
+@gameplay+3485 up J
+@gameplay+3480 log window_end
+"""
+log_expect = ["[kuf-input] context: gameplay", "window_end"]

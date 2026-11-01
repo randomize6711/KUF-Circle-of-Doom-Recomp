@@ -11,6 +11,10 @@
 //                    controller (the title screen's "Press START")
 // The keyboard and mouse use these to choose their meaning (KeyboardPad contexts) and to capture the pointer
 // for mouse look only in gameplay. Read-only; game behaviour is unchanged.
+//
+// The target alone misses the in-game menus in co-op (the world keeps running under them, so the target stays
+// valid: the pointer stayed captured for mouse look and the menu pointer off). A menu also counts when the UI's
+// focused control (0x82ABBB90) is a live control of an in-game menu scene (input/game_context.cpp).
 
 #include "input/game_input_hooks.h"
 
@@ -23,9 +27,14 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "input/game_context.h"
 #include "input/input_script.h"
+#include "runtime/menu_pointer.h"
 #include "runtime/telemetry.h"
 
+REXCVAR_DEFINE_BOOL(kuf_menu_focus_context, true, "KUF/Input",
+                    "An in-game menu with the UI focus counts as a menu even while the player character keeps "
+                    "control (co-op menus, where the world keeps running): the pointer is released for the menu");
 REXCVAR_DEFINE_BOOL(kuf_trace_game_input, false, "KUF/Debug",
                     "Log the game's input layer: user 0's polled buttons, its press gates and target handle when "
                     "they change, and every press or release it sends ([kuf-game-input])");
@@ -57,6 +66,39 @@ uint32_t LoadBE32(const uint8_t* p) {
   return __builtin_bswap32(v);
 }
 
+constexpr uint32_t kFocusedControl = 0x82ABBB90;  // the UI's focused control (docs/MENU_ARCHITECTURE.md 13)
+
+UiFocus ReadFocus(const uint8_t* base) {
+  using kuf::menu_pointer::GuestReadable;
+  UiFocus f;
+  if (!GuestReadable(kFocusedControl, 4)) return f;
+  const uint32_t control = LoadBE32(base + kFocusedControl);
+  if (!GuestReadable(control, 64)) return f;
+  const uint32_t scene = LoadBE32(base + control + 48);  // the scene record: +0 its ID
+  if (!GuestReadable(scene, 4)) return f;
+  f.readable = true;
+  f.vtable = LoadBE32(base + control);
+  f.scene_id = LoadBE32(base + scene);
+  return f;
+}
+
+// The context from the input object `obj` (see the top of the file); `focus_scene` gets the menu scene that decided
+// it (0: the target alone).
+GameContext ContextOf(const uint8_t* base, const uint8_t* obj, uint32_t* focus_scene) {
+  *focus_scene = 0;
+  if (obj[kWaitingForStartOffset] != 0) return GameContext::kStartPrompt;
+  uint32_t user = LoadBE32(obj + kActiveUserOffset);
+  if (user > 3) user = 0;  // the keyboard and the first controller feed user 0
+  const bool target = LoadBE32(obj + kTargetHandleOffset * (user + 1)) != kInvalidHandle;
+  bool menu = false;
+  if (target && REXCVAR_GET(kuf_menu_focus_context)) {
+    const UiFocus f = ReadFocus(base);
+    menu = MenuHasFocus(f);
+    if (menu) *focus_scene = f.scene_id;
+  }
+  return DecideGameContext(false, target, menu);
+}
+
 }  // namespace
 
 GameContext CurrentGameContext() { return g_context.load(std::memory_order_relaxed); }
@@ -68,12 +110,8 @@ std::atomic<uint32_t> g_input_object{0};  // the input update's object (its last
 GameContext LiveGameContext(const uint8_t* base) {
   const uint32_t address = g_input_object.load(std::memory_order_relaxed);
   if (!address) return CurrentGameContext();
-  const uint8_t* obj = base + address;
-  if (obj[kWaitingForStartOffset] != 0) return GameContext::kStartPrompt;
-  uint32_t user = LoadBE32(obj + kActiveUserOffset);
-  if (user > 3) user = 0;
-  return LoadBE32(obj + kTargetHandleOffset * (user + 1)) != kInvalidHandle ? GameContext::kGameplay
-                                                                            : GameContext::kMenu;
+  uint32_t focus_scene = 0;
+  return ContextOf(base, base + address, &focus_scene);
 }
 
 bool GameWaitsForStart() { return CurrentGameContext() == GameContext::kStartPrompt; }
@@ -85,24 +123,18 @@ REX_HOOK_RAW(sub_825EAD58) {
   // The polls below (XamInputGetState) run inside this call, so they see this frame's context.
   const uint8_t* obj = base + ctx.r3.u32;
   g_input_object.store(ctx.r3.u32, std::memory_order_relaxed);
-  GameContext c = GameContext::kMenu;
-  if (obj[kWaitingForStartOffset] != 0) {
-    c = GameContext::kStartPrompt;
-  } else {
-    uint32_t user = LoadBE32(obj + kActiveUserOffset);
-    if (user > 3) {
-      user = 0;  // the keyboard and the first controller feed user 0
-    }
-    if (LoadBE32(obj + kTargetHandleOffset * (user + 1)) != kInvalidHandle) {
-      c = GameContext::kGameplay;
-    }
-  }
+  uint32_t focus_scene = 0;
+  const GameContext c = ContextOf(base, obj, &focus_scene);
   const GameContext previous = g_context.exchange(c, std::memory_order_relaxed);
   if (previous != c) {
     // The input script's anchors count from this tick (K38); the frame (the tick frames presented so far) shows how
     // far the render thread is behind.
     REXLOG_INFO("[kuf-input] context: {} (tick {}, frame {})", Name(c), kuf::input::script::CurrentTick(),
                 kuf::telemetry::TickFramesPresented());
+    if (focus_scene) {
+      REXLOG_INFO("[kuf-input] menu scene {:08X} has the focus while the character keeps control (co-op menus)",
+                  focus_scene);
+    }
     kuf::input::script::OnContextEntered(
         c == GameContext::kGameplay ? "gameplay" : c == GameContext::kStartPrompt ? "prompt" : "menu");
     // Kept from M4: tests and docs refer to these two lines.

@@ -2619,6 +2619,27 @@ The wait is inside `sub_82715A90`, a 1,617-line movie decode / present function 
 change needs its reverse engineering (what it updates, what it draws, what the audio follows) and the checks named in
 22.5. Not attempted as a quick patch.
 
+## 24. M8: frame pacing (2026-10-31; measurements in docs/PERFORMANCE.md section 7)
+
+### 24.1 Steps from the tick frame's hand-off (`--kuf_present_clock_from_handoff`, default on) [M]
+The clock on the tick's schedule (23.1) placed the render-only frames at `scheduled + k / rate`. The tick's own frame
+is handed to the render thread only after the tick's work and its scene build (several ms into the tick), so at 60 fps
+the frames came about 14 and 19.5 ms apart (jitter 6-7 ms at 1080p, 1440p and 4K, the GPU idle a third of the time),
+and at 120 the first step often found the renderer still drawing the tick's frame ("render busy"). The steps now run
+from the hand-off (`AfterTick` runs right after `sub_826F2E10` hands the frame over): `handoff + k / rate`, and when the
+hand-off came so late that the last step could not be built before the next tick is due, the steps are drawn closer
+together (never closer than 3/4 of a step) instead of losing the last one. Interpolation is unchanged: each frame is
+placed by when it reaches the renderer (`FrameAlpha`). Jitter at 60 fps 6.3 -> 3.0 ms (1440p), 6.8 -> 3.4 ms (4K);
+the timing (K44 included), presentation and render tests pass. Off: the D6 clock exactly.
+
+### 24.2 Adaptive frame rate (`--kuf_frame_rate_adaptive`, default off) [M]
+When the GPU cannot draw a limit that is a multiple of 30, the frames that are drawn come in bursts (4K at 120: about 5
+and 21 ms apart). With the option the frames per tick follow the GPU's measured time per frame (SDK patch 0012's
+`gpu_recent_frame_us`, an average over about ten frames): down to the sustained number after half a second, up one
+step after two seconds (src/runtime/adaptive_rate.h, unit tests in tests/pacing). The limit itself (the player's
+setting) is unchanged, and other limits (144, 165, unlimited) are not affected. At 4K with a 120 limit: an even 60 fps
+instead of about 90 with 5-9 ms jitter; opt-in because which looks better depends on the display and the player.
+
 ## Appendix A: probe scenario (scratch, not committed as a test)
 `python3 -I tools/menu_test.py --run-prefix m6d-hz<R> --game-arg=--kuf_profile=true
 --game-arg=--video_mode_refresh_rate=<R> tick_rate.toml` (and `--game-arg=--vsync=false`):

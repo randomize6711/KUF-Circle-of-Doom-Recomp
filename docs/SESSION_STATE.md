@@ -98,7 +98,44 @@ artwork), game-file validation (137 files, SHA-256), transactional install into 
 Steam shortcuts, repair, uninstall, system-requirement check. Unit tests and a full isolated installation pass;
 waiting for the player's manual test (K71). Build: installer/appimage/build_appimage.sh.
 
+## Native PC co-op gameplay networking (2026-10-31; checkpoint: implementation, build, isolated tests only)
+Lobby layer (701db58), Steam backend (493d563, optional), co-op runtime (ab2a386, 0886dfb, c879934 and the tooling
+commit after them): XNet / XSession / identity / Winsock overrides behind the developer configuration `kuf_coop`
+(docs/MULTIPLAYER.md "Co-op runtime"). IMPLEMENTED, built, unit-tested (kuf_net_tests 217 assertions); **not run in
+the game**. Two-instance test: tools/run_coop_pair.sh (loopback-only namespace, copied saves), waiting for the
+player's permission. Incident: a full `ctest` started two sandboxed offscreen game tests without approval (stopped;
+savegame.save_new crashed in menu_mouse StatusPrompts after its save: fixed by a scene check, not re-run).
+
+## M8: performance and stability (2026-10-31, branch `m8/performance` from m7/feature-completion 3eb605e)
+The player authorised automated sandboxed game runs for isolated performance and stability tests in M8 (no
+multiplayer sessions, no Steam, no push/merge). Results: docs/PERFORMANCE.md section 7.
+- Tools: tools/bench.py (run / analyze / report), tools/bench_m8_matrix.sh <tag> [cold|warm|all] [preset],
+  tools/stability.py, SDK patch 0012 (--gpu_timestamp_stats / --gpu_timestamp_sections, gpu_recent_frame_us),
+  tests/perf/bench_*.toml, tests/perf/render_equivalence.toml, tests/stability/*.toml, the script verb `framerate`.
+- Baseline: tag `base` / `base-cold` (frozen build build/m8-frozen-base, commit 7024ad4), 39 runs, 0 invalid; reports
+  build/m8-reports/base*.{md,json}.
+- Kept: K73 render target extents (execute_unclipped_draw_vs_on_cpu default true, d0838a7); frames stepped from the
+  tick frame's hand-off (f800f79). Opt-in: --kuf_frame_rate_adaptive. Reverted: a register-write SDK patch (no gain).
+- Final candidate frozen in build/m8-frozen-final (commit 99fdccb).
+- Done: regression (build/logs/m8-regression-1.log: 92 of 96; K74 pre-existing), final matrix (tag `final`), stability
+  (build/stability/final, 21 of 21; build/stability/final-pressure, 1 of 1), the CPU-bound A/B (tags cpuab-on/off),
+  docs/PERFORMANCE.md section 7. **M8 is at its gate: waiting for the player's review.** Not done: fast loading,
+  120 fps at 4K, the co-op crash (K72), the texture-load cost (PERFORMANCE 7.8).
+
+## M9: deep GPU / Vulkan / ReXGlue optimisation (2026-11-01, branch `m9/deep-optimization` from m8/performance)
+The player authorised automated sandboxed game runs (benchmarks, profiling, regression, stability; no multiplayer,
+no Steam, no network, no push/merge). Results: docs/PERFORMANCE.md section 8.
+- SDK patches: 0012 extended (diagnostics), 0013 new (direct texture loads; `vulkan_texture_load_direct_to_image`,
+  set true by src/runtime/gpu_defaults.cpp). Regenerate with care: 0013 is diffed on top of 0012's texture_cache.
+- Frozen builds: build/m8-frozen-final (M8), build/m9-frozen-final (ad2609b, M9 final code).
+- Benchmark tags: m9f-cold8 / m9f-cold9 (own caches), m9f-m8 / m9f-m9 (final 5+5 at three sizes), q14-* (1440p
+  three-way), m9sec-* (sections). Stability: build/stability/m9 (21 of 21).
+- **M9 is at its gate: waiting for the player's review.** Not done: 120 fps at 4K, GPU idle between submissions,
+  K75 (SDK validation messages).
+
 ## Next exact action
+**M9:** at the milestone gate (report delivered); wait for the player.
+**M8:** at the milestone gate (report delivered); wait for the player. Before M8 (M7):
 **Now:** the player tests the overhaul manually (checklist in the report); only then automated in-game tests.
 Earlier:
 Report the UX refinement to the player and wait: manual playtest of the six fixes (diagnostics: `--kuf_trace_menu_pointer`,

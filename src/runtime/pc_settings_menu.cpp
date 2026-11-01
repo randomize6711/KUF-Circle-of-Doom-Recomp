@@ -57,6 +57,7 @@
 #include "runtime/controls_screen.h"
 #include "runtime/display.h"
 #include "runtime/frame_pacing.h"
+#include "runtime/lobby_screen.h"
 #include "runtime/menu_mouse.h"
 #include "runtime/menu_pointer.h"
 #include "runtime/pc_settings.h"
@@ -424,10 +425,11 @@ REX_HOOK_RAW(sub_82190C60) {  // read a whole file: (path, &buffer, &size) -> 0 
     // M7: the level-up dialog, the equipment screen and the item list (src/runtime/menu_mouse.cpp).
     std::string name(reinterpret_cast<const char*>(base + path), strnlen(reinterpret_cast<const char*>(base + path), 260));
     for (char& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
-    if (!kuf::menu_mouse::IsExtendedLayout(name)) return;
+    const bool lobby = kuf::lobby_screen::IsLayout(name);  // the multiplayer menus' columns (lobby_screen.cpp)
+    if (!lobby && !kuf::menu_mouse::IsExtendedLayout(name)) return;
     std::vector<uint8_t> data(base + buffer, base + buffer + size);
     std::string why;
-    if (!kuf::menu_mouse::ExtendLayout(name, &data, &why)) {
+    if (!(lobby ? kuf::lobby_screen::ExtendLayout(&data, &why) : kuf::menu_mouse::ExtendLayout(name, &data, &why))) {
       if (!why.empty()) REXLOG_WARN("[kuf-mouse] {} left unchanged: {}", name, why);
       return;
     }
@@ -445,8 +447,9 @@ REX_HOOK_RAW(sub_82190C60) {  // read a whole file: (path, &buffer, &size) -> 0 
     ctx.r3.u64 = buffer;
     sub_8218F7F8(ctx, base);
     ctx.r3.u64 = 0;
-    REXLOG_INFO("[kuf-mouse] {} extended: {} -> {} bytes (clickable footer entries; level-up: backdrop, panel)", name,
-                size, data.size());
+    REXLOG_INFO("[kuf-mouse] {} extended: {} -> {} bytes ({})", name, size, data.size(),
+                lobby ? "the multiplayer menus' label and value columns"
+                      : "clickable footer entries; level-up: backdrop, panel");
     return;
   }
   std::string error;

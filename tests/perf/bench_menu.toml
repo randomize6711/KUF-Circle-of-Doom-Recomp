@@ -1,0 +1,18 @@
+# M8 benchmark workload (tools/bench.py): tests/perf/menu_idle.toml (cold start, title, storage prompt, the main menu
+# idling over its animated background) with log marks for the measured window (35 s .. 98 s of the run, as M6A
+# measured it from 35 s). Script times are game ticks (30 per second at every frame rate).
+
+[scenario]
+description = "M8 bench: boot and main menu idle"
+seconds = 105
+script = """
+500 tap Return
+700 tap Escape
+1050 log window_start
+2940 log window_end
+"""
+log_expect = ["[kuf-input] game no longer waits for START", "window_end"]
+
+[format]
+width = 1280
+height = 720

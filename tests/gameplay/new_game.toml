@@ -3,6 +3,11 @@
 # Everything after the world loads is anchored to the game's own state (@context#n+frames): loading and the
 # intro cutscene take a different time in every run. Rectangles are coordinates only, no image content.
 
+# K74 (M9): since M7 the storage question is answered for the player, so the route needs one confirmation fewer; the
+# former 1650 press landed at the start of the intro and, by load timing, sometimes skipped it.
+# Since M7 (a359b0e) the tutorial's hint box counts as a menu, where Space is A (confirm) and Escape is B (back):
+# Escape goes back from the hint and the game offers "End tutorial?" (Enter: yes).
+
 [scenario]
 description = "Kendal, Forest of Embracing, end tutorial, HUD, status/inventory, walk, mouse look, pause/resume"
 seconds = 150
@@ -14,9 +19,8 @@ script = """
 1250 tap Return
 1350 tap Return
 1500 tap Return
-1650 tap Return
 1800 repeat 60 until gameplay tap Return
-@menu#2+60 press Space
+@menu#2+60 press Escape
 @menu#2+130 tap Return
 @menu#2+400 capture free_play
 @menu#2+420 tap Tab

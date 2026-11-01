@@ -31,6 +31,9 @@
 #     nothing else (no X11, no audio, no other runtime files), SDL's wayland driver, --fullscreen=false (the
 #     window then takes the display mode of pc_settings.toml, M6C). Offscreen runs draw for a simulated
 #     1280x720 output (--kuf_display_size, overridable)
+#   - --share-net (developer co-op tests only): keeps the current network namespace instead of an empty one, and is
+#     refused unless that namespace has nothing but loopback (tools/run_coop_pair.sh runs two instances in one such
+#     namespace; the machine's network is never reachable)
 #   - hard wall-clock limit (default 60 s)
 #   - bounded logs: 64 MB x 2 files unless overridden with --log_max_file_size_mb/--log_max_files
 #   - on a crash (exit status 70) the report is symbolized to guest instruction addresses
@@ -39,7 +42,7 @@
 #                               [--pad /dev/input/by-id/...-event-joystick] [--gdb script.gdb]
 #                               [--saves-from dir | --save-dir dir [--save-dir-confirm]]
 #                               [--cache-from dir] [--input-script file] [--pc-settings-from file|dir]
-#                               [--copy-in file] [--copy-dir dir]
+#                               [--copy-in file] [--copy-dir dir] [--share-net]
 #                               [-- extra kuf_cod args]
 #   --gdb runs the game under `gdb -batch -x script` inside the same sandbox (output in gdb.txt).
 set -euo pipefail
@@ -60,6 +63,7 @@ INPUT_SCRIPT=""
 PC_SETTINGS_FROM=""
 COPY_IN=()
 COPY_DIRS=()
+SHARE_NET=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -p) PRESET="$2"; shift 2 ;;
@@ -78,6 +82,13 @@ while [ $# -gt 0 ]; do
     --pc-settings-from) PC_SETTINGS_FROM="$(realpath -e "$2")"; shift 2 ;;
     --copy-in) COPY_IN+=("$(realpath -e "$2")"); shift 2 ;;
     --copy-dir) COPY_DIRS+=("$(realpath -e "$2")"); shift 2 ;;
+    --share-net)
+      IFACES="$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | sort | tr '\n' ' ')"
+      if [ "$IFACES" != "lo " ]; then
+        echo "--share-net is only for a loopback-only network namespace (tools/run_coop_pair.sh); here: $IFACES" >&2
+        exit 1
+      fi
+      SHARE_NET=(--share-net); shift ;;
     --) shift; break ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -247,7 +258,7 @@ timeout --kill-after=5 "$TIMEOUT" bwrap \
   --ro-bind "$GAME_DIR" /game \
   --ro-bind "$BIN" /app \
   --bind "$RUN" /run-data "${SAVE_ARGS[@]}" \
-  --unshare-all --die-with-parent --new-session --clearenv \
+  --unshare-all "${SHARE_NET[@]}" --die-with-parent --new-session --clearenv \
   --setenv HOME /run-data/home --setenv XDG_RUNTIME_DIR /tmp \
   "${VIDEO[@]}" "${AUDIO_ARGS[@]}" "${PAD_ARGS[@]}" \
   "${LAUNCH[@]}" --game_data_root=/game --user_data_root=/run-data/user --cache_root=/run-data/cache \

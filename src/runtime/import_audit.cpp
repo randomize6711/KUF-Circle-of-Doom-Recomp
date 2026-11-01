@@ -27,6 +27,7 @@
 REXCVAR_DEFINE_STRING(kuf_audit_log, "", "KUF",
                       "Import audit builds: comma-separated imports to log on every call (with r3-r6)");
 
+#include "coop/coop_runtime.h"
 #include "runtime/crash_report.h"
 #include "runtime/fatal_trap.h"
 
@@ -67,6 +68,9 @@ const std::set<std::string>& AlwaysLogged() {
 ImportFn Resolve(const char* symbol) {
   if (ImportFn override_fn = kuf::diag::FatalImportOverride(symbol)) {
     return override_fn;  // our implementation replaces the runtime's (fatal_trap.cpp)
+  }
+  if (ImportFn coop_fn = kuf::coop::ImportOverride(symbol)) {
+    return coop_fn;  // the developer co-op runtime (forwards to the runtime's when off; coop/coop_runtime.cpp)
   }
   void* fn = dlsym(RTLD_NEXT, symbol);
   if (!fn) {

@@ -33,6 +33,9 @@ uint32_t FindInFocusedScene(uint32_t id);
 
 // True if guest memory [address, address + size) is mapped readable (a stale pointer is never followed).
 bool GuestReadable(uint32_t address, uint32_t size);
+// An input event {code} given to the focused control's own input handler (as the pointer's steps are); false if
+// there is no live focused control.
+bool DispatchToFocused(PPCContext& ctx, uint8_t* base, uint32_t code);
 
 // Game thread: the plan for a pointer at (px, py) in the 1280 x 720 layout space. `focus` gets the
 // focused control (id 0 without a focused button: list boxes and gameplay plan nothing).

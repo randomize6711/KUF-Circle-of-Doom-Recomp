@@ -30,6 +30,9 @@
 
 namespace kuf::input {
 
+// Backspace (VK_BACK): text deletion in the menus, never bound to a menu control (Bindings::Set drops it there).
+constexpr uint32_t kBackspaceKey = 0x08;
+
 // Logical controls of an Xbox 360 gamepad as the keyboard can drive them.
 enum class Control : uint8_t {
   kA, kB, kX, kY,

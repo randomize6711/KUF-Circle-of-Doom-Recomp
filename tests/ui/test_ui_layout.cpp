@@ -394,3 +394,57 @@ TEST_CASE("image controls are cloned under a control, in place or placed anew, w
   CHECK_FALSE(AddImageClones(data, 0x00F00000, {{0xF05001, 0xF05082}}, 0xF05999, &error));
   CHECK(AddImageClones(data, 0x00F00000, {{0xF05001, 0xF05082}}, 0, &error));  // added last
 }
+
+TEST_CASE("the game type screen gets fixed label and value columns on its rows' lines (multiplayer menus)") {
+  // The screen as UiStartGame.uitb has it: six row buttons (row 0 set in), their twins, the description line.
+  const std::vector<Control> controls = {
+      {1, 0x02F01001, 548, 236}, {1, 0x02F01002, 528, 278}, {1, 0x02F01003, 528, 320}, {1, 0x02F01004, 528, 362},
+      {1, 0x02F01006, 528, 403}, {1, 0x02F01007, 528, 445}, {1, 0x02F01005, 528, 236}, {4, 0x02F04001, 525, 503},
+      {4, 0x02F04002, 502, 634}};
+  auto data = Build({{0x02F00000, controls}});
+  {  // the description line's own font (FA_INFOTEXT_L, 0: left-aligned, the rows' text size) is kept
+    auto layout = Parse(data, nullptr);
+    REQUIRE(layout);
+    for (ControlRecord& c : layout->scenes[0].controls) {
+      if (c.id == 0x02F04001) Put32(c.bytes, 40, 0);
+    }
+    data = Serialize(*layout);
+  }
+  std::string error;
+  const auto out = AddLobbyColumns(data, &error);
+  REQUIRE(out);
+  const auto layout = Parse(*out, &error);
+  REQUIRE(layout);
+  const Scene& scene = layout->scenes[0];
+  REQUIRE(scene.controls.size() == controls.size() + 12);
+  auto place = [&](uint32_t id) {
+    for (const Placement& p : scene.placements) {
+      if (p.id == id) return p;
+    }
+    return Placement{0, -1, -1};
+  };
+  const int32_t row_y[6] = {236, 278, 320, 362, 403, 445};
+  for (uint32_t r = 0; r < 6; ++r) {
+    const Placement label = place(kLobbyLabelText + r), value = place(kLobbyValueText + r);
+    CHECK(label.x == 528 + kLobbyLabelInset);  // one label column for every row (row 0's set-in button too)
+    CHECK(value.x == 528 + kLobbyValueOffset);
+    CHECK(label.y == row_y[r]);                // on the row's own line
+    CHECK(value.y == row_y[r]);
+    CHECK(label.x + kLobbyLabelWidth <= value.x);           // the columns never overlap
+    CHECK(value.x + kLobbyValueWidth <= 528 + 620);         // the value stays inside the row (620 wide)
+    CHECK(value.x + kLobbyValueWidth <= 1280);              // inside the 1280 x 720 layout space every
+    CHECK(row_y[r] + kLobbyRowHeight <= 720);               // resolution and aspect ratio is scaled from
+  }
+  for (const ControlRecord& c : scene.controls) {
+    if (c.id < kLobbyLabelText) continue;
+    CHECK(c.type == 4);
+    CHECK(Get32(c.bytes, 20) == 0xFFFFFFFFu);  // text set by code
+    CHECK(Get32(c.bytes, 40) == 0);            // the description line's left-aligned font
+  }
+  // The rows' buttons (their frames and the pointer's hit boxes) do not move.
+  CHECK(place(0x02F01002).x == 528);
+  CHECK(place(0x02F01002).y == 278);
+  // Twice, or without a row button: refused (the layout stays the game's).
+  CHECK_FALSE(AddLobbyColumns(*out, &error));
+  CHECK_FALSE(AddLobbyColumns(Build({{0x02F00000, {{4, 0x02F04001, 525, 503}}}}), &error));
+}

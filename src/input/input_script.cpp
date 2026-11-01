@@ -169,6 +169,14 @@ void Apply(uint64_t frame, const Event& e) {
     kuf::capture::RequestLabeled(frame, a[0]);
     return;
   }
+  if (e.verb == "framerate") {
+    // M8 stability tests: the frame-rate limit changed for this run as the PC Settings menu changes it (applied at the
+    // next tick), without saving it; the other frame-rate settings stay as they are.
+    auto frame = kuf::pc::Current().frame_rate;
+    frame.fps_limit = std::stoi(a[0]);
+    kuf::pacing::RequestFrameRate(frame);
+    return;
+  }
   if (e.verb == "freeze") {
     kuf::pacing::RequestFreeze(std::stoi(a[0]), a[1], frame);
     return;

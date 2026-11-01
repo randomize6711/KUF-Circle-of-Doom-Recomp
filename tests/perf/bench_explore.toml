@@ -1,0 +1,110 @@
+# M8 benchmark workload (tools/bench.py): the M6A Shadow Depths exploration route (tests/perf/explore_shadows_depths.toml)
+# shortened to about 160 s of play, without captures, with log marks for the measured window and the world load:
+#   load_request    the Return that confirms CONTINUE's save slot (the load starts)
+#   gameplay_enter  the game reached gameplay (context change); world load = load_request -> context gameplay
+#   window_start / window_end   the measured window (@gameplay+600 .. +4800, 140 s of walking and camera turns)
+# The intro skip repeats every 10 ticks (the source repeats every 60) so the load time has a 0.33 s resolution.
+# Script times are game ticks (30 per second at every frame rate). Starts from build/m6-saves (read only, copied).
+
+[scenario]
+description = "M8 bench: Shadow Depths exploration (load, walk, camera turns)"
+seconds = 225
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1101 log load_request
+1300 repeat 10 until gameplay press Return
+@gameplay+0 log gameplay_enter
+@gameplay+600 log window_start
+@gameplay+300 down W
+@gameplay+480 up W
+@gameplay+490 down L
+@gameplay+515 up L
+@gameplay+530 down W
+@gameplay+710 up W
+@gameplay+720 down J
+@gameplay+745 up J
+@gameplay+760 down W
+@gameplay+940 up W
+@gameplay+950 down L
+@gameplay+975 up L
+@gameplay+990 down W
+@gameplay+1170 up W
+@gameplay+1180 down L
+@gameplay+1205 up L
+@gameplay+1220 down W
+@gameplay+1400 up W
+@gameplay+1410 down J
+@gameplay+1435 up J
+@gameplay+1450 down W
+@gameplay+1630 up W
+@gameplay+1640 down L
+@gameplay+1665 up L
+@gameplay+1680 down W
+@gameplay+1860 up W
+@gameplay+1870 down J
+@gameplay+1895 up J
+@gameplay+1910 down W
+@gameplay+2090 up W
+@gameplay+2100 down L
+@gameplay+2125 up L
+@gameplay+2140 down W
+@gameplay+2320 up W
+@gameplay+2330 down L
+@gameplay+2355 up L
+@gameplay+2370 down W
+@gameplay+2550 up W
+@gameplay+2560 down J
+@gameplay+2585 up J
+@gameplay+2600 down W
+@gameplay+2780 up W
+@gameplay+2790 down L
+@gameplay+2815 up L
+@gameplay+2830 down W
+@gameplay+3010 up W
+@gameplay+3020 down J
+@gameplay+3045 up J
+@gameplay+3060 down W
+@gameplay+3240 up W
+@gameplay+3250 down L
+@gameplay+3275 up L
+@gameplay+3290 down W
+@gameplay+3470 up W
+@gameplay+3480 down L
+@gameplay+3505 up L
+@gameplay+3520 down W
+@gameplay+3700 up W
+@gameplay+3710 down J
+@gameplay+3735 up J
+@gameplay+3750 down W
+@gameplay+3930 up W
+@gameplay+3940 down L
+@gameplay+3965 up L
+@gameplay+3980 down W
+@gameplay+4160 up W
+@gameplay+4170 down J
+@gameplay+4195 up J
+@gameplay+4210 down W
+@gameplay+4390 up W
+@gameplay+4400 down L
+@gameplay+4425 up L
+@gameplay+4440 down W
+@gameplay+4620 up W
+@gameplay+4630 down L
+@gameplay+4655 up L
+@gameplay+4670 down W
+@gameplay+4850 up W
+@gameplay+4860 down J
+@gameplay+4885 up J
+@gameplay+4900 down W
+@gameplay+4800 log window_end
+"""
+log_expect = ["[kuf-input] context: gameplay", "window_end"]
+
+[format]
+width = 1280
+height = 720

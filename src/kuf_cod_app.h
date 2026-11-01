@@ -20,6 +20,7 @@
 #include "input/input_script.h"
 #include "runtime/crash_report.h"
 #include "runtime/display.h"
+#include "runtime/gpu_defaults.h"
 #include "runtime/frame_capture.h"
 #include "runtime/frame_pacing.h"
 #include "runtime/menu_pointer.h"
@@ -66,6 +67,7 @@ class KufCodApp : public rex::ReXApp {
     // PC settings (M6B): pc_settings.toml next to the other user data, never in the saves or the game folder.
     kuf::pc::Init(user_data_root());
     kuf::display::Configure();  // M6C: before the graphics system starts (its render scale)
+    kuf::gpu::ConfigureDefaults();  // M8: GPU options of the port (render target extents)
     kuf::pacing::Configure(user_data_root());  // M6D: before the graphics system starts (its vblank rate)
     config.input_factory = kuf::input::CreateInputSystem;
     config.audio_factory = REX_AUDIO_BACKEND(kuf::audio::MeteredSDLAudioSystem);

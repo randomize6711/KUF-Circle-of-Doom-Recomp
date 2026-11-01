@@ -4,6 +4,9 @@
 # is moved: the scripted camera must stay the game's own; when gameplay starts the game turns its camera behind the
 # character, and the modern camera takes that view as it is (nothing carried over from the input).
 
+# K74 (M9): since M7 the storage question is answered for the player, so the route needs one confirmation fewer; the
+# former 1650 press landed at the start of the intro and, by load timing, sometimes skipped it.
+
 [scenario]
 description = "Scripted intro camera stays the game's; gameplay starts from the game's view"
 seconds = 110
@@ -16,7 +19,6 @@ script = """
 1250 tap Return
 1350 tap Return
 1500 tap Return
-1650 tap Return
 1800 repeat 60 until gameplay tap Return
 1660 down I
 1662 down L

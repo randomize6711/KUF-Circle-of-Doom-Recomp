@@ -36,6 +36,7 @@
 #include <rex/system/xmemory.h>
 
 #include "input/kuf_input_driver.h"
+#include "runtime/lobby_screen.h"
 #include "runtime/menu_mouse.h"
 #include "runtime/pc_settings_menu.h"
 #include "runtime/prompt_text.h"
@@ -222,6 +223,8 @@ void Start(rex::memory::Memory* memory) { g_memory = memory; }
 
 bool GuestReadable(uint32_t address, uint32_t size) { return Readable(address, size); }
 
+bool DispatchToFocused(PPCContext& ctx, uint8_t* base, uint32_t code) { return Dispatch(ctx, base, code); }
+
 
 void OnTick(PPCContext& ctx, uint8_t* base) {
   kuf::menu_mouse::OnTick(ctx, base);
@@ -249,6 +252,11 @@ void OnTick(PPCContext& ctx, uint8_t* base) {
   if (!w.active) {
     kuf::pc_menu::PointerSlider(ctx, base, 0, 0, false, false);  // ends a drag
     kuf::menu_mouse::Pointer(ctx, base, 0, 0, false, false, false);  // and a held arrow
+    return;
+  }
+  // A multiplayer text field being edited: hover is not a step (it would change the field), a click ends the edit.
+  if (kuf::lobby_screen::Editing()) {
+    if (w.click) kuf::lobby_screen::ClickWhileEditing(ctx, base, w.at.x, w.at.y);
     return;
   }
   // PC Settings sliders: a click on a track sets the value, a drag follows the pointer (no hover, no A meanwhile).
@@ -303,7 +311,8 @@ void OnTick(PPCContext& ctx, uint8_t* base) {
       Focus(&focus_now, &type, &root, &id);
     }
     const bool value_row =
-        std::find(std::begin(kValueRows), std::end(kValueRows), focus_now.id) != std::end(kValueRows);
+        std::find(std::begin(kValueRows), std::end(kValueRows), focus_now.id) != std::end(kValueRows) &&
+        !kuf::lobby_screen::RowZeroIsPageRow();  // the multiplayer pages use row 0 as one of their rows
     if (confirm && plan.over_row && plan.on_selected && value_row) {
       // A value row: the next value (the game's Right), from the last back to the first (its Left).
       const std::string was = FocusText();

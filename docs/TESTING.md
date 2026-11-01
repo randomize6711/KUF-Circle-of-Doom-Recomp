@@ -45,6 +45,38 @@ Results per milestone are in PROGRESS.md.
 | `capture.title_loop_40s` (opt-in, `-L capture`) | 1 | Sandboxed run with captures at frames 60 and 300–900: `check` against `tests/capture/title_v1.toml`, plus `compare` with local references in `build/references/v1-title/` when present |
 | `image.*` (checksums) | 5 (211 assertions) | The game's **own recompiled functions** run on guest memory: zlib 1.2.3 `adler32` (`0x8224C420`), zlib `crc32` (`0x8224C760`), engine table CRC (`0x82269BE8`), each compared with an independent host implementation over many lengths, alignments and seeds |
 
+## M8 benchmarks and stability runs (not ctest)
+
+Performance and stability are measured with their own tools (docs/PERFORMANCE.md section 7), not in ctest, as they
+take hours and report numbers rather than pass/fail:
+- `tools/bench.py run|analyze|report` and `tools/bench_m8_matrix.sh <tag> [cold|warm|all] [preset]`: the workloads
+  `tests/perf/bench_menu.toml`, `bench_explore.toml`, `bench_fight.toml` over output sizes and frame rates, judged
+  valid by the harness's run, script and log checks (they take no captures).
+- `tests/perf/render_equivalence.toml`: captures at fixed ticks to compare a GPU change with its control
+  (`capture_check.py baseline` / `compare`, or a pixel comparison).
+- `tools/stability.py --tag <tag> [--stages ...] [--preset ...]`: boot cycles, world loads, save and load
+  (the campaign pair), unload and reload at 120 (`render/k46_released_120`), frame-rate switching
+  (`tests/stability/framerate_switch.toml`, the script verb `framerate <n>`), window resizing in play
+  (`resize_play.toml`), memory pressure (memory.high 1300 MB) and 30 minutes of play at 120 fps (`long_play_120.toml`);
+  a run passes on process health and no unexpected log errors; summary in build/stability/<tag>/.
+- Unit tests added in M8: `input.input script parser: framerate`, `pacing.adaptive rate: *` (5 cases).
+
+## M9 additions
+
+- `render.direct_load` (ctest, label `render`; `tests/render/direct_load_pair.py`): the render equivalence route at
+  native 4K with SDK patch 0013's direct texture loads off (`direct_load_off.toml`) and on (`direct_load_on.toml`),
+  alternately, up to 3 runs each. Every off / on pair that entered gameplay on the same tick is checked by
+  `tests/render/direct_load_check.py`: the direct run logged its direct loads and the staging run did not, and the 8
+  gameplay captures are identical (difference 0). Passes on the first identical pair; 4-12 minutes.
+- `tools/bench.py run` also records the GPU's state per run (shader clock, edge / junction / memory temperature,
+  power: `gpu_*` columns in bench-samples.csv, medians under load) and takes `--first-rep <n>` so variants can be
+  interleaved run by run (A, B, A, B, ...); `analyze` reads the new diagnostic lines of SDK patch 0012.
+- Diagnostics (SDK patch 0012, off by default): `--gpu_timestamp_stats` now also logs per-frame Vulkan command counts,
+  GPU idle between submissions and the CPU time of the vertex shader extent estimates; `--gpu_timestamp_sections`
+  has a section for texture copies into images; `--gpu_trace_pass_timing` with a traced frame (`--gpu_trace_frame`,
+  the script verb `trace`) logs a `[gpu-pass]` timeline (each render pass's GPU time, render targets and draws).
+- `tools/spirv_load_to_image.py`: derives the direct load shaders from the SDK's (docs/PERFORMANCE.md 8.3.1).
+
 ## The full suite within memory
 
 The game runs take one `game_gpu` resource lock, so one game runs at a time whatever `-j`; the other slots run

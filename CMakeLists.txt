@@ -51,6 +51,8 @@ set(KUFCOD_SOURCES
     src/runtime/menu_pointer.cpp
     src/runtime/menu_pointer_math.cpp
     src/runtime/title_menu.cpp
+    src/coop/coop_runtime.cpp
+    src/runtime/lobby_screen.cpp
     src/runtime/prompt_text.cpp
     src/runtime/controls_screen.cpp
     src/runtime/menu_mouse.cpp
@@ -64,8 +66,10 @@ set(KUFCOD_SOURCES
     src/runtime/pc_settings_runtime.cpp
     src/runtime/display.cpp
     src/runtime/display_window.cpp
+    src/runtime/gpu_defaults.cpp
     src/runtime/display_math.cpp
     src/input/keyboard_pad.cpp
+    src/input/key_routing.cpp
     src/input/pad_remap.cpp
     src/input/pad_remap_driver.cpp
     src/input/button_prompts.cpp
@@ -74,6 +78,7 @@ set(KUFCOD_SOURCES
     src/input/input_script.cpp
     src/input/input_script_parse.cpp
     src/input/game_input_hooks.cpp
+    src/input/game_context.cpp
 )
 
 # Diagnostic import audit (Linux only): wraps every game import to count calls (src/runtime/import_audit.cpp).
@@ -92,6 +97,31 @@ if(WIN32)
 else()
     add_executable(kuf_cod ${KUFCOD_SOURCES})
 endif()
+
+# The lobby layer (src/net, docs/MULTIPLAYER.md). The Steam backend is compiled against a Steamworks SDK the player
+# downloaded (never committed, never redistributed): KUF_STEAMWORKS_SDK, by default build/tools/steamworks_sdk_*/sdk
+# when present; without it the backend is built as "not available". Valve's library is never linked: it is loaded
+# at run time only when an App ID is configured.
+add_library(kuf_net STATIC src/net/crypto.cpp src/net/protocol.cpp src/net/session.cpp src/net/steam_lobby.cpp
+            src/net/steam_backend.cpp src/coop/coop_addr.cpp src/coop/coop_sock.cpp
+            src/coop/coop_xsession.cpp src/coop/lobby_service.cpp src/coop/steam_provider.cpp
+            src/coop/lobby_menu.cpp src/coop/text_field.cpp src/input/text_entry.cpp)
+target_include_directories(kuf_net PUBLIC src)
+if(NOT DEFINED KUF_STEAMWORKS_SDK)
+    file(GLOB _kuf_sdk_dirs LIST_DIRECTORIES true "${CMAKE_CURRENT_SOURCE_DIR}/build/tools/steamworks_sdk_*/sdk")
+    if(_kuf_sdk_dirs)
+        list(GET _kuf_sdk_dirs -1 KUF_STEAMWORKS_SDK)
+    endif()
+endif()
+if(KUF_STEAMWORKS_SDK AND EXISTS "${KUF_STEAMWORKS_SDK}/public/steam/steam_api_flat.h")
+    message(STATUS "Steamworks SDK: ${KUF_STEAMWORKS_SDK} (the Steam lobby backend is built)")
+    target_include_directories(kuf_net SYSTEM PRIVATE "${KUF_STEAMWORKS_SDK}/public")
+    target_compile_definitions(kuf_net PRIVATE KUF_HAVE_STEAMWORKS=1)
+    target_link_libraries(kuf_net PRIVATE ${CMAKE_DL_LIBS})
+else()
+    message(STATUS "Steamworks SDK: not found (the Steam lobby backend is not built)")
+endif()
+target_link_libraries(kuf_cod PRIVATE kuf_net)
 
 # The version header, regenerated at every build (written only when the version changes).
 set(KUFCOD_VERSION_HEADER "${CMAKE_BINARY_DIR}/generated_include/kuf_version_generated.h")

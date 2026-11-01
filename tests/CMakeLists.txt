@@ -69,9 +69,11 @@ set_target_properties(kuf_vfs_tests PROPERTIES
 catch_discover_tests(kuf_vfs_tests TEST_PREFIX "vfs." DISCOVERY_MODE PRE_TEST)
 
 # --- Input translation (M4): keyboard/mouse -> gamepad, window mapping, input-script parser -------------
-add_executable(kuf_input_tests input/test_keyboard_pad.cpp input/test_pad_remap.cpp input/test_button_prompts.cpp
+add_executable(kuf_input_tests input/test_keyboard_pad.cpp input/test_game_context.cpp input/test_text_entry.cpp input/test_pad_remap.cpp input/test_button_prompts.cpp
     ${CMAKE_SOURCE_DIR}/src/input/keyboard_pad.cpp ${CMAKE_SOURCE_DIR}/src/input/input_script_parse.cpp
-    ${CMAKE_SOURCE_DIR}/src/input/pad_remap.cpp ${CMAKE_SOURCE_DIR}/src/input/button_prompts.cpp)
+    ${CMAKE_SOURCE_DIR}/src/input/pad_remap.cpp ${CMAKE_SOURCE_DIR}/src/input/button_prompts.cpp
+    ${CMAKE_SOURCE_DIR}/src/input/game_context.cpp ${CMAKE_SOURCE_DIR}/src/input/text_entry.cpp
+    ${CMAKE_SOURCE_DIR}/src/input/key_routing.cpp)
 target_include_directories(kuf_input_tests PRIVATE ${REXSDK_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(kuf_input_tests PRIVATE rexruntime SDL3::SDL3 Catch2::Catch2WithMain)
 target_compile_options(kuf_input_tests PRIVATE ${KUFCOD_TEST_COPTS})
@@ -81,6 +83,19 @@ set_target_properties(kuf_input_tests PROPERTIES
 catch_discover_tests(kuf_input_tests TEST_PREFIX "input." DISCOVERY_MODE PRE_TEST)
 
 # --- Menu layouts (M6A): reading the original layout files, the Settings row proof of concept ------------
+# The lobby layer (src/net, docs/MULTIPLAYER.md): hashing, protocol, invite codes, sessions over 127.0.0.1 only.
+add_executable(kuf_net_tests net/test_net.cpp net/test_lobby.cpp net/test_lobby_menu.cpp ${CMAKE_SOURCE_DIR}/src/net/crypto.cpp
+               ${CMAKE_SOURCE_DIR}/src/net/protocol.cpp ${CMAKE_SOURCE_DIR}/src/net/session.cpp
+               ${CMAKE_SOURCE_DIR}/src/net/steam_lobby.cpp ${CMAKE_SOURCE_DIR}/src/coop/coop_addr.cpp
+               ${CMAKE_SOURCE_DIR}/src/coop/coop_sock.cpp ${CMAKE_SOURCE_DIR}/src/coop/coop_xsession.cpp
+               ${CMAKE_SOURCE_DIR}/src/coop/lobby_service.cpp ${CMAKE_SOURCE_DIR}/src/coop/steam_provider.cpp
+               ${CMAKE_SOURCE_DIR}/src/coop/lobby_menu.cpp ${CMAKE_SOURCE_DIR}/src/coop/text_field.cpp
+               ${CMAKE_SOURCE_DIR}/src/input/text_entry.cpp
+               ${CMAKE_SOURCE_DIR}/src/net/steam_backend.cpp)
+target_include_directories(kuf_net_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(kuf_net_tests PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(kuf_net_tests TEST_PREFIX "net." DISCOVERY_MODE PRE_TEST PROPERTIES LABELS "net")
+
 add_executable(kuf_ui_tests ui/test_ui_layout.cpp ui/test_menu_pointer.cpp ui/test_update_status.cpp
                ${CMAKE_SOURCE_DIR}/src/runtime/ui_layout.cpp ${CMAKE_SOURCE_DIR}/src/runtime/menu_pointer_math.cpp
                ${CMAKE_SOURCE_DIR}/src/runtime/update_status.cpp)
@@ -108,7 +123,7 @@ set_target_properties(kuf_presentation_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY
 catch_discover_tests(kuf_presentation_tests TEST_PREFIX "presentation." DISCOVERY_MODE PRE_TEST)
 
 # --- Frame pacing (M6D): the fixed tick's schedule ---------------------------------------------------------
-add_executable(kuf_pacing_tests pacing/test_tick_schedule.cpp)
+add_executable(kuf_pacing_tests pacing/test_tick_schedule.cpp pacing/test_adaptive_rate.cpp)
 target_include_directories(kuf_pacing_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(kuf_pacing_tests PRIVATE Catch2::Catch2WithMain)
 target_compile_options(kuf_pacing_tests PRIVATE ${KUFCOD_TEST_COPTS})
@@ -498,6 +513,17 @@ if(KUFCOD_SMOKE_TEST)
                          --fbo ${CMAKE_SOURCE_DIR}/build/runs/ctest-render-k34_build_frames_fbo
                          --fsi ${CMAKE_SOURCE_DIR}/build/runs/ctest-render-k34_build_frames_fsi)
         set_tests_properties(render.k34_check PROPERTIES LABELS "render" FIXTURES_REQUIRED "k34_fbo;k34_fsi")
+    endif()
+    # M9 (SDK patch 0013): render-to-texture results loaded through the staging buffer and directly into the images
+    # (--vulkan_texture_load_direct_to_image) draw the same gameplay frames at native 4K (direct_load_check.py).
+    if(IS_DIRECTORY ${CMAKE_SOURCE_DIR}/build/m6-saves/celine-shadows-depths-1)
+        # The route's gameplay entry tick varies by a tick or two between runs (load timing), so the pair runs
+        # alternate until an off run and an on run entered on the same tick (direct_load_pair.py, up to 3 each).
+        add_test(NAME render.direct_load
+                 COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/render/direct_load_pair.py
+                         --preset ${_kufcod_preset})
+        set_tests_properties(render.direct_load PROPERTIES LABELS "smoke;render" TIMEOUT 1000
+                             RESOURCE_LOCK game_gpu)
     endif()
     # Render-only frames are complete (M6D D3b-1, docs/HIGH_FPS.md section 14): a tick's frame and its render-only
     # frames at 1280x720, native 4K and 32:9; tests/render/frames_check.py requires the same scene and HUD and held

@@ -1,6 +1,8 @@
 #include "runtime/ui_layout.h"
 
 #include <algorithm>
+#include <climits>
+#include <tuple>
 #include <array>
 #include <cstdio>
 #include <map>
@@ -423,6 +425,40 @@ std::optional<std::vector<uint8_t>> MoveControls(std::span<const uint8_t> data, 
     p->y += dy;
   }
   return Serialize(*layout);
+}
+
+std::optional<std::vector<uint8_t>> AddLobbyColumns(std::span<const uint8_t> data, std::string* error) {
+  std::optional<Layout> layout = Parse(data, error);
+  if (!layout) return std::nullopt;
+  auto scene = std::find_if(layout->scenes.begin(), layout->scenes.end(),
+                            [&](const Scene& s) { return s.id() == kLobbyScene; });
+  if (scene == layout->scenes.end()) {
+    *error = "no game type screen";
+    return std::nullopt;
+  }
+  // The rows' line (y) and their common left edge (the leftmost row: row 0, Difficulty, is set in).
+  int32_t ys[6] = {};
+  int32_t left = INT32_MAX;
+  for (size_t r = 0; r < 6; ++r) {
+    auto p = std::find_if(scene->placements.begin(), scene->placements.end(),
+                          [&](const Placement& pl) { return pl.id == kLobbyRowButtons[r]; });
+    if (p == scene->placements.end()) {
+      *error = "a row button is missing";
+      return std::nullopt;
+    }
+    ys[r] = p->y;
+    left = std::min(left, p->x);
+  }
+  std::vector<uint8_t> out = Serialize(*layout);
+  for (uint32_t r = 0; r < 6; ++r) {
+    for (const auto& [id, x, w] : {std::tuple{kLobbyLabelText + r, left + kLobbyLabelInset, kLobbyLabelWidth},
+                                    std::tuple{kLobbyValueText + r, left + kLobbyValueOffset, kLobbyValueWidth}}) {
+      auto next = AddTextClone(out, kLobbyScene, kLobbyTextSource, id, x, ys[r], w, kLobbyRowHeight, 0, error);
+      if (!next) return std::nullopt;
+      out = std::move(*next);
+    }
+  }
+  return out;
 }
 
 }  // namespace kuf::ui

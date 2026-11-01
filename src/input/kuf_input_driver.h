@@ -8,6 +8,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <rex/input/input_driver.h>
 #include <rex/system/xtypes.h>
@@ -15,6 +16,7 @@
 #include <rex/ui/window_listener.h>
 
 #include "input/keyboard_pad.h"
+#include "input/text_entry.h"
 
 namespace kuf::input {
 
@@ -73,6 +75,16 @@ class KufInputDriver final : public rex::input::InputDriver,
   void BeginKeyCapture();
   HostKey TakeKeyCapture();  // 0 while none
   void EndKeyCapture();
+
+  // Text entry for the menus' text fields (input/text_entry.h): from BeginTextEntry on, the platform's text input is
+  // on (SDL text events), every key-down is the field's (TextEntryRouter: editing keys, Ctrl+A, Ctrl+V) and none
+  // reaches the game, as with key capture; the mouse still works. EndTextEntry turns text input off again.
+  void BeginTextEntry();
+  std::vector<TextEvent> TakeTextEntry();
+  void EndTextEntry();
+  bool TextEntryActive() const;
+  // The system clipboard (on the UI thread).
+  void CopyToClipboard(const std::string& text);
 
   // True while the pointer is captured for mouse look (gameplay).
   bool MouseCaptured() const;
@@ -133,6 +145,15 @@ class KufInputDriver final : public rex::input::InputDriver,
   bool left_taken_ = false;       // the left button's press went to the menu pointer (its release too)
   rex::ui::Window* attached_window_ = nullptr;
   bool key_capture_ = false;      // the Key Bindings page waits for a key
+  TextEntryRouter text_;          // a menu text field is being edited
+  // The text-input characters, received above the SDK's ImGui overlay drawer (its window input layer 64): that drawer
+  // takes every character event (marks it handled) even with no overlay open, so a listener on the driver's own layer
+  // never gets one. This one takes them only while a field is edited; otherwise they go on to the overlays.
+  struct CharListener : rex::ui::WindowInputListener {
+    KufInputDriver* driver = nullptr;
+    void OnKeyChar(rex::ui::KeyEvent& e) override;
+  } char_listener_;
+  static constexpr size_t kCharListenerZOrder = 128;
   HostKey captured_key_ = 0;
   std::map<std::string, std::string> gameplay_keys_;  // from pc_settings.toml
   bool capture_requested_ = false;

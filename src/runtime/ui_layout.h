@@ -97,4 +97,19 @@ std::optional<std::vector<uint8_t>> MoveControls(std::span<const uint8_t> data, 
                                                  const std::vector<uint32_t>& ids, int32_t dx, int32_t dy,
                                                  std::string* error);
 
+// The multiplayer menus' columns on the game type screen (scene 0x02F, UiStartGame.uitb; src/runtime/lobby_screen.cpp):
+// for each of its six rows a label text (kLobbyLabelText + row) and a value text (kLobbyValueText + row), copies of
+// the screen's description line (left-aligned, the rows' text size), at fixed places: the label column from the rows'
+// left edge, the value column at a fixed offset, both on the row's own line. Fixed: nothing a row shows moves them.
+constexpr uint32_t kLobbyScene = 0x02F00000;
+constexpr uint32_t kLobbyRowButtons[6] = {0x02F01001, 0x02F01002, 0x02F01003, 0x02F01004, 0x02F01006, 0x02F01007};
+constexpr uint32_t kLobbyTextSource = 0x02F04001;  // the description line
+constexpr uint32_t kLobbyLabelText = 0x02F04010, kLobbyValueText = 0x02F04020;
+constexpr int32_t kLobbyLabelInset = 20;     // from the rows' left edge
+constexpr int32_t kLobbyLabelWidth = 230;
+constexpr int32_t kLobbyValueOffset = 270;   // the value column, from the rows' left edge
+constexpr int32_t kLobbyValueWidth = 340;
+constexpr int32_t kLobbyRowHeight = 30;
+std::optional<std::vector<uint8_t>> AddLobbyColumns(std::span<const uint8_t> data, std::string* error);
+
 }  // namespace kuf::ui

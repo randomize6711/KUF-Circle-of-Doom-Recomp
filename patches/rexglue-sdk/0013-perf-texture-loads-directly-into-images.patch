@@ -1,0 +1,2807 @@
+KUF port (M9): --vulkan_texture_load_direct_to_image, load render-to-texture results straight into the image
+
+A texture made from a resolution-scaled resolve is loaded every time the game renders it again: a compute shader
+untiles the scaled resolve data into a staging buffer, and vkCmdCopyBufferToImage copies that into the image.
+With the option, resolution-scaled textures of one 2D slice and one mip level whose host format the load writes bit
+for bit (RGBA16 formats: 64 bpb; RGBA8, RGB10A2, RG16, R32 formats: 32 bpb and depth float) are created with
+storage usage and an R16G16B16A16_UINT or R32_UINT view (listed with VkImageFormatListCreateInfo), and are loaded
+by variants of the 64 bpb, 32 bpb and depth float scaled load shaders that write the same bits into the image
+(texture_load_*_scaled_image_cs.h, made by the KUF port's tools/spirv_load_to_image.py from the shipped shaders:
+every instruction reading and converting the data is kept, the two stores into the staging buffer become image
+writes, a texel past the level's width is not written; only core storage image formats). The texture takes a new
+usage, kComputeWrite (GENERAL layout), and is transitioned from it like any other usage when sampled. Each such
+texture gets its storage view and a descriptor set (a pool of 1024, freed with the texture) on its first direct
+load; if none is left the load takes the staging buffer as before. Default off. Needs vkFreeDescriptorSets in the
+device function table (added by patch 0012).
+
+diff --git a/include/rex/graphics/vulkan/texture_cache.h b/include/rex/graphics/vulkan/texture_cache.h
+--- a/include/rex/graphics/vulkan/texture_cache.h
++++ b/include/rex/graphics/vulkan/texture_cache.h
+@@ -193,6 +193,8 @@
+       kTransferDestination,
+       kGuestShaderSampled,
+       kSwapSampled,
++      // KUF port M9 (--vulkan_texture_load_direct_to_image): written by a load compute shader as a storage image.
++      kComputeWrite,
+     };
+ 
+     // Takes ownership of the image and its memory.
+@@ -212,6 +214,17 @@
+     VkImageView GetView(bool is_signed, uint32_t host_swizzle, bool is_array = true);
+     VkImageView GetOrCreate3DAs2DImageView(bool is_signed, uint32_t host_swizzle);
+ 
++    // KUF port M9: created with storage usage for loads directly into the image; the storage view and its
++    // descriptor set are made on the first such load.
++    bool direct_load_capable() const { return direct_load_view_format_ != VK_FORMAT_UNDEFINED; }
++    VkFormat direct_load_view_format() const { return direct_load_view_format_; }
++    void set_direct_load_view_format(VkFormat format) { direct_load_view_format_ = format; }
++    VkDescriptorSet direct_load_descriptor_set() const { return direct_load_descriptor_set_; }
++    void set_direct_load(VkImageView view, VkDescriptorSet descriptor_set) {
++      direct_load_view_ = view;
++      direct_load_descriptor_set_ = descriptor_set;
++    }
++
+    private:
+     union ViewKey {
+       uint32_t key;
+@@ -269,6 +282,9 @@
+     std::unique_ptr<VulkanTexture> texture_3d_as_2d_;
+     VkImageView image_view_3d_as_2d_unsigned_ = VK_NULL_HANDLE;
+     VkImageView image_view_3d_as_2d_signed_ = VK_NULL_HANDLE;
++    VkFormat direct_load_view_format_ = VK_FORMAT_UNDEFINED;
++    VkImageView direct_load_view_ = VK_NULL_HANDLE;
++    VkDescriptorSet direct_load_descriptor_set_ = VK_NULL_HANDLE;
+   };
+ 
+   struct VulkanTextureBinding {
+@@ -349,6 +365,15 @@
+   VkPipelineLayout load_pipeline_layout_ = VK_NULL_HANDLE;
+   std::array<VkPipeline, kLoadShaderCount> load_pipelines_{};
+   std::array<VkPipeline, kLoadShaderCount> load_pipelines_scaled_{};
++  // KUF port M9 (--vulkan_texture_load_direct_to_image): resolution-scaled loads of the 64 bpb, 32 bpb and depth
++  // float shaders written into the image as a storage image (an R16G16B16A16_UINT or R32_UINT view with the same
++  // bits) instead of a staging buffer copied into it. The storage view's format, VK_FORMAT_UNDEFINED if not loaded so.
++  VkFormat GetDirectLoadViewFormat(const TextureKey& key, VkFormat host_format) const;
++  bool PrepareDirectLoad(VulkanTexture& texture);
++  VkDescriptorSetLayout direct_load_descriptor_set_layout_ = VK_NULL_HANDLE;
++  VkPipelineLayout direct_load_pipeline_layout_ = VK_NULL_HANDLE;
++  std::array<VkPipeline, kLoadShaderCount> direct_load_pipelines_{};
++  VkDescriptorPool direct_load_descriptor_pool_ = VK_NULL_HANDLE;
+ 
+   // If both images can be placed in the same allocation, it's one allocation,
+   // otherwise it's two separate.
+diff --git a/src/graphics/vulkan/texture_cache.cpp b/src/graphics/vulkan/texture_cache.cpp
+--- a/src/graphics/vulkan/texture_cache.cpp
++++ b/src/graphics/vulkan/texture_cache.cpp
+@@ -35,6 +35,13 @@
+ #include <rex/ui/vulkan/util.h>
+ 
+ REXCVAR_DEFINE_BOOL(non_seamless_cube_map, false, "GPU", "Use non-seamless cube map sampling");
++REXCVAR_DEFINE_BOOL(vulkan_texture_load_direct_to_image, false, "GPU/Vulkan",
++                    "Load resolution-scaled textures (render-to-texture results) of 64 or 32 bits per texel with a "
++                    "compute shader writing the image directly instead of a staging buffer copied into it (KUF port "
++                    "M9)");
++REXCVAR_DEFINE_INT32(vulkan_texture_load_direct_shaders, 7, "GPU/Vulkan",
++                     "With vulkan_texture_load_direct_to_image: which load shaders write images directly (1: 64 bpb, "
++                     "2: 32 bpb, 4: depth float; diagnostics)");
+ 
+ namespace rex::graphics::vulkan {
+ 
+@@ -48,6 +55,9 @@
+ #include "../shaders/vulkan_spirv/texture_load_32bpb_scaled_cs.h"
+ #include "../shaders/vulkan_spirv/texture_load_64bpb_cs.h"
+ #include "../shaders/vulkan_spirv/texture_load_64bpb_scaled_cs.h"
++#include "../shaders/vulkan_spirv/texture_load_32bpb_scaled_image_cs.h"
++#include "../shaders/vulkan_spirv/texture_load_64bpb_scaled_image_cs.h"
++#include "../shaders/vulkan_spirv/texture_load_depth_float_scaled_image_cs.h"
+ #include "../shaders/vulkan_spirv/texture_load_8bpb_cs.h"
+ #include "../shaders/vulkan_spirv/texture_load_8bpb_scaled_cs.h"
+ #include "../shaders/vulkan_spirv/texture_load_bgrg8_rgb8_cs.h"
+@@ -482,10 +492,18 @@
+   if (load_pipeline_layout_ != VK_NULL_HANDLE) {
+     dfn.vkDestroyPipelineLayout(device, load_pipeline_layout_, nullptr);
+   }
++  for (VkPipeline& direct_load_pipeline : direct_load_pipelines_) {
++    ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, direct_load_pipeline);
++  }
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device, direct_load_pipeline_layout_);
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyDescriptorSetLayout, device,
++                                         direct_load_descriptor_set_layout_);
+ 
+   // Textures memory is allocated using the Vulkan Memory Allocator, destroy all
+   // textures before destroying VMA.
+   DestroyAllTextures(true);
++  // After the textures, which free their direct load descriptor sets into it.
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyDescriptorPool, device, direct_load_descriptor_pool_);
+ 
+   if (vma_allocator_ != VK_NULL_HANDLE) {
+     vmaDestroyAllocator(vma_allocator_);
+@@ -1179,15 +1197,27 @@
+   image_create_info.queueFamilyIndexCount = 0;
+   image_create_info.pQueueFamilyIndices = nullptr;
+   image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
++  // KUF port M9: images loaded directly also get an R16G16B16A16_UINT storage view (listed so the driver can keep
++  // the image's compression).
++  const VkFormat direct_load_view_format = GetDirectLoadViewFormat(key, formats[0]);
++  const bool direct_load = direct_load_view_format != VK_FORMAT_UNDEFINED;
++  VkFormat view_formats[3] = {formats[0], formats[1], VK_FORMAT_UNDEFINED};
++  uint32_t view_format_count = formats[1] != VK_FORMAT_UNDEFINED ? 2 : 1;
++  if (direct_load) {
++    image_create_info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
++    image_create_info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
++    if (direct_load_view_format != formats[0] && direct_load_view_format != formats[1]) {
++      view_formats[view_format_count++] = direct_load_view_format;
++    }
++  }
+   VkImageFormatListCreateInfo image_format_list_create_info;
+-  if (formats[1] != VK_FORMAT_UNDEFINED &&
+-      vulkan_device->extensions().ext_1_2_KHR_image_format_list) {
++  if (view_format_count > 1 && vulkan_device->extensions().ext_1_2_KHR_image_format_list) {
+     image_create_info_last->pNext = &image_format_list_create_info;
+     image_create_info_last = reinterpret_cast<VkImageCreateInfo*>(&image_format_list_create_info);
+     image_format_list_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
+     image_format_list_create_info.pNext = nullptr;
+-    image_format_list_create_info.viewFormatCount = 2;
+-    image_format_list_create_info.pViewFormats = formats;
++    image_format_list_create_info.viewFormatCount = view_format_count;
++    image_format_list_create_info.pViewFormats = view_formats;
+   }
+ 
+   VmaAllocationCreateInfo allocation_create_info = {};
+@@ -1200,7 +1230,100 @@
+     return nullptr;
+   }
+ 
+-  return std::unique_ptr<Texture>(new VulkanTexture(*this, key, image, allocation));
++  auto texture = std::unique_ptr<VulkanTexture>(new VulkanTexture(*this, key, image, allocation));
++  if (direct_load) {
++    texture->set_direct_load_view_format(direct_load_view_format);
++  }
++  return texture;
++}
++
++VkFormat VulkanTextureCache::GetDirectLoadViewFormat(const TextureKey& key, VkFormat host_format) const {
++  if (!REXCVAR_GET(vulkan_texture_load_direct_to_image) || direct_load_descriptor_set_layout_ == VK_NULL_HANDLE ||
++      !key.scaled_resolve || key.dimension != xenos::DataDimension::k2DOrStacked ||
++      key.GetDepthOrArraySize() != 1 || key.mip_max_level != 0) {
++    return VK_FORMAT_UNDEFINED;
++  }
++  // Uncompressed formats whose bits the load shaders write as they are (same size class as the view).
++  switch (host_format) {
++    case VK_FORMAT_R16G16B16A16_UNORM:
++    case VK_FORMAT_R16G16B16A16_SNORM:
++    case VK_FORMAT_R16G16B16A16_UINT:
++    case VK_FORMAT_R16G16B16A16_SINT:
++    case VK_FORMAT_R16G16B16A16_SFLOAT:
++      return VK_FORMAT_R16G16B16A16_UINT;
++    case VK_FORMAT_R8G8B8A8_UNORM:
++    case VK_FORMAT_R8G8B8A8_SNORM:
++    case VK_FORMAT_B8G8R8A8_UNORM:
++    case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
++    case VK_FORMAT_R16G16_UNORM:
++    case VK_FORMAT_R16G16_SNORM:
++    case VK_FORMAT_R16G16_SFLOAT:
++    case VK_FORMAT_R32_SFLOAT:
++    case VK_FORMAT_R32_UINT:
++      return VK_FORMAT_R32_UINT;
++    default:
++      return VK_FORMAT_UNDEFINED;
++  }
++}
++
++bool VulkanTextureCache::PrepareDirectLoad(VulkanTexture& texture) {
++  if (texture.direct_load_descriptor_set() != VK_NULL_HANDLE) {
++    return true;
++  }
++  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++  if (direct_load_descriptor_pool_ == VK_NULL_HANDLE) {
++    VkDescriptorPoolSize pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024};
++    VkDescriptorPoolCreateInfo pool_info = {};
++    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
++    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
++    pool_info.maxSets = 1024;
++    pool_info.poolSizeCount = 1;
++    pool_info.pPoolSizes = &pool_size;
++    if (dfn.vkCreateDescriptorPool(device, &pool_info, nullptr, &direct_load_descriptor_pool_) != VK_SUCCESS) {
++      direct_load_descriptor_pool_ = VK_NULL_HANDLE;
++      return false;
++    }
++  }
++  VkImageViewCreateInfo view_info = {};
++  view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
++  view_info.image = texture.image();
++  view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
++  view_info.format = texture.direct_load_view_format();
++  view_info.subresourceRange = ui::vulkan::util::InitializeSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1);
++  VkImageView view;
++  if (dfn.vkCreateImageView(device, &view_info, nullptr, &view) != VK_SUCCESS) {
++    return false;
++  }
++  VkDescriptorSetAllocateInfo allocate_info = {};
++  allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
++  allocate_info.descriptorPool = direct_load_descriptor_pool_;
++  allocate_info.descriptorSetCount = 1;
++  allocate_info.pSetLayouts = &direct_load_descriptor_set_layout_;
++  VkDescriptorSet descriptor_set;
++  if (dfn.vkAllocateDescriptorSets(device, &allocate_info, &descriptor_set) != VK_SUCCESS) {
++    dfn.vkDestroyImageView(device, view, nullptr);
++    return false;  // the pool is full: the staging buffer path
++  }
++  VkDescriptorImageInfo image_info = {VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
++  VkWriteDescriptorSet write = {};
++  write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
++  write.dstSet = descriptor_set;
++  write.dstBinding = 0;
++  write.descriptorCount = 1;
++  write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
++  write.pImageInfo = &image_info;
++  dfn.vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
++  texture.set_direct_load(view, descriptor_set);
++  static bool logged = false;
++  if (!logged) {
++    logged = true;
++    REXGPU_INFO("VulkanTextureCache: loading resolution-scaled textures directly into images (first: {}x{})",
++                texture.key().GetWidth() * draw_resolution_scale_x(),
++                texture.key().GetHeight() * draw_resolution_scale_y());
++  }
++  return true;
+ }
+ 
+ bool VulkanTextureCache::EnsureScaledResolveMemoryCommitted(uint32_t start_unscaled,
+@@ -1297,6 +1420,19 @@
+   uint32_t texture_resolution_scale_x = texture_key.scaled_resolve ? draw_resolution_scale_x() : 1;
+   uint32_t texture_resolution_scale_y = texture_key.scaled_resolve ? draw_resolution_scale_y() : 1;
+ 
++  // KUF port M9 (--vulkan_texture_load_direct_to_image): one 2D slice of level 0 of a resolution-scaled texture of
++  // a load shader with an image variant, written straight into the image (no staging buffer and copy).
++  const bool direct = vulkan_texture.direct_load_capable() && texture_key.scaled_resolve &&
++                      direct_load_pipelines_[load_shader] != VK_NULL_HANDLE &&
++                      (REXCVAR_GET(vulkan_texture_load_direct_shaders) &
++                       (load_shader == kLoadShaderIndex64bpb   ? 1
++                        : load_shader == kLoadShaderIndex32bpb ? 2
++                                                               : 4)) &&
++                      pipeline_float_convert == VK_NULL_HANDLE &&
++                      !is_3d && !is_3d_tiling && array_size == 1 && level_first == 0 && level_last == 0 &&
++                      level_packed != 0 && PrepareDirectLoad(vulkan_texture);
++  const VkPipelineLayout load_layout = direct ? direct_load_pipeline_layout_ : load_pipeline_layout_;
++
+   // The loop counter can mean two things depending on whether the packed mip
+   // tail is stored as mip 0, because in this case, it would be ambiguous since
+   // both the base and the mips would be on "level 0", but stored in separate
+@@ -1516,11 +1652,27 @@
+ 
+   DeferredCommandBuffer& command_buffer = command_processor_.deferred_command_buffer();
+ 
+-  command_processor_.BindExternalComputePipeline(pipeline);
++  if (direct) {
++    // Into the storage layout; a barrier also when it was already there (the previous load's writes).
++    VulkanTexture::Usage old_usage = vulkan_texture.SetUsage(VulkanTexture::Usage::kComputeWrite);
++    VkPipelineStageFlags src_stage_mask, dst_stage_mask;
++    VkAccessFlags src_access_mask, dst_access_mask;
++    VkImageLayout old_layout, new_layout;
++    GetTextureUsageMasks(old_usage, src_stage_mask, src_access_mask, old_layout);
++    GetTextureUsageMasks(VulkanTexture::Usage::kComputeWrite, dst_stage_mask, dst_access_mask, new_layout);
++    command_processor_.PushImageMemoryBarrier(vulkan_texture.image(),
++                                              ui::vulkan::util::InitializeSubresourceRange(), src_stage_mask,
++                                              dst_stage_mask, src_access_mask, dst_access_mask, old_layout,
++                                              new_layout);
++  }
+ 
+-  command_buffer.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, load_pipeline_layout_,
++  command_processor_.BindExternalComputePipeline(direct ? direct_load_pipelines_[load_shader] : pipeline);
++
++  VkDescriptorSet descriptor_set_destination =
++      direct ? vulkan_texture.direct_load_descriptor_set() : descriptor_set_dest;
++  command_buffer.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, load_layout,
+                                          kLoadDescriptorSetIndexDestination, 1,
+-                                         &descriptor_set_dest, 0, nullptr);
++                                         &descriptor_set_destination, 0, nullptr);
+ 
+   VkDescriptorSet descriptor_set_source_current = VK_NULL_HANDLE;
+ 
+@@ -1542,7 +1694,7 @@
+         is_base ? descriptor_set_source_base : descriptor_set_source_mips;
+     if (descriptor_set_source_current != descriptor_set_source) {
+       descriptor_set_source_current = descriptor_set_source;
+-      command_buffer.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, load_pipeline_layout_,
++      command_buffer.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, load_layout,
+                                              kLoadDescriptorSetIndexSource, 1,
+                                              &descriptor_set_source, 0, nullptr);
+     }
+@@ -1599,7 +1751,7 @@
+     load_constants.host_pitch =
+         load_shader_info.bytes_per_host_block * level_host_layout.x_pitch_blocks;
+ 
+-    command_buffer.CmdVkPushConstants(load_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
++    command_buffer.CmdVkPushConstants(load_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                       sizeof(load_constants), &load_constants);
+ 
+     uint32_t level_array_slice_stride_bytes_scaled =
+@@ -1607,11 +1759,11 @@
+         (texture_resolution_scale_x * texture_resolution_scale_y);
+     for (uint32_t slice = 0; slice < array_size; ++slice) {
+       if (slice != 0) {
+-        command_buffer.CmdVkPushConstants(load_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
++        command_buffer.CmdVkPushConstants(load_layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                                           offsetof(LoadConstants, guest_offset),
+                                           sizeof(load_constants.guest_offset),
+                                           &load_constants.guest_offset);
+-        command_buffer.CmdVkPushConstants(load_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
++        command_buffer.CmdVkPushConstants(load_layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                                           offsetof(LoadConstants, host_offset),
+                                           sizeof(load_constants.host_offset),
+                                           &load_constants.host_offset);
+@@ -1623,6 +1775,11 @@
+     }
+   }
+ 
++  if (direct) {
++    vulkan_texture.MarkAsUsed();
++    return true;
++  }
++
+   if (pipeline_float_convert != VK_NULL_HANDLE) {
+     assert_not_null(load_shader_info_float_convert);
+     static std::array<uint8_t, 64> float_fallback_log_mask = {};
+@@ -1900,6 +2057,13 @@
+   if (image_view_3d_as_2d_signed_ != VK_NULL_HANDLE) {
+     dfn.vkDestroyImageView(device, image_view_3d_as_2d_signed_, nullptr);
+   }
++  if (direct_load_descriptor_set_ != VK_NULL_HANDLE) {
++    dfn.vkFreeDescriptorSets(device, vulkan_texture_cache.direct_load_descriptor_pool_, 1,
++                             &direct_load_descriptor_set_);
++  }
++  if (direct_load_view_ != VK_NULL_HANDLE) {
++    dfn.vkDestroyImageView(device, direct_load_view_, nullptr);
++  }
+   vmaDestroyImage(vulkan_texture_cache.vma_allocator_, image_, allocation_);
+ }
+ 
+@@ -2998,6 +3162,57 @@
+     }
+   }
+ 
++  // KUF port M9 (--vulkan_texture_load_direct_to_image): set 0 is the storage image, set 1 the source as for the
++  // other loads, the same push constants. Without it every load uses the staging buffer.
++  if (IsDrawResolutionScaled()) {
++    VkDescriptorSetLayoutBinding direct_binding = {};
++    direct_binding.binding = 0;
++    direct_binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
++    direct_binding.descriptorCount = 1;
++    direct_binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
++    VkDescriptorSetLayoutCreateInfo direct_set_layout_info = {};
++    direct_set_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
++    direct_set_layout_info.bindingCount = 1;
++    direct_set_layout_info.pBindings = &direct_binding;
++    if (dfn.vkCreateDescriptorSetLayout(device, &direct_set_layout_info, nullptr,
++                                        &direct_load_descriptor_set_layout_) == VK_SUCCESS) {
++      VkDescriptorSetLayout direct_set_layouts[kLoadDescriptorSetCount];
++      direct_set_layouts[kLoadDescriptorSetIndexDestination] = direct_load_descriptor_set_layout_;
++      direct_set_layouts[kLoadDescriptorSetIndexSource] = command_processor_.GetSingleTransientDescriptorLayout(
++          VulkanCommandProcessor::SingleTransientDescriptorLayout::kStorageBufferCompute);
++      VkPushConstantRange direct_push_constants = {VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(LoadConstants)};
++      VkPipelineLayoutCreateInfo direct_layout_info = {};
++      direct_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
++      direct_layout_info.setLayoutCount = kLoadDescriptorSetCount;
++      direct_layout_info.pSetLayouts = direct_set_layouts;
++      direct_layout_info.pushConstantRangeCount = 1;
++      direct_layout_info.pPushConstantRanges = &direct_push_constants;
++      if (dfn.vkCreatePipelineLayout(device, &direct_layout_info, nullptr, &direct_load_pipeline_layout_) ==
++          VK_SUCCESS) {
++        const std::pair<LoadShaderIndex, std::pair<const uint32_t*, size_t>> direct_shaders[] = {
++            {kLoadShaderIndex64bpb,
++             {shaders::texture_load_64bpb_scaled_image_cs, sizeof(shaders::texture_load_64bpb_scaled_image_cs)}},
++            {kLoadShaderIndex32bpb,
++             {shaders::texture_load_32bpb_scaled_image_cs, sizeof(shaders::texture_load_32bpb_scaled_image_cs)}},
++            {kLoadShaderIndexDepthFloat,
++             {shaders::texture_load_depth_float_scaled_image_cs,
++              sizeof(shaders::texture_load_depth_float_scaled_image_cs)}},
++        };
++        for (const auto& [index, code] : direct_shaders) {
++          direct_load_pipelines_[index] = ui::vulkan::util::CreateComputePipeline(
++              vulkan_device, direct_load_pipeline_layout_, code.first, code.second);
++          if (direct_load_pipelines_[index] == VK_NULL_HANDLE) {
++            REXGPU_WARN("VulkanTextureCache: direct texture load pipeline for shader {} not created", int(index));
++          }
++        }
++      } else {
++        direct_load_pipeline_layout_ = VK_NULL_HANDLE;
++      }
++    } else {
++      direct_load_descriptor_set_layout_ = VK_NULL_HANDLE;
++    }
++  }
++
+   // Use true null descriptors when supported; otherwise, keep compatibility
+   // fallback null images.
+   if (device_properties.nullDescriptor) {
+@@ -3280,6 +3495,11 @@
+       access_mask = VK_ACCESS_SHADER_READ_BIT;
+       layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+       break;
++    case VulkanTexture::Usage::kComputeWrite:
++      stage_mask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
++      access_mask = VK_ACCESS_SHADER_WRITE_BIT;
++      layout = VK_IMAGE_LAYOUT_GENERAL;
++      break;
+   }
+ }
+ 
+diff --git a/src/graphics/shaders/vulkan_spirv/texture_load_32bpb_scaled_image_cs.h b/src/graphics/shaders/vulkan_spirv/texture_load_32bpb_scaled_image_cs.h
+new file mode 100644
+--- /dev/null
++++ b/src/graphics/shaders/vulkan_spirv/texture_load_32bpb_scaled_image_cs.h
+@@ -0,0 +1,778 @@
++// Generated by tools/spirv_load_to_image.py --bits 32 (KUF port M9) from texture_load_32bpb_scaled_cs.h: the same load,
++// writing the texels into a storage image (set 0, binding 0, R32ui) instead of the staging buffer.
++#if 0
++; SPIR-V
++; Version: 1.0
++; Generator: Khronos SPIR-V Tools Assembler; 0
++; Bound: 404
++; Schema: 0
++               OpCapability Shader
++          %1 = OpExtInstImport "GLSL.std.450"
++               OpMemoryModel Logical GLSL450
++               OpEntryPoint GLCompute %2 "main" %3
++               OpExecutionMode %2 LocalSize 4 32 1
++               OpDecorate %4 Block
++               OpMemberDecorate %4 0 Offset 0
++               OpMemberDecorate %4 1 Offset 4
++               OpMemberDecorate %4 2 Offset 8
++               OpMemberDecorate %4 3 Offset 12
++               OpMemberDecorate %4 4 Offset 16
++               OpMemberDecorate %4 5 Offset 28
++               OpMemberDecorate %4 6 Offset 32
++               OpMemberDecorate %4 7 Offset 36
++               OpDecorate %3 BuiltIn GlobalInvocationId
++               OpDecorate %5 ArrayStride 16
++               OpDecorate %6 BufferBlock
++               OpMemberDecorate %6 0 NonWritable
++               OpMemberDecorate %6 0 Offset 0
++               OpDecorate %7 NonWritable
++               OpDecorate %7 Binding 0
++               OpDecorate %7 DescriptorSet 1
++               OpDecorate %8 ArrayStride 16
++               OpDecorate %9 BufferBlock
++               OpMemberDecorate %9 0 NonReadable
++               OpMemberDecorate %9 0 Offset 0
++               OpDecorate %10 NonReadable
++               OpDecorate %10 Binding 0
++               OpDecorate %10 DescriptorSet 0
++               OpDecorate %11 BuiltIn WorkgroupSize
++         %12 = OpTypeVoid
++         %13 = OpTypeFunction %12
++         %14 = OpTypeInt 32 0
++         %15 = OpTypeVector %14 2
++         %16 = OpTypeVector %14 4
++         %17 = OpTypeInt 32 1
++         %18 = OpTypeVector %17 2
++         %19 = OpTypeVector %17 3
++         %20 = OpTypeBool
++         %21 = OpTypeVector %14 3
++         %22 = OpConstant %14 1
++         %23 = OpConstant %14 2
++         %24 = OpConstant %14 16711935
++         %25 = OpConstant %14 8
++         %26 = OpConstant %14 4278255360
++         %27 = OpConstant %14 3
++         %28 = OpConstant %14 16
++         %29 = OpConstant %14 0
++         %30 = OpConstant %17 5
++         %31 = OpConstant %14 5
++         %32 = OpConstant %14 7
++         %33 = OpConstant %17 7
++         %34 = OpConstant %17 14
++         %35 = OpConstant %17 2
++         %36 = OpConstant %17 -16
++         %37 = OpConstant %17 1
++         %38 = OpConstant %17 15
++         %39 = OpConstant %17 4
++         %40 = OpConstant %17 -512
++         %41 = OpConstant %17 3
++         %42 = OpConstant %17 16
++         %43 = OpConstant %17 448
++         %44 = OpConstant %17 8
++         %45 = OpConstant %17 6
++         %46 = OpConstant %17 63
++         %47 = OpConstant %14 4
++         %48 = OpConstant %17 268435455
++         %49 = OpConstant %17 -2
++         %50 = OpConstant %14 32
++          %4 = OpTypeStruct %14 %14 %14 %14 %21 %14 %14 %14
++         %51 = OpTypePointer PushConstant %4
++         %52 = OpVariable %51 PushConstant
++         %53 = OpConstant %17 0
++         %54 = OpTypePointer PushConstant %14
++         %55 = OpConstantComposite %15 %47 %32
++         %56 = OpTypePointer PushConstant %21
++         %57 = OpTypePointer Input %21
++          %3 = OpVariable %57 Input
++         %58 = OpConstantComposite %21 %27 %29 %29
++         %59 = OpTypeVector %20 2
++          %5 = OpTypeRuntimeArray %16
++          %6 = OpTypeStruct %5
++         %60 = OpTypePointer Uniform %6
++          %7 = OpVariable %60 Uniform
++         %61 = OpTypePointer Uniform %16
++          %8 = OpTypeRuntimeArray %16
++          %9 = OpTypeStruct %8
++         %62 = OpTypePointer Uniform %9
++         %63 = OpTypeImage %14 2D 0 0 0 2 R32ui
++         %64 = OpTypePointer UniformConstant %63
++         %10 = OpVariable %64 UniformConstant
++         %65 = OpConstant %14 65535
++         %66 = OpConstant %14 16
++         %67 = OpConstant %14 0
++         %68 = OpConstant %14 1
++         %69 = OpConstant %14 2
++         %70 = OpConstant %14 3
++         %71 = OpConstant %14 4
++         %72 = OpConstant %14 5
++         %73 = OpConstant %14 6
++         %74 = OpConstant %14 7
++         %11 = OpConstantComposite %21 %47 %50 %22
++         %75 = OpConstantComposite %15 %32 %32
++         %76 = OpConstant %14 9
++         %77 = OpConstantComposite %16 %24 %24 %24 %24
++         %78 = OpConstantComposite %16 %25 %25 %25 %25
++         %79 = OpConstantComposite %16 %26 %26 %26 %26
++         %80 = OpConstantComposite %16 %28 %28 %28 %28
++          %2 = OpFunction %12 None %13
++         %81 = OpLabel
++               OpSelectionMerge %82 None
++               OpSwitch %29 %83
++         %83 = OpLabel
++         %84 = OpAccessChain %54 %52 %53
++         %85 = OpLoad %14 %84
++         %86 = OpBitwiseAnd %14 %85 %23
++         %87 = OpINotEqual %20 %86 %29
++         %88 = OpShiftRightLogical %14 %85 %23
++         %89 = OpBitwiseAnd %14 %88 %27
++         %90 = OpCompositeConstruct %15 %85 %85
++         %91 = OpShiftRightLogical %15 %90 %55
++         %92 = OpBitwiseAnd %15 %91 %75
++         %93 = OpAccessChain %54 %52 %37
++         %94 = OpLoad %14 %93
++         %95 = OpAccessChain %54 %52 %35
++         %96 = OpLoad %14 %95
++         %97 = OpAccessChain %54 %52 %41
++         %98 = OpLoad %14 %97
++         %99 = OpAccessChain %56 %52 %39
++        %100 = OpLoad %21 %99
++        %101 = OpAccessChain %54 %52 %30
++        %102 = OpLoad %14 %101
++        %103 = OpAccessChain %54 %52 %45
++        %104 = OpLoad %14 %103
++        %105 = OpLoad %21 %3
++        %106 = OpShiftLeftLogical %21 %105 %58
++        %107 = OpVectorShuffle %15 %106 %106 0 1
++        %108 = OpVectorShuffle %15 %100 %100 0 1
++        %109 = OpUGreaterThanEqual %59 %107 %108
++        %110 = OpAny %20 %109
++               OpSelectionMerge %111 DontFlatten
++               OpBranchConditional %110 %112 %111
++        %112 = OpLabel
++               OpBranch %82
++        %111 = OpLabel
++        %113 = OpBitcast %19 %106
++        %114 = OpCompositeExtract %14 %100 1
++        %115 = OpCompositeExtract %17 %113 0
++        %116 = OpIMul %17 %115 %39
++        %117 = OpCompositeExtract %17 %113 2
++        %118 = OpBitcast %17 %114
++        %119 = OpIMul %17 %117 %118
++        %120 = OpCompositeExtract %17 %113 1
++        %121 = OpIAdd %17 %119 %120
++        %122 = OpBitcast %17 %104
++        %123 = OpIMul %17 %121 %122
++        %124 = OpIAdd %17 %116 %123
++        %125 = OpBitcast %14 %124
++        %126 = OpIAdd %14 %125 %102
++        %127 = OpShiftRightLogical %14 %126 %47
++        %128 = OpCompositeExtract %14 %106 0
++        %129 = OpShiftRightLogical %14 %128 %23
++        %130 = OpCompositeExtract %14 %106 1
++        %131 = OpCompositeConstruct %15 %129 %130
++        %132 = OpUDiv %15 %131 %92
++        %133 = OpCompositeExtract %14 %132 0
++        %134 = OpShiftLeftLogical %14 %133 %23
++        %135 = OpCompositeExtract %14 %132 1
++        %136 = OpCompositeExtract %14 %106 2
++        %137 = OpCompositeConstruct %21 %134 %135 %136
++               OpSelectionMerge %138 DontFlatten
++               OpBranchConditional %87 %139 %140
++        %139 = OpLabel
++        %141 = OpBitcast %19 %137
++        %142 = OpCompositeExtract %17 %141 1
++        %143 = OpShiftRightArithmetic %17 %142 %39
++        %144 = OpCompositeExtract %17 %141 2
++        %145 = OpShiftRightArithmetic %17 %144 %35
++        %146 = OpShiftRightLogical %14 %98 %47
++        %147 = OpBitcast %17 %146
++        %148 = OpIMul %17 %145 %147
++        %149 = OpIAdd %17 %143 %148
++        %150 = OpShiftRightLogical %14 %96 %31
++        %151 = OpBitcast %17 %150
++        %152 = OpIMul %17 %149 %151
++        %153 = OpCompositeExtract %17 %141 0
++        %154 = OpShiftRightArithmetic %17 %153 %30
++        %155 = OpIAdd %17 %154 %152
++        %156 = OpShiftLeftLogical %17 %155 %25
++        %157 = OpBitwiseAnd %17 %156 %48
++        %158 = OpShiftLeftLogical %17 %157 %37
++        %159 = OpBitwiseAnd %17 %153 %33
++        %160 = OpBitwiseAnd %17 %142 %45
++        %161 = OpShiftLeftLogical %17 %160 %35
++        %162 = OpIAdd %17 %159 %161
++        %163 = OpShiftLeftLogical %17 %162 %25
++        %164 = OpShiftRightArithmetic %17 %163 %45
++        %165 = OpShiftRightArithmetic %17 %142 %41
++        %166 = OpIAdd %17 %165 %145
++        %167 = OpBitwiseAnd %17 %166 %37
++        %168 = OpShiftRightArithmetic %17 %153 %41
++        %169 = OpShiftLeftLogical %17 %167 %37
++        %170 = OpIAdd %17 %168 %169
++        %171 = OpBitwiseAnd %17 %170 %41
++        %172 = OpShiftLeftLogical %17 %171 %37
++        %173 = OpIAdd %17 %167 %172
++        %174 = OpBitwiseAnd %17 %164 %36
++        %175 = OpIAdd %17 %158 %174
++        %176 = OpShiftLeftLogical %17 %175 %37
++        %177 = OpBitwiseAnd %17 %164 %38
++        %178 = OpIAdd %17 %176 %177
++        %179 = OpBitwiseAnd %17 %144 %41
++        %180 = OpShiftLeftLogical %17 %179 %25
++        %181 = OpIAdd %17 %178 %180
++        %182 = OpBitwiseAnd %17 %142 %37
++        %183 = OpShiftLeftLogical %17 %182 %39
++        %184 = OpIAdd %17 %181 %183
++        %185 = OpBitwiseAnd %17 %173 %37
++        %186 = OpShiftLeftLogical %17 %185 %41
++        %187 = OpShiftRightArithmetic %17 %184 %45
++        %188 = OpBitwiseAnd %17 %187 %33
++        %189 = OpIAdd %17 %186 %188
++        %190 = OpShiftLeftLogical %17 %189 %41
++        %191 = OpBitwiseAnd %17 %173 %49
++        %192 = OpIAdd %17 %190 %191
++        %193 = OpShiftLeftLogical %17 %192 %35
++        %194 = OpBitwiseAnd %17 %184 %40
++        %195 = OpIAdd %17 %193 %194
++        %196 = OpShiftLeftLogical %17 %195 %41
++        %197 = OpBitwiseAnd %17 %184 %46
++        %198 = OpIAdd %17 %196 %197
++        %199 = OpBitcast %14 %198
++               OpBranch %138
++        %140 = OpLabel
++        %200 = OpVectorShuffle %15 %137 %137 0 1
++        %201 = OpBitcast %18 %200
++        %202 = OpCompositeExtract %17 %201 0
++        %203 = OpShiftRightArithmetic %17 %202 %30
++        %204 = OpCompositeExtract %17 %201 1
++        %205 = OpShiftRightArithmetic %17 %204 %30
++        %206 = OpShiftRightLogical %14 %96 %31
++        %207 = OpBitcast %17 %206
++        %208 = OpIMul %17 %205 %207
++        %209 = OpIAdd %17 %203 %208
++        %210 = OpShiftLeftLogical %17 %209 %76
++        %211 = OpBitwiseAnd %17 %202 %33
++        %212 = OpBitwiseAnd %17 %204 %34
++        %213 = OpShiftLeftLogical %17 %212 %35
++        %214 = OpIAdd %17 %211 %213
++        %215 = OpShiftLeftLogical %17 %214 %23
++        %216 = OpBitwiseAnd %17 %215 %36
++        %217 = OpShiftLeftLogical %17 %216 %37
++        %218 = OpIAdd %17 %210 %217
++        %219 = OpBitwiseAnd %17 %215 %38
++        %220 = OpIAdd %17 %218 %219
++        %221 = OpBitwiseAnd %17 %204 %37
++        %222 = OpShiftLeftLogical %17 %221 %39
++        %223 = OpIAdd %17 %220 %222
++        %224 = OpBitwiseAnd %17 %223 %40
++        %225 = OpShiftLeftLogical %17 %224 %41
++        %226 = OpBitwiseAnd %17 %204 %42
++        %227 = OpShiftLeftLogical %17 %226 %33
++        %228 = OpIAdd %17 %225 %227
++        %229 = OpBitwiseAnd %17 %223 %43
++        %230 = OpShiftLeftLogical %17 %229 %35
++        %231 = OpIAdd %17 %228 %230
++        %232 = OpBitwiseAnd %17 %204 %44
++        %233 = OpShiftRightArithmetic %17 %232 %35
++        %234 = OpShiftRightArithmetic %17 %202 %41
++        %235 = OpIAdd %17 %233 %234
++        %236 = OpBitwiseAnd %17 %235 %41
++        %237 = OpShiftLeftLogical %17 %236 %45
++        %238 = OpIAdd %17 %231 %237
++        %239 = OpBitwiseAnd %17 %223 %46
++        %240 = OpIAdd %17 %238 %239
++        %241 = OpBitcast %14 %240
++               OpBranch %138
++        %138 = OpLabel
++        %242 = OpPhi %14 %199 %139 %241 %140
++        %243 = OpIMul %15 %132 %92
++        %244 = OpISub %15 %131 %243
++        %245 = OpCompositeExtract %14 %92 0
++        %246 = OpCompositeExtract %14 %92 1
++        %247 = OpIMul %14 %245 %246
++        %248 = OpIMul %14 %242 %247
++        %249 = OpCompositeExtract %14 %244 0
++        %250 = OpIMul %14 %249 %246
++        %251 = OpCompositeExtract %14 %244 1
++        %252 = OpIAdd %14 %250 %251
++        %253 = OpShiftLeftLogical %14 %252 %23
++        %254 = OpBitwiseAnd %14 %128 %27
++        %255 = OpIAdd %14 %253 %254
++        %256 = OpShiftLeftLogical %14 %255 %23
++        %257 = OpIAdd %14 %248 %256
++        %258 = OpIAdd %14 %94 %257
++        %259 = OpShiftRightLogical %14 %258 %47
++        %260 = OpAccessChain %61 %7 %53 %259
++        %261 = OpLoad %16 %260
++        %262 = OpIEqual %20 %89 %22
++        %263 = OpIEqual %20 %89 %23
++        %264 = OpLogicalOr %20 %262 %263
++               OpSelectionMerge %265 None
++               OpBranchConditional %264 %266 %265
++        %266 = OpLabel
++        %267 = OpBitwiseAnd %16 %261 %77
++        %268 = OpShiftLeftLogical %16 %267 %78
++        %269 = OpBitwiseAnd %16 %261 %79
++        %270 = OpShiftRightLogical %16 %269 %78
++        %271 = OpBitwiseOr %16 %268 %270
++               OpBranch %265
++        %265 = OpLabel
++        %272 = OpPhi %16 %261 %138 %271 %266
++        %273 = OpIEqual %20 %89 %27
++        %274 = OpLogicalOr %20 %263 %273
++               OpSelectionMerge %275 None
++               OpBranchConditional %274 %276 %275
++        %276 = OpLabel
++        %277 = OpShiftLeftLogical %16 %272 %80
++        %278 = OpShiftRightLogical %16 %272 %80
++        %279 = OpBitwiseOr %16 %277 %278
++               OpBranch %275
++        %275 = OpLabel
++        %280 = OpPhi %16 %272 %265 %279 %276
++        %281 = OpCompositeExtract %14 %106 0
++        %282 = OpCompositeExtract %14 %106 1
++        %283 = OpCompositeExtract %14 %100 0
++        %284 = OpIAdd %14 %281 %67
++        %285 = OpCompositeExtract %14 %280 0
++        %286 = OpCompositeConstruct %16 %285 %67 %67 %67
++        %287 = OpBitcast %17 %284
++        %288 = OpBitcast %17 %282
++        %289 = OpCompositeConstruct %18 %287 %288
++        %290 = OpULessThan %20 %284 %283
++               OpSelectionMerge %291 None
++               OpBranchConditional %290 %292 %291
++        %292 = OpLabel
++        %293 = OpLoad %63 %10
++               OpImageWrite %293 %289 %286
++               OpBranch %291
++        %291 = OpLabel
++        %294 = OpIAdd %14 %281 %68
++        %295 = OpCompositeExtract %14 %280 1
++        %296 = OpCompositeConstruct %16 %295 %67 %67 %67
++        %297 = OpBitcast %17 %294
++        %298 = OpBitcast %17 %282
++        %299 = OpCompositeConstruct %18 %297 %298
++        %300 = OpULessThan %20 %294 %283
++               OpSelectionMerge %301 None
++               OpBranchConditional %300 %302 %301
++        %302 = OpLabel
++        %303 = OpLoad %63 %10
++               OpImageWrite %303 %299 %296
++               OpBranch %301
++        %301 = OpLabel
++        %304 = OpIAdd %14 %281 %69
++        %305 = OpCompositeExtract %14 %280 2
++        %306 = OpCompositeConstruct %16 %305 %67 %67 %67
++        %307 = OpBitcast %17 %304
++        %308 = OpBitcast %17 %282
++        %309 = OpCompositeConstruct %18 %307 %308
++        %310 = OpULessThan %20 %304 %283
++               OpSelectionMerge %311 None
++               OpBranchConditional %310 %312 %311
++        %312 = OpLabel
++        %313 = OpLoad %63 %10
++               OpImageWrite %313 %309 %306
++               OpBranch %311
++        %311 = OpLabel
++        %314 = OpIAdd %14 %281 %70
++        %315 = OpCompositeExtract %14 %280 3
++        %316 = OpCompositeConstruct %16 %315 %67 %67 %67
++        %317 = OpBitcast %17 %314
++        %318 = OpBitcast %17 %282
++        %319 = OpCompositeConstruct %18 %317 %318
++        %320 = OpULessThan %20 %314 %283
++               OpSelectionMerge %321 None
++               OpBranchConditional %320 %322 %321
++        %322 = OpLabel
++        %323 = OpLoad %63 %10
++               OpImageWrite %323 %319 %316
++               OpBranch %321
++        %321 = OpLabel
++        %324 = OpIAdd %14 %127 %37
++        %325 = OpUGreaterThan %20 %245 %22
++               OpSelectionMerge %326 DontFlatten
++               OpBranchConditional %325 %327 %328
++        %327 = OpLabel
++        %329 = OpUDiv %14 %129 %245
++        %330 = OpIMul %14 %329 %245
++        %331 = OpISub %14 %129 %330
++        %332 = OpIAdd %14 %331 %22
++        %333 = OpIEqual %20 %332 %245
++               OpSelectionMerge %334 None
++               OpBranchConditional %333 %335 %336
++        %335 = OpLabel
++        %337 = OpIMul %14 %50 %245
++        %338 = OpShiftLeftLogical %14 %331 %47
++        %339 = OpISub %14 %337 %338
++               OpBranch %334
++        %336 = OpLabel
++               OpBranch %334
++        %334 = OpLabel
++        %340 = OpPhi %14 %339 %335 %28 %336
++               OpBranch %326
++        %328 = OpLabel
++               OpBranch %326
++        %326 = OpLabel
++        %341 = OpPhi %14 %340 %334 %50 %328
++        %342 = OpIMul %14 %341 %246
++        %343 = OpShiftRightLogical %14 %342 %47
++        %344 = OpIAdd %14 %259 %343
++        %345 = OpAccessChain %61 %7 %53 %344
++        %346 = OpLoad %16 %345
++               OpSelectionMerge %347 None
++               OpBranchConditional %264 %348 %347
++        %348 = OpLabel
++        %349 = OpBitwiseAnd %16 %346 %77
++        %350 = OpShiftLeftLogical %16 %349 %78
++        %351 = OpBitwiseAnd %16 %346 %79
++        %352 = OpShiftRightLogical %16 %351 %78
++        %353 = OpBitwiseOr %16 %350 %352
++               OpBranch %347
++        %347 = OpLabel
++        %354 = OpPhi %16 %346 %326 %353 %348
++               OpSelectionMerge %355 None
++               OpBranchConditional %274 %356 %355
++        %356 = OpLabel
++        %357 = OpShiftLeftLogical %16 %354 %80
++        %358 = OpShiftRightLogical %16 %354 %80
++        %359 = OpBitwiseOr %16 %357 %358
++               OpBranch %355
++        %355 = OpLabel
++        %360 = OpPhi %16 %354 %347 %359 %356
++        %361 = OpCompositeExtract %14 %106 0
++        %362 = OpCompositeExtract %14 %106 1
++        %363 = OpCompositeExtract %14 %100 0
++        %364 = OpIAdd %14 %361 %71
++        %365 = OpCompositeExtract %14 %360 0
++        %366 = OpCompositeConstruct %16 %365 %67 %67 %67
++        %367 = OpBitcast %17 %364
++        %368 = OpBitcast %17 %362
++        %369 = OpCompositeConstruct %18 %367 %368
++        %370 = OpULessThan %20 %364 %363
++               OpSelectionMerge %371 None
++               OpBranchConditional %370 %372 %371
++        %372 = OpLabel
++        %373 = OpLoad %63 %10
++               OpImageWrite %373 %369 %366
++               OpBranch %371
++        %371 = OpLabel
++        %374 = OpIAdd %14 %361 %72
++        %375 = OpCompositeExtract %14 %360 1
++        %376 = OpCompositeConstruct %16 %375 %67 %67 %67
++        %377 = OpBitcast %17 %374
++        %378 = OpBitcast %17 %362
++        %379 = OpCompositeConstruct %18 %377 %378
++        %380 = OpULessThan %20 %374 %363
++               OpSelectionMerge %381 None
++               OpBranchConditional %380 %382 %381
++        %382 = OpLabel
++        %383 = OpLoad %63 %10
++               OpImageWrite %383 %379 %376
++               OpBranch %381
++        %381 = OpLabel
++        %384 = OpIAdd %14 %361 %73
++        %385 = OpCompositeExtract %14 %360 2
++        %386 = OpCompositeConstruct %16 %385 %67 %67 %67
++        %387 = OpBitcast %17 %384
++        %388 = OpBitcast %17 %362
++        %389 = OpCompositeConstruct %18 %387 %388
++        %390 = OpULessThan %20 %384 %363
++               OpSelectionMerge %391 None
++               OpBranchConditional %390 %392 %391
++        %392 = OpLabel
++        %393 = OpLoad %63 %10
++               OpImageWrite %393 %389 %386
++               OpBranch %391
++        %391 = OpLabel
++        %394 = OpIAdd %14 %361 %74
++        %395 = OpCompositeExtract %14 %360 3
++        %396 = OpCompositeConstruct %16 %395 %67 %67 %67
++        %397 = OpBitcast %17 %394
++        %398 = OpBitcast %17 %362
++        %399 = OpCompositeConstruct %18 %397 %398
++        %400 = OpULessThan %20 %394 %363
++               OpSelectionMerge %401 None
++               OpBranchConditional %400 %402 %401
++        %402 = OpLabel
++        %403 = OpLoad %63 %10
++               OpImageWrite %403 %399 %396
++               OpBranch %401
++        %401 = OpLabel
++               OpBranch %82
++         %82 = OpLabel
++               OpReturn
++               OpFunctionEnd
++#endif
++
++const uint32_t texture_load_32bpb_scaled_image_cs[] = {
++    0x07230203, 0x00010000, 0x00070000, 0x00000194, 0x00000000, 0x00020011, 0x00000001, 0x0006000B,
++    0x00000001, 0x4C534C47, 0x6474732E, 0x3035342E, 0x00000000, 0x0003000E, 0x00000000, 0x00000001,
++    0x0006000F, 0x00000005, 0x00000002, 0x6E69616D, 0x00000000, 0x00000003, 0x00060010, 0x00000002,
++    0x00000011, 0x00000004, 0x00000020, 0x00000001, 0x00030047, 0x00000004, 0x00000002, 0x00050048,
++    0x00000004, 0x00000000, 0x00000023, 0x00000000, 0x00050048, 0x00000004, 0x00000001, 0x00000023,
++    0x00000004, 0x00050048, 0x00000004, 0x00000002, 0x00000023, 0x00000008, 0x00050048, 0x00000004,
++    0x00000003, 0x00000023, 0x0000000C, 0x00050048, 0x00000004, 0x00000004, 0x00000023, 0x00000010,
++    0x00050048, 0x00000004, 0x00000005, 0x00000023, 0x0000001C, 0x00050048, 0x00000004, 0x00000006,
++    0x00000023, 0x00000020, 0x00050048, 0x00000004, 0x00000007, 0x00000023, 0x00000024, 0x00040047,
++    0x00000003, 0x0000000B, 0x0000001C, 0x00040047, 0x00000005, 0x00000006, 0x00000010, 0x00030047,
++    0x00000006, 0x00000003, 0x00040048, 0x00000006, 0x00000000, 0x00000018, 0x00050048, 0x00000006,
++    0x00000000, 0x00000023, 0x00000000, 0x00030047, 0x00000007, 0x00000018, 0x00040047, 0x00000007,
++    0x00000021, 0x00000000, 0x00040047, 0x00000007, 0x00000022, 0x00000001, 0x00040047, 0x00000008,
++    0x00000006, 0x00000010, 0x00030047, 0x00000009, 0x00000003, 0x00040048, 0x00000009, 0x00000000,
++    0x00000019, 0x00050048, 0x00000009, 0x00000000, 0x00000023, 0x00000000, 0x00030047, 0x0000000A,
++    0x00000019, 0x00040047, 0x0000000A, 0x00000021, 0x00000000, 0x00040047, 0x0000000A, 0x00000022,
++    0x00000000, 0x00040047, 0x0000000B, 0x0000000B, 0x00000019, 0x00020013, 0x0000000C, 0x00030021,
++    0x0000000D, 0x0000000C, 0x00040015, 0x0000000E, 0x00000020, 0x00000000, 0x00040017, 0x0000000F,
++    0x0000000E, 0x00000002, 0x00040017, 0x00000010, 0x0000000E, 0x00000004, 0x00040015, 0x00000011,
++    0x00000020, 0x00000001, 0x00040017, 0x00000012, 0x00000011, 0x00000002, 0x00040017, 0x00000013,
++    0x00000011, 0x00000003, 0x00020014, 0x00000014, 0x00040017, 0x00000015, 0x0000000E, 0x00000003,
++    0x0004002B, 0x0000000E, 0x00000016, 0x00000001, 0x0004002B, 0x0000000E, 0x00000017, 0x00000002,
++    0x0004002B, 0x0000000E, 0x00000018, 0x00FF00FF, 0x0004002B, 0x0000000E, 0x00000019, 0x00000008,
++    0x0004002B, 0x0000000E, 0x0000001A, 0xFF00FF00, 0x0004002B, 0x0000000E, 0x0000001B, 0x00000003,
++    0x0004002B, 0x0000000E, 0x0000001C, 0x00000010, 0x0004002B, 0x0000000E, 0x0000001D, 0x00000000,
++    0x0004002B, 0x00000011, 0x0000001E, 0x00000005, 0x0004002B, 0x0000000E, 0x0000001F, 0x00000005,
++    0x0004002B, 0x0000000E, 0x00000020, 0x00000007, 0x0004002B, 0x00000011, 0x00000021, 0x00000007,
++    0x0004002B, 0x00000011, 0x00000022, 0x0000000E, 0x0004002B, 0x00000011, 0x00000023, 0x00000002,
++    0x0004002B, 0x00000011, 0x00000024, 0xFFFFFFF0, 0x0004002B, 0x00000011, 0x00000025, 0x00000001,
++    0x0004002B, 0x00000011, 0x00000026, 0x0000000F, 0x0004002B, 0x00000011, 0x00000027, 0x00000004,
++    0x0004002B, 0x00000011, 0x00000028, 0xFFFFFE00, 0x0004002B, 0x00000011, 0x00000029, 0x00000003,
++    0x0004002B, 0x00000011, 0x0000002A, 0x00000010, 0x0004002B, 0x00000011, 0x0000002B, 0x000001C0,
++    0x0004002B, 0x00000011, 0x0000002C, 0x00000008, 0x0004002B, 0x00000011, 0x0000002D, 0x00000006,
++    0x0004002B, 0x00000011, 0x0000002E, 0x0000003F, 0x0004002B, 0x0000000E, 0x0000002F, 0x00000004,
++    0x0004002B, 0x00000011, 0x00000030, 0x0FFFFFFF, 0x0004002B, 0x00000011, 0x00000031, 0xFFFFFFFE,
++    0x0004002B, 0x0000000E, 0x00000032, 0x00000020, 0x000A001E, 0x00000004, 0x0000000E, 0x0000000E,
++    0x0000000E, 0x0000000E, 0x00000015, 0x0000000E, 0x0000000E, 0x0000000E, 0x00040020, 0x00000033,
++    0x00000009, 0x00000004, 0x0004003B, 0x00000033, 0x00000034, 0x00000009, 0x0004002B, 0x00000011,
++    0x00000035, 0x00000000, 0x00040020, 0x00000036, 0x00000009, 0x0000000E, 0x0005002C, 0x0000000F,
++    0x00000037, 0x0000002F, 0x00000020, 0x00040020, 0x00000038, 0x00000009, 0x00000015, 0x00040020,
++    0x00000039, 0x00000001, 0x00000015, 0x0004003B, 0x00000039, 0x00000003, 0x00000001, 0x0006002C,
++    0x00000015, 0x0000003A, 0x0000001B, 0x0000001D, 0x0000001D, 0x00040017, 0x0000003B, 0x00000014,
++    0x00000002, 0x0003001D, 0x00000005, 0x00000010, 0x0003001E, 0x00000006, 0x00000005, 0x00040020,
++    0x0000003C, 0x00000002, 0x00000006, 0x0004003B, 0x0000003C, 0x00000007, 0x00000002, 0x00040020,
++    0x0000003D, 0x00000002, 0x00000010, 0x0003001D, 0x00000008, 0x00000010, 0x0003001E, 0x00000009,
++    0x00000008, 0x00040020, 0x0000003E, 0x00000002, 0x00000009, 0x00090019, 0x0000003F, 0x0000000E,
++    0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000002, 0x00000021, 0x00040020, 0x00000040,
++    0x00000000, 0x0000003F, 0x0004003B, 0x00000040, 0x0000000A, 0x00000000, 0x0004002B, 0x0000000E,
++    0x00000041, 0x0000FFFF, 0x0004002B, 0x0000000E, 0x00000042, 0x00000010, 0x0004002B, 0x0000000E,
++    0x00000043, 0x00000000, 0x0004002B, 0x0000000E, 0x00000044, 0x00000001, 0x0004002B, 0x0000000E,
++    0x00000045, 0x00000002, 0x0004002B, 0x0000000E, 0x00000046, 0x00000003, 0x0004002B, 0x0000000E,
++    0x00000047, 0x00000004, 0x0004002B, 0x0000000E, 0x00000048, 0x00000005, 0x0004002B, 0x0000000E,
++    0x00000049, 0x00000006, 0x0004002B, 0x0000000E, 0x0000004A, 0x00000007, 0x0006002C, 0x00000015,
++    0x0000000B, 0x0000002F, 0x00000032, 0x00000016, 0x0005002C, 0x0000000F, 0x0000004B, 0x00000020,
++    0x00000020, 0x0004002B, 0x0000000E, 0x0000004C, 0x00000009, 0x0007002C, 0x00000010, 0x0000004D,
++    0x00000018, 0x00000018, 0x00000018, 0x00000018, 0x0007002C, 0x00000010, 0x0000004E, 0x00000019,
++    0x00000019, 0x00000019, 0x00000019, 0x0007002C, 0x00000010, 0x0000004F, 0x0000001A, 0x0000001A,
++    0x0000001A, 0x0000001A, 0x0007002C, 0x00000010, 0x00000050, 0x0000001C, 0x0000001C, 0x0000001C,
++    0x0000001C, 0x00050036, 0x0000000C, 0x00000002, 0x00000000, 0x0000000D, 0x000200F8, 0x00000051,
++    0x000300F7, 0x00000052, 0x00000000, 0x000300FB, 0x0000001D, 0x00000053, 0x000200F8, 0x00000053,
++    0x00050041, 0x00000036, 0x00000054, 0x00000034, 0x00000035, 0x0004003D, 0x0000000E, 0x00000055,
++    0x00000054, 0x000500C7, 0x0000000E, 0x00000056, 0x00000055, 0x00000017, 0x000500AB, 0x00000014,
++    0x00000057, 0x00000056, 0x0000001D, 0x000500C2, 0x0000000E, 0x00000058, 0x00000055, 0x00000017,
++    0x000500C7, 0x0000000E, 0x00000059, 0x00000058, 0x0000001B, 0x00050050, 0x0000000F, 0x0000005A,
++    0x00000055, 0x00000055, 0x000500C2, 0x0000000F, 0x0000005B, 0x0000005A, 0x00000037, 0x000500C7,
++    0x0000000F, 0x0000005C, 0x0000005B, 0x0000004B, 0x00050041, 0x00000036, 0x0000005D, 0x00000034,
++    0x00000025, 0x0004003D, 0x0000000E, 0x0000005E, 0x0000005D, 0x00050041, 0x00000036, 0x0000005F,
++    0x00000034, 0x00000023, 0x0004003D, 0x0000000E, 0x00000060, 0x0000005F, 0x00050041, 0x00000036,
++    0x00000061, 0x00000034, 0x00000029, 0x0004003D, 0x0000000E, 0x00000062, 0x00000061, 0x00050041,
++    0x00000038, 0x00000063, 0x00000034, 0x00000027, 0x0004003D, 0x00000015, 0x00000064, 0x00000063,
++    0x00050041, 0x00000036, 0x00000065, 0x00000034, 0x0000001E, 0x0004003D, 0x0000000E, 0x00000066,
++    0x00000065, 0x00050041, 0x00000036, 0x00000067, 0x00000034, 0x0000002D, 0x0004003D, 0x0000000E,
++    0x00000068, 0x00000067, 0x0004003D, 0x00000015, 0x00000069, 0x00000003, 0x000500C4, 0x00000015,
++    0x0000006A, 0x00000069, 0x0000003A, 0x0007004F, 0x0000000F, 0x0000006B, 0x0000006A, 0x0000006A,
++    0x00000000, 0x00000001, 0x0007004F, 0x0000000F, 0x0000006C, 0x00000064, 0x00000064, 0x00000000,
++    0x00000001, 0x000500AE, 0x0000003B, 0x0000006D, 0x0000006B, 0x0000006C, 0x0004009A, 0x00000014,
++    0x0000006E, 0x0000006D, 0x000300F7, 0x0000006F, 0x00000002, 0x000400FA, 0x0000006E, 0x00000070,
++    0x0000006F, 0x000200F8, 0x00000070, 0x000200F9, 0x00000052, 0x000200F8, 0x0000006F, 0x0004007C,
++    0x00000013, 0x00000071, 0x0000006A, 0x00050051, 0x0000000E, 0x00000072, 0x00000064, 0x00000001,
++    0x00050051, 0x00000011, 0x00000073, 0x00000071, 0x00000000, 0x00050084, 0x00000011, 0x00000074,
++    0x00000073, 0x00000027, 0x00050051, 0x00000011, 0x00000075, 0x00000071, 0x00000002, 0x0004007C,
++    0x00000011, 0x00000076, 0x00000072, 0x00050084, 0x00000011, 0x00000077, 0x00000075, 0x00000076,
++    0x00050051, 0x00000011, 0x00000078, 0x00000071, 0x00000001, 0x00050080, 0x00000011, 0x00000079,
++    0x00000077, 0x00000078, 0x0004007C, 0x00000011, 0x0000007A, 0x00000068, 0x00050084, 0x00000011,
++    0x0000007B, 0x00000079, 0x0000007A, 0x00050080, 0x00000011, 0x0000007C, 0x00000074, 0x0000007B,
++    0x0004007C, 0x0000000E, 0x0000007D, 0x0000007C, 0x00050080, 0x0000000E, 0x0000007E, 0x0000007D,
++    0x00000066, 0x000500C2, 0x0000000E, 0x0000007F, 0x0000007E, 0x0000002F, 0x00050051, 0x0000000E,
++    0x00000080, 0x0000006A, 0x00000000, 0x000500C2, 0x0000000E, 0x00000081, 0x00000080, 0x00000017,
++    0x00050051, 0x0000000E, 0x00000082, 0x0000006A, 0x00000001, 0x00050050, 0x0000000F, 0x00000083,
++    0x00000081, 0x00000082, 0x00050086, 0x0000000F, 0x00000084, 0x00000083, 0x0000005C, 0x00050051,
++    0x0000000E, 0x00000085, 0x00000084, 0x00000000, 0x000500C4, 0x0000000E, 0x00000086, 0x00000085,
++    0x00000017, 0x00050051, 0x0000000E, 0x00000087, 0x00000084, 0x00000001, 0x00050051, 0x0000000E,
++    0x00000088, 0x0000006A, 0x00000002, 0x00060050, 0x00000015, 0x00000089, 0x00000086, 0x00000087,
++    0x00000088, 0x000300F7, 0x0000008A, 0x00000002, 0x000400FA, 0x00000057, 0x0000008B, 0x0000008C,
++    0x000200F8, 0x0000008B, 0x0004007C, 0x00000013, 0x0000008D, 0x00000089, 0x00050051, 0x00000011,
++    0x0000008E, 0x0000008D, 0x00000001, 0x000500C3, 0x00000011, 0x0000008F, 0x0000008E, 0x00000027,
++    0x00050051, 0x00000011, 0x00000090, 0x0000008D, 0x00000002, 0x000500C3, 0x00000011, 0x00000091,
++    0x00000090, 0x00000023, 0x000500C2, 0x0000000E, 0x00000092, 0x00000062, 0x0000002F, 0x0004007C,
++    0x00000011, 0x00000093, 0x00000092, 0x00050084, 0x00000011, 0x00000094, 0x00000091, 0x00000093,
++    0x00050080, 0x00000011, 0x00000095, 0x0000008F, 0x00000094, 0x000500C2, 0x0000000E, 0x00000096,
++    0x00000060, 0x0000001F, 0x0004007C, 0x00000011, 0x00000097, 0x00000096, 0x00050084, 0x00000011,
++    0x00000098, 0x00000095, 0x00000097, 0x00050051, 0x00000011, 0x00000099, 0x0000008D, 0x00000000,
++    0x000500C3, 0x00000011, 0x0000009A, 0x00000099, 0x0000001E, 0x00050080, 0x00000011, 0x0000009B,
++    0x0000009A, 0x00000098, 0x000500C4, 0x00000011, 0x0000009C, 0x0000009B, 0x00000019, 0x000500C7,
++    0x00000011, 0x0000009D, 0x0000009C, 0x00000030, 0x000500C4, 0x00000011, 0x0000009E, 0x0000009D,
++    0x00000025, 0x000500C7, 0x00000011, 0x0000009F, 0x00000099, 0x00000021, 0x000500C7, 0x00000011,
++    0x000000A0, 0x0000008E, 0x0000002D, 0x000500C4, 0x00000011, 0x000000A1, 0x000000A0, 0x00000023,
++    0x00050080, 0x00000011, 0x000000A2, 0x0000009F, 0x000000A1, 0x000500C4, 0x00000011, 0x000000A3,
++    0x000000A2, 0x00000019, 0x000500C3, 0x00000011, 0x000000A4, 0x000000A3, 0x0000002D, 0x000500C3,
++    0x00000011, 0x000000A5, 0x0000008E, 0x00000029, 0x00050080, 0x00000011, 0x000000A6, 0x000000A5,
++    0x00000091, 0x000500C7, 0x00000011, 0x000000A7, 0x000000A6, 0x00000025, 0x000500C3, 0x00000011,
++    0x000000A8, 0x00000099, 0x00000029, 0x000500C4, 0x00000011, 0x000000A9, 0x000000A7, 0x00000025,
++    0x00050080, 0x00000011, 0x000000AA, 0x000000A8, 0x000000A9, 0x000500C7, 0x00000011, 0x000000AB,
++    0x000000AA, 0x00000029, 0x000500C4, 0x00000011, 0x000000AC, 0x000000AB, 0x00000025, 0x00050080,
++    0x00000011, 0x000000AD, 0x000000A7, 0x000000AC, 0x000500C7, 0x00000011, 0x000000AE, 0x000000A4,
++    0x00000024, 0x00050080, 0x00000011, 0x000000AF, 0x0000009E, 0x000000AE, 0x000500C4, 0x00000011,
++    0x000000B0, 0x000000AF, 0x00000025, 0x000500C7, 0x00000011, 0x000000B1, 0x000000A4, 0x00000026,
++    0x00050080, 0x00000011, 0x000000B2, 0x000000B0, 0x000000B1, 0x000500C7, 0x00000011, 0x000000B3,
++    0x00000090, 0x00000029, 0x000500C4, 0x00000011, 0x000000B4, 0x000000B3, 0x00000019, 0x00050080,
++    0x00000011, 0x000000B5, 0x000000B2, 0x000000B4, 0x000500C7, 0x00000011, 0x000000B6, 0x0000008E,
++    0x00000025, 0x000500C4, 0x00000011, 0x000000B7, 0x000000B6, 0x00000027, 0x00050080, 0x00000011,
++    0x000000B8, 0x000000B5, 0x000000B7, 0x000500C7, 0x00000011, 0x000000B9, 0x000000AD, 0x00000025,
++    0x000500C4, 0x00000011, 0x000000BA, 0x000000B9, 0x00000029, 0x000500C3, 0x00000011, 0x000000BB,
++    0x000000B8, 0x0000002D, 0x000500C7, 0x00000011, 0x000000BC, 0x000000BB, 0x00000021, 0x00050080,
++    0x00000011, 0x000000BD, 0x000000BA, 0x000000BC, 0x000500C4, 0x00000011, 0x000000BE, 0x000000BD,
++    0x00000029, 0x000500C7, 0x00000011, 0x000000BF, 0x000000AD, 0x00000031, 0x00050080, 0x00000011,
++    0x000000C0, 0x000000BE, 0x000000BF, 0x000500C4, 0x00000011, 0x000000C1, 0x000000C0, 0x00000023,
++    0x000500C7, 0x00000011, 0x000000C2, 0x000000B8, 0x00000028, 0x00050080, 0x00000011, 0x000000C3,
++    0x000000C1, 0x000000C2, 0x000500C4, 0x00000011, 0x000000C4, 0x000000C3, 0x00000029, 0x000500C7,
++    0x00000011, 0x000000C5, 0x000000B8, 0x0000002E, 0x00050080, 0x00000011, 0x000000C6, 0x000000C4,
++    0x000000C5, 0x0004007C, 0x0000000E, 0x000000C7, 0x000000C6, 0x000200F9, 0x0000008A, 0x000200F8,
++    0x0000008C, 0x0007004F, 0x0000000F, 0x000000C8, 0x00000089, 0x00000089, 0x00000000, 0x00000001,
++    0x0004007C, 0x00000012, 0x000000C9, 0x000000C8, 0x00050051, 0x00000011, 0x000000CA, 0x000000C9,
++    0x00000000, 0x000500C3, 0x00000011, 0x000000CB, 0x000000CA, 0x0000001E, 0x00050051, 0x00000011,
++    0x000000CC, 0x000000C9, 0x00000001, 0x000500C3, 0x00000011, 0x000000CD, 0x000000CC, 0x0000001E,
++    0x000500C2, 0x0000000E, 0x000000CE, 0x00000060, 0x0000001F, 0x0004007C, 0x00000011, 0x000000CF,
++    0x000000CE, 0x00050084, 0x00000011, 0x000000D0, 0x000000CD, 0x000000CF, 0x00050080, 0x00000011,
++    0x000000D1, 0x000000CB, 0x000000D0, 0x000500C4, 0x00000011, 0x000000D2, 0x000000D1, 0x0000004C,
++    0x000500C7, 0x00000011, 0x000000D3, 0x000000CA, 0x00000021, 0x000500C7, 0x00000011, 0x000000D4,
++    0x000000CC, 0x00000022, 0x000500C4, 0x00000011, 0x000000D5, 0x000000D4, 0x00000023, 0x00050080,
++    0x00000011, 0x000000D6, 0x000000D3, 0x000000D5, 0x000500C4, 0x00000011, 0x000000D7, 0x000000D6,
++    0x00000017, 0x000500C7, 0x00000011, 0x000000D8, 0x000000D7, 0x00000024, 0x000500C4, 0x00000011,
++    0x000000D9, 0x000000D8, 0x00000025, 0x00050080, 0x00000011, 0x000000DA, 0x000000D2, 0x000000D9,
++    0x000500C7, 0x00000011, 0x000000DB, 0x000000D7, 0x00000026, 0x00050080, 0x00000011, 0x000000DC,
++    0x000000DA, 0x000000DB, 0x000500C7, 0x00000011, 0x000000DD, 0x000000CC, 0x00000025, 0x000500C4,
++    0x00000011, 0x000000DE, 0x000000DD, 0x00000027, 0x00050080, 0x00000011, 0x000000DF, 0x000000DC,
++    0x000000DE, 0x000500C7, 0x00000011, 0x000000E0, 0x000000DF, 0x00000028, 0x000500C4, 0x00000011,
++    0x000000E1, 0x000000E0, 0x00000029, 0x000500C7, 0x00000011, 0x000000E2, 0x000000CC, 0x0000002A,
++    0x000500C4, 0x00000011, 0x000000E3, 0x000000E2, 0x00000021, 0x00050080, 0x00000011, 0x000000E4,
++    0x000000E1, 0x000000E3, 0x000500C7, 0x00000011, 0x000000E5, 0x000000DF, 0x0000002B, 0x000500C4,
++    0x00000011, 0x000000E6, 0x000000E5, 0x00000023, 0x00050080, 0x00000011, 0x000000E7, 0x000000E4,
++    0x000000E6, 0x000500C7, 0x00000011, 0x000000E8, 0x000000CC, 0x0000002C, 0x000500C3, 0x00000011,
++    0x000000E9, 0x000000E8, 0x00000023, 0x000500C3, 0x00000011, 0x000000EA, 0x000000CA, 0x00000029,
++    0x00050080, 0x00000011, 0x000000EB, 0x000000E9, 0x000000EA, 0x000500C7, 0x00000011, 0x000000EC,
++    0x000000EB, 0x00000029, 0x000500C4, 0x00000011, 0x000000ED, 0x000000EC, 0x0000002D, 0x00050080,
++    0x00000011, 0x000000EE, 0x000000E7, 0x000000ED, 0x000500C7, 0x00000011, 0x000000EF, 0x000000DF,
++    0x0000002E, 0x00050080, 0x00000011, 0x000000F0, 0x000000EE, 0x000000EF, 0x0004007C, 0x0000000E,
++    0x000000F1, 0x000000F0, 0x000200F9, 0x0000008A, 0x000200F8, 0x0000008A, 0x000700F5, 0x0000000E,
++    0x000000F2, 0x000000C7, 0x0000008B, 0x000000F1, 0x0000008C, 0x00050084, 0x0000000F, 0x000000F3,
++    0x00000084, 0x0000005C, 0x00050082, 0x0000000F, 0x000000F4, 0x00000083, 0x000000F3, 0x00050051,
++    0x0000000E, 0x000000F5, 0x0000005C, 0x00000000, 0x00050051, 0x0000000E, 0x000000F6, 0x0000005C,
++    0x00000001, 0x00050084, 0x0000000E, 0x000000F7, 0x000000F5, 0x000000F6, 0x00050084, 0x0000000E,
++    0x000000F8, 0x000000F2, 0x000000F7, 0x00050051, 0x0000000E, 0x000000F9, 0x000000F4, 0x00000000,
++    0x00050084, 0x0000000E, 0x000000FA, 0x000000F9, 0x000000F6, 0x00050051, 0x0000000E, 0x000000FB,
++    0x000000F4, 0x00000001, 0x00050080, 0x0000000E, 0x000000FC, 0x000000FA, 0x000000FB, 0x000500C4,
++    0x0000000E, 0x000000FD, 0x000000FC, 0x00000017, 0x000500C7, 0x0000000E, 0x000000FE, 0x00000080,
++    0x0000001B, 0x00050080, 0x0000000E, 0x000000FF, 0x000000FD, 0x000000FE, 0x000500C4, 0x0000000E,
++    0x00000100, 0x000000FF, 0x00000017, 0x00050080, 0x0000000E, 0x00000101, 0x000000F8, 0x00000100,
++    0x00050080, 0x0000000E, 0x00000102, 0x0000005E, 0x00000101, 0x000500C2, 0x0000000E, 0x00000103,
++    0x00000102, 0x0000002F, 0x00060041, 0x0000003D, 0x00000104, 0x00000007, 0x00000035, 0x00000103,
++    0x0004003D, 0x00000010, 0x00000105, 0x00000104, 0x000500AA, 0x00000014, 0x00000106, 0x00000059,
++    0x00000016, 0x000500AA, 0x00000014, 0x00000107, 0x00000059, 0x00000017, 0x000500A6, 0x00000014,
++    0x00000108, 0x00000106, 0x00000107, 0x000300F7, 0x00000109, 0x00000000, 0x000400FA, 0x00000108,
++    0x0000010A, 0x00000109, 0x000200F8, 0x0000010A, 0x000500C7, 0x00000010, 0x0000010B, 0x00000105,
++    0x0000004D, 0x000500C4, 0x00000010, 0x0000010C, 0x0000010B, 0x0000004E, 0x000500C7, 0x00000010,
++    0x0000010D, 0x00000105, 0x0000004F, 0x000500C2, 0x00000010, 0x0000010E, 0x0000010D, 0x0000004E,
++    0x000500C5, 0x00000010, 0x0000010F, 0x0000010C, 0x0000010E, 0x000200F9, 0x00000109, 0x000200F8,
++    0x00000109, 0x000700F5, 0x00000010, 0x00000110, 0x00000105, 0x0000008A, 0x0000010F, 0x0000010A,
++    0x000500AA, 0x00000014, 0x00000111, 0x00000059, 0x0000001B, 0x000500A6, 0x00000014, 0x00000112,
++    0x00000107, 0x00000111, 0x000300F7, 0x00000113, 0x00000000, 0x000400FA, 0x00000112, 0x00000114,
++    0x00000113, 0x000200F8, 0x00000114, 0x000500C4, 0x00000010, 0x00000115, 0x00000110, 0x00000050,
++    0x000500C2, 0x00000010, 0x00000116, 0x00000110, 0x00000050, 0x000500C5, 0x00000010, 0x00000117,
++    0x00000115, 0x00000116, 0x000200F9, 0x00000113, 0x000200F8, 0x00000113, 0x000700F5, 0x00000010,
++    0x00000118, 0x00000110, 0x00000109, 0x00000117, 0x00000114, 0x00050051, 0x0000000E, 0x00000119,
++    0x0000006A, 0x00000000, 0x00050051, 0x0000000E, 0x0000011A, 0x0000006A, 0x00000001, 0x00050051,
++    0x0000000E, 0x0000011B, 0x00000064, 0x00000000, 0x00050080, 0x0000000E, 0x0000011C, 0x00000119,
++    0x00000043, 0x00050051, 0x0000000E, 0x0000011D, 0x00000118, 0x00000000, 0x00070050, 0x00000010,
++    0x0000011E, 0x0000011D, 0x00000043, 0x00000043, 0x00000043, 0x0004007C, 0x00000011, 0x0000011F,
++    0x0000011C, 0x0004007C, 0x00000011, 0x00000120, 0x0000011A, 0x00050050, 0x00000012, 0x00000121,
++    0x0000011F, 0x00000120, 0x000500B0, 0x00000014, 0x00000122, 0x0000011C, 0x0000011B, 0x000300F7,
++    0x00000123, 0x00000000, 0x000400FA, 0x00000122, 0x00000124, 0x00000123, 0x000200F8, 0x00000124,
++    0x0004003D, 0x0000003F, 0x00000125, 0x0000000A, 0x00040063, 0x00000125, 0x00000121, 0x0000011E,
++    0x000200F9, 0x00000123, 0x000200F8, 0x00000123, 0x00050080, 0x0000000E, 0x00000126, 0x00000119,
++    0x00000044, 0x00050051, 0x0000000E, 0x00000127, 0x00000118, 0x00000001, 0x00070050, 0x00000010,
++    0x00000128, 0x00000127, 0x00000043, 0x00000043, 0x00000043, 0x0004007C, 0x00000011, 0x00000129,
++    0x00000126, 0x0004007C, 0x00000011, 0x0000012A, 0x0000011A, 0x00050050, 0x00000012, 0x0000012B,
++    0x00000129, 0x0000012A, 0x000500B0, 0x00000014, 0x0000012C, 0x00000126, 0x0000011B, 0x000300F7,
++    0x0000012D, 0x00000000, 0x000400FA, 0x0000012C, 0x0000012E, 0x0000012D, 0x000200F8, 0x0000012E,
++    0x0004003D, 0x0000003F, 0x0000012F, 0x0000000A, 0x00040063, 0x0000012F, 0x0000012B, 0x00000128,
++    0x000200F9, 0x0000012D, 0x000200F8, 0x0000012D, 0x00050080, 0x0000000E, 0x00000130, 0x00000119,
++    0x00000045, 0x00050051, 0x0000000E, 0x00000131, 0x00000118, 0x00000002, 0x00070050, 0x00000010,
++    0x00000132, 0x00000131, 0x00000043, 0x00000043, 0x00000043, 0x0004007C, 0x00000011, 0x00000133,
++    0x00000130, 0x0004007C, 0x00000011, 0x00000134, 0x0000011A, 0x00050050, 0x00000012, 0x00000135,
++    0x00000133, 0x00000134, 0x000500B0, 0x00000014, 0x00000136, 0x00000130, 0x0000011B, 0x000300F7,
++    0x00000137, 0x00000000, 0x000400FA, 0x00000136, 0x00000138, 0x00000137, 0x000200F8, 0x00000138,
++    0x0004003D, 0x0000003F, 0x00000139, 0x0000000A, 0x00040063, 0x00000139, 0x00000135, 0x00000132,
++    0x000200F9, 0x00000137, 0x000200F8, 0x00000137, 0x00050080, 0x0000000E, 0x0000013A, 0x00000119,
++    0x00000046, 0x00050051, 0x0000000E, 0x0000013B, 0x00000118, 0x00000003, 0x00070050, 0x00000010,
++    0x0000013C, 0x0000013B, 0x00000043, 0x00000043, 0x00000043, 0x0004007C, 0x00000011, 0x0000013D,
++    0x0000013A, 0x0004007C, 0x00000011, 0x0000013E, 0x0000011A, 0x00050050, 0x00000012, 0x0000013F,
++    0x0000013D, 0x0000013E, 0x000500B0, 0x00000014, 0x00000140, 0x0000013A, 0x0000011B, 0x000300F7,
++    0x00000141, 0x00000000, 0x000400FA, 0x00000140, 0x00000142, 0x00000141, 0x000200F8, 0x00000142,
++    0x0004003D, 0x0000003F, 0x00000143, 0x0000000A, 0x00040063, 0x00000143, 0x0000013F, 0x0000013C,
++    0x000200F9, 0x00000141, 0x000200F8, 0x00000141, 0x00050080, 0x0000000E, 0x00000144, 0x0000007F,
++    0x00000025, 0x000500AC, 0x00000014, 0x00000145, 0x000000F5, 0x00000016, 0x000300F7, 0x00000146,
++    0x00000002, 0x000400FA, 0x00000145, 0x00000147, 0x00000148, 0x000200F8, 0x00000147, 0x00050086,
++    0x0000000E, 0x00000149, 0x00000081, 0x000000F5, 0x00050084, 0x0000000E, 0x0000014A, 0x00000149,
++    0x000000F5, 0x00050082, 0x0000000E, 0x0000014B, 0x00000081, 0x0000014A, 0x00050080, 0x0000000E,
++    0x0000014C, 0x0000014B, 0x00000016, 0x000500AA, 0x00000014, 0x0000014D, 0x0000014C, 0x000000F5,
++    0x000300F7, 0x0000014E, 0x00000000, 0x000400FA, 0x0000014D, 0x0000014F, 0x00000150, 0x000200F8,
++    0x0000014F, 0x00050084, 0x0000000E, 0x00000151, 0x00000032, 0x000000F5, 0x000500C4, 0x0000000E,
++    0x00000152, 0x0000014B, 0x0000002F, 0x00050082, 0x0000000E, 0x00000153, 0x00000151, 0x00000152,
++    0x000200F9, 0x0000014E, 0x000200F8, 0x00000150, 0x000200F9, 0x0000014E, 0x000200F8, 0x0000014E,
++    0x000700F5, 0x0000000E, 0x00000154, 0x00000153, 0x0000014F, 0x0000001C, 0x00000150, 0x000200F9,
++    0x00000146, 0x000200F8, 0x00000148, 0x000200F9, 0x00000146, 0x000200F8, 0x00000146, 0x000700F5,
++    0x0000000E, 0x00000155, 0x00000154, 0x0000014E, 0x00000032, 0x00000148, 0x00050084, 0x0000000E,
++    0x00000156, 0x00000155, 0x000000F6, 0x000500C2, 0x0000000E, 0x00000157, 0x00000156, 0x0000002F,
++    0x00050080, 0x0000000E, 0x00000158, 0x00000103, 0x00000157, 0x00060041, 0x0000003D, 0x00000159,
++    0x00000007, 0x00000035, 0x00000158, 0x0004003D, 0x00000010, 0x0000015A, 0x00000159, 0x000300F7,
++    0x0000015B, 0x00000000, 0x000400FA, 0x00000108, 0x0000015C, 0x0000015B, 0x000200F8, 0x0000015C,
++    0x000500C7, 0x00000010, 0x0000015D, 0x0000015A, 0x0000004D, 0x000500C4, 0x00000010, 0x0000015E,
++    0x0000015D, 0x0000004E, 0x000500C7, 0x00000010, 0x0000015F, 0x0000015A, 0x0000004F, 0x000500C2,
++    0x00000010, 0x00000160, 0x0000015F, 0x0000004E, 0x000500C5, 0x00000010, 0x00000161, 0x0000015E,
++    0x00000160, 0x000200F9, 0x0000015B, 0x000200F8, 0x0000015B, 0x000700F5, 0x00000010, 0x00000162,
++    0x0000015A, 0x00000146, 0x00000161, 0x0000015C, 0x000300F7, 0x00000163, 0x00000000, 0x000400FA,
++    0x00000112, 0x00000164, 0x00000163, 0x000200F8, 0x00000164, 0x000500C4, 0x00000010, 0x00000165,
++    0x00000162, 0x00000050, 0x000500C2, 0x00000010, 0x00000166, 0x00000162, 0x00000050, 0x000500C5,
++    0x00000010, 0x00000167, 0x00000165, 0x00000166, 0x000200F9, 0x00000163, 0x000200F8, 0x00000163,
++    0x000700F5, 0x00000010, 0x00000168, 0x00000162, 0x0000015B, 0x00000167, 0x00000164, 0x00050051,
++    0x0000000E, 0x00000169, 0x0000006A, 0x00000000, 0x00050051, 0x0000000E, 0x0000016A, 0x0000006A,
++    0x00000001, 0x00050051, 0x0000000E, 0x0000016B, 0x00000064, 0x00000000, 0x00050080, 0x0000000E,
++    0x0000016C, 0x00000169, 0x00000047, 0x00050051, 0x0000000E, 0x0000016D, 0x00000168, 0x00000000,
++    0x00070050, 0x00000010, 0x0000016E, 0x0000016D, 0x00000043, 0x00000043, 0x00000043, 0x0004007C,
++    0x00000011, 0x0000016F, 0x0000016C, 0x0004007C, 0x00000011, 0x00000170, 0x0000016A, 0x00050050,
++    0x00000012, 0x00000171, 0x0000016F, 0x00000170, 0x000500B0, 0x00000014, 0x00000172, 0x0000016C,
++    0x0000016B, 0x000300F7, 0x00000173, 0x00000000, 0x000400FA, 0x00000172, 0x00000174, 0x00000173,
++    0x000200F8, 0x00000174, 0x0004003D, 0x0000003F, 0x00000175, 0x0000000A, 0x00040063, 0x00000175,
++    0x00000171, 0x0000016E, 0x000200F9, 0x00000173, 0x000200F8, 0x00000173, 0x00050080, 0x0000000E,
++    0x00000176, 0x00000169, 0x00000048, 0x00050051, 0x0000000E, 0x00000177, 0x00000168, 0x00000001,
++    0x00070050, 0x00000010, 0x00000178, 0x00000177, 0x00000043, 0x00000043, 0x00000043, 0x0004007C,
++    0x00000011, 0x00000179, 0x00000176, 0x0004007C, 0x00000011, 0x0000017A, 0x0000016A, 0x00050050,
++    0x00000012, 0x0000017B, 0x00000179, 0x0000017A, 0x000500B0, 0x00000014, 0x0000017C, 0x00000176,
++    0x0000016B, 0x000300F7, 0x0000017D, 0x00000000, 0x000400FA, 0x0000017C, 0x0000017E, 0x0000017D,
++    0x000200F8, 0x0000017E, 0x0004003D, 0x0000003F, 0x0000017F, 0x0000000A, 0x00040063, 0x0000017F,
++    0x0000017B, 0x00000178, 0x000200F9, 0x0000017D, 0x000200F8, 0x0000017D, 0x00050080, 0x0000000E,
++    0x00000180, 0x00000169, 0x00000049, 0x00050051, 0x0000000E, 0x00000181, 0x00000168, 0x00000002,
++    0x00070050, 0x00000010, 0x00000182, 0x00000181, 0x00000043, 0x00000043, 0x00000043, 0x0004007C,
++    0x00000011, 0x00000183, 0x00000180, 0x0004007C, 0x00000011, 0x00000184, 0x0000016A, 0x00050050,
++    0x00000012, 0x00000185, 0x00000183, 0x00000184, 0x000500B0, 0x00000014, 0x00000186, 0x00000180,
++    0x0000016B, 0x000300F7, 0x00000187, 0x00000000, 0x000400FA, 0x00000186, 0x00000188, 0x00000187,
++    0x000200F8, 0x00000188, 0x0004003D, 0x0000003F, 0x00000189, 0x0000000A, 0x00040063, 0x00000189,
++    0x00000185, 0x00000182, 0x000200F9, 0x00000187, 0x000200F8, 0x00000187, 0x00050080, 0x0000000E,
++    0x0000018A, 0x00000169, 0x0000004A, 0x00050051, 0x0000000E, 0x0000018B, 0x00000168, 0x00000003,
++    0x00070050, 0x00000010, 0x0000018C, 0x0000018B, 0x00000043, 0x00000043, 0x00000043, 0x0004007C,
++    0x00000011, 0x0000018D, 0x0000018A, 0x0004007C, 0x00000011, 0x0000018E, 0x0000016A, 0x00050050,
++    0x00000012, 0x0000018F, 0x0000018D, 0x0000018E, 0x000500B0, 0x00000014, 0x00000190, 0x0000018A,
++    0x0000016B, 0x000300F7, 0x00000191, 0x00000000, 0x000400FA, 0x00000190, 0x00000192, 0x00000191,
++    0x000200F8, 0x00000192, 0x0004003D, 0x0000003F, 0x00000193, 0x0000000A, 0x00040063, 0x00000193,
++    0x0000018F, 0x0000018C, 0x000200F9, 0x00000191, 0x000200F8, 0x00000191, 0x000200F9, 0x00000052,
++    0x000200F8, 0x00000052, 0x000100FD, 0x00010038,
++};
+diff --git a/src/graphics/shaders/vulkan_spirv/texture_load_64bpb_scaled_image_cs.h b/src/graphics/shaders/vulkan_spirv/texture_load_64bpb_scaled_image_cs.h
+new file mode 100644
+--- /dev/null
++++ b/src/graphics/shaders/vulkan_spirv/texture_load_64bpb_scaled_image_cs.h
+@@ -0,0 +1,722 @@
++// Generated by tools/spirv_load_to_image.py --bits 64 (KUF port M9) from texture_load_64bpb_scaled_cs.h: the same load,
++// writing the texels into a storage image (set 0, binding 0, Rgba16ui) instead of the staging buffer.
++#if 0
++; SPIR-V
++; Version: 1.0
++; Generator: Khronos SPIR-V Tools Assembler; 0
++; Bound: 381
++; Schema: 0
++               OpCapability Shader
++          %1 = OpExtInstImport "GLSL.std.450"
++               OpMemoryModel Logical GLSL450
++               OpEntryPoint GLCompute %2 "main" %3
++               OpExecutionMode %2 LocalSize 4 32 1
++               OpDecorate %4 Block
++               OpMemberDecorate %4 0 Offset 0
++               OpMemberDecorate %4 1 Offset 4
++               OpMemberDecorate %4 2 Offset 8
++               OpMemberDecorate %4 3 Offset 12
++               OpMemberDecorate %4 4 Offset 16
++               OpMemberDecorate %4 5 Offset 28
++               OpMemberDecorate %4 6 Offset 32
++               OpMemberDecorate %4 7 Offset 36
++               OpDecorate %3 BuiltIn GlobalInvocationId
++               OpDecorate %5 ArrayStride 16
++               OpDecorate %6 BufferBlock
++               OpMemberDecorate %6 0 NonWritable
++               OpMemberDecorate %6 0 Offset 0
++               OpDecorate %7 NonWritable
++               OpDecorate %7 Binding 0
++               OpDecorate %7 DescriptorSet 1
++               OpDecorate %8 ArrayStride 16
++               OpDecorate %9 BufferBlock
++               OpMemberDecorate %9 0 NonReadable
++               OpMemberDecorate %9 0 Offset 0
++               OpDecorate %10 NonReadable
++               OpDecorate %10 Binding 0
++               OpDecorate %10 DescriptorSet 0
++               OpDecorate %11 BuiltIn WorkgroupSize
++         %12 = OpTypeVoid
++         %13 = OpTypeFunction %12
++         %14 = OpTypeInt 32 0
++         %15 = OpTypeVector %14 2
++         %16 = OpTypeVector %14 4
++         %17 = OpTypeInt 32 1
++         %18 = OpTypeVector %17 2
++         %19 = OpTypeVector %17 3
++         %20 = OpTypeBool
++         %21 = OpTypeVector %14 3
++         %22 = OpConstant %14 1
++         %23 = OpConstant %14 2
++         %24 = OpConstant %14 16711935
++         %25 = OpConstant %14 8
++         %26 = OpConstant %14 4278255360
++         %27 = OpConstant %14 3
++         %28 = OpConstant %14 16
++         %29 = OpConstant %14 0
++         %30 = OpConstant %17 5
++         %31 = OpConstant %14 5
++         %32 = OpConstant %14 7
++         %33 = OpConstant %17 7
++         %34 = OpConstant %17 14
++         %35 = OpConstant %17 2
++         %36 = OpConstant %17 -16
++         %37 = OpConstant %17 1
++         %38 = OpConstant %17 15
++         %39 = OpConstant %17 4
++         %40 = OpConstant %17 -512
++         %41 = OpConstant %17 3
++         %42 = OpConstant %17 16
++         %43 = OpConstant %17 448
++         %44 = OpConstant %17 8
++         %45 = OpConstant %17 6
++         %46 = OpConstant %17 63
++         %47 = OpConstant %14 4
++         %48 = OpConstant %17 268435455
++         %49 = OpConstant %17 -2
++         %50 = OpConstant %14 32
++          %4 = OpTypeStruct %14 %14 %14 %14 %21 %14 %14 %14
++         %51 = OpTypePointer PushConstant %4
++         %52 = OpVariable %51 PushConstant
++         %53 = OpConstant %17 0
++         %54 = OpTypePointer PushConstant %14
++         %55 = OpConstantComposite %15 %47 %32
++         %56 = OpTypePointer PushConstant %21
++         %57 = OpTypePointer Input %21
++          %3 = OpVariable %57 Input
++         %58 = OpConstantComposite %21 %23 %29 %29
++         %59 = OpTypeVector %20 2
++          %5 = OpTypeRuntimeArray %16
++          %6 = OpTypeStruct %5
++         %60 = OpTypePointer Uniform %6
++          %7 = OpVariable %60 Uniform
++         %61 = OpTypePointer Uniform %16
++          %8 = OpTypeRuntimeArray %16
++          %9 = OpTypeStruct %8
++         %62 = OpTypePointer Uniform %9
++         %63 = OpTypeImage %14 2D 0 0 0 2 Rgba16ui
++         %64 = OpTypePointer UniformConstant %63
++         %10 = OpVariable %64 UniformConstant
++         %65 = OpConstant %14 65535
++         %66 = OpConstant %14 16
++         %67 = OpConstant %14 0
++         %68 = OpConstant %14 1
++         %69 = OpConstant %14 2
++         %70 = OpConstant %14 3
++         %11 = OpConstantComposite %21 %47 %50 %22
++         %71 = OpConstantComposite %15 %32 %32
++         %72 = OpConstant %14 9
++         %73 = OpConstant %14 10
++         %74 = OpConstantComposite %16 %24 %24 %24 %24
++         %75 = OpConstantComposite %16 %25 %25 %25 %25
++         %76 = OpConstantComposite %16 %26 %26 %26 %26
++         %77 = OpConstantComposite %16 %28 %28 %28 %28
++          %2 = OpFunction %12 None %13
++         %78 = OpLabel
++               OpSelectionMerge %79 None
++               OpSwitch %29 %80
++         %80 = OpLabel
++         %81 = OpAccessChain %54 %52 %53
++         %82 = OpLoad %14 %81
++         %83 = OpBitwiseAnd %14 %82 %23
++         %84 = OpINotEqual %20 %83 %29
++         %85 = OpShiftRightLogical %14 %82 %23
++         %86 = OpBitwiseAnd %14 %85 %27
++         %87 = OpCompositeConstruct %15 %82 %82
++         %88 = OpShiftRightLogical %15 %87 %55
++         %89 = OpBitwiseAnd %15 %88 %71
++         %90 = OpAccessChain %54 %52 %37
++         %91 = OpLoad %14 %90
++         %92 = OpAccessChain %54 %52 %35
++         %93 = OpLoad %14 %92
++         %94 = OpAccessChain %54 %52 %41
++         %95 = OpLoad %14 %94
++         %96 = OpAccessChain %56 %52 %39
++         %97 = OpLoad %21 %96
++         %98 = OpAccessChain %54 %52 %30
++         %99 = OpLoad %14 %98
++        %100 = OpAccessChain %54 %52 %45
++        %101 = OpLoad %14 %100
++        %102 = OpLoad %21 %3
++        %103 = OpShiftLeftLogical %21 %102 %58
++        %104 = OpVectorShuffle %15 %103 %103 0 1
++        %105 = OpVectorShuffle %15 %97 %97 0 1
++        %106 = OpUGreaterThanEqual %59 %104 %105
++        %107 = OpAny %20 %106
++               OpSelectionMerge %108 DontFlatten
++               OpBranchConditional %107 %109 %108
++        %109 = OpLabel
++               OpBranch %79
++        %108 = OpLabel
++        %110 = OpBitcast %19 %103
++        %111 = OpCompositeExtract %14 %97 1
++        %112 = OpCompositeExtract %17 %110 0
++        %113 = OpIMul %17 %112 %44
++        %114 = OpCompositeExtract %17 %110 2
++        %115 = OpBitcast %17 %111
++        %116 = OpIMul %17 %114 %115
++        %117 = OpCompositeExtract %17 %110 1
++        %118 = OpIAdd %17 %116 %117
++        %119 = OpBitcast %17 %101
++        %120 = OpIMul %17 %118 %119
++        %121 = OpIAdd %17 %113 %120
++        %122 = OpBitcast %14 %121
++        %123 = OpIAdd %14 %122 %99
++        %124 = OpShiftRightLogical %14 %123 %47
++        %125 = OpCompositeExtract %14 %103 0
++        %126 = OpShiftRightLogical %14 %125 %22
++        %127 = OpCompositeExtract %14 %103 1
++        %128 = OpCompositeConstruct %15 %126 %127
++        %129 = OpUDiv %15 %128 %89
++        %130 = OpCompositeExtract %14 %129 0
++        %131 = OpShiftLeftLogical %14 %130 %22
++        %132 = OpCompositeExtract %14 %129 1
++        %133 = OpCompositeExtract %14 %103 2
++        %134 = OpCompositeConstruct %21 %131 %132 %133
++               OpSelectionMerge %135 DontFlatten
++               OpBranchConditional %84 %136 %137
++        %136 = OpLabel
++        %138 = OpBitcast %19 %134
++        %139 = OpCompositeExtract %17 %138 1
++        %140 = OpShiftRightArithmetic %17 %139 %39
++        %141 = OpCompositeExtract %17 %138 2
++        %142 = OpShiftRightArithmetic %17 %141 %35
++        %143 = OpShiftRightLogical %14 %95 %47
++        %144 = OpBitcast %17 %143
++        %145 = OpIMul %17 %142 %144
++        %146 = OpIAdd %17 %140 %145
++        %147 = OpShiftRightLogical %14 %93 %31
++        %148 = OpBitcast %17 %147
++        %149 = OpIMul %17 %146 %148
++        %150 = OpCompositeExtract %17 %138 0
++        %151 = OpShiftRightArithmetic %17 %150 %30
++        %152 = OpIAdd %17 %151 %149
++        %153 = OpShiftLeftLogical %17 %152 %72
++        %154 = OpBitwiseAnd %17 %153 %48
++        %155 = OpShiftLeftLogical %17 %154 %37
++        %156 = OpBitwiseAnd %17 %150 %33
++        %157 = OpBitwiseAnd %17 %139 %45
++        %158 = OpShiftLeftLogical %17 %157 %35
++        %159 = OpIAdd %17 %156 %158
++        %160 = OpShiftLeftLogical %17 %159 %72
++        %161 = OpShiftRightArithmetic %17 %160 %45
++        %162 = OpShiftRightArithmetic %17 %139 %41
++        %163 = OpIAdd %17 %162 %142
++        %164 = OpBitwiseAnd %17 %163 %37
++        %165 = OpShiftRightArithmetic %17 %150 %41
++        %166 = OpShiftLeftLogical %17 %164 %37
++        %167 = OpIAdd %17 %165 %166
++        %168 = OpBitwiseAnd %17 %167 %41
++        %169 = OpShiftLeftLogical %17 %168 %37
++        %170 = OpIAdd %17 %164 %169
++        %171 = OpBitwiseAnd %17 %161 %36
++        %172 = OpIAdd %17 %155 %171
++        %173 = OpShiftLeftLogical %17 %172 %37
++        %174 = OpBitwiseAnd %17 %161 %38
++        %175 = OpIAdd %17 %173 %174
++        %176 = OpBitwiseAnd %17 %141 %41
++        %177 = OpShiftLeftLogical %17 %176 %72
++        %178 = OpIAdd %17 %175 %177
++        %179 = OpBitwiseAnd %17 %139 %37
++        %180 = OpShiftLeftLogical %17 %179 %39
++        %181 = OpIAdd %17 %178 %180
++        %182 = OpBitwiseAnd %17 %170 %37
++        %183 = OpShiftLeftLogical %17 %182 %41
++        %184 = OpShiftRightArithmetic %17 %181 %45
++        %185 = OpBitwiseAnd %17 %184 %33
++        %186 = OpIAdd %17 %183 %185
++        %187 = OpShiftLeftLogical %17 %186 %41
++        %188 = OpBitwiseAnd %17 %170 %49
++        %189 = OpIAdd %17 %187 %188
++        %190 = OpShiftLeftLogical %17 %189 %35
++        %191 = OpBitwiseAnd %17 %181 %40
++        %192 = OpIAdd %17 %190 %191
++        %193 = OpShiftLeftLogical %17 %192 %41
++        %194 = OpBitwiseAnd %17 %181 %46
++        %195 = OpIAdd %17 %193 %194
++        %196 = OpBitcast %14 %195
++               OpBranch %135
++        %137 = OpLabel
++        %197 = OpVectorShuffle %15 %134 %134 0 1
++        %198 = OpBitcast %18 %197
++        %199 = OpCompositeExtract %17 %198 0
++        %200 = OpShiftRightArithmetic %17 %199 %30
++        %201 = OpCompositeExtract %17 %198 1
++        %202 = OpShiftRightArithmetic %17 %201 %30
++        %203 = OpShiftRightLogical %14 %93 %31
++        %204 = OpBitcast %17 %203
++        %205 = OpIMul %17 %202 %204
++        %206 = OpIAdd %17 %200 %205
++        %207 = OpShiftLeftLogical %17 %206 %73
++        %208 = OpBitwiseAnd %17 %199 %33
++        %209 = OpBitwiseAnd %17 %201 %34
++        %210 = OpShiftLeftLogical %17 %209 %35
++        %211 = OpIAdd %17 %208 %210
++        %212 = OpShiftLeftLogical %17 %211 %27
++        %213 = OpBitwiseAnd %17 %212 %36
++        %214 = OpShiftLeftLogical %17 %213 %37
++        %215 = OpIAdd %17 %207 %214
++        %216 = OpBitwiseAnd %17 %212 %38
++        %217 = OpIAdd %17 %215 %216
++        %218 = OpBitwiseAnd %17 %201 %37
++        %219 = OpShiftLeftLogical %17 %218 %39
++        %220 = OpIAdd %17 %217 %219
++        %221 = OpBitwiseAnd %17 %220 %40
++        %222 = OpShiftLeftLogical %17 %221 %41
++        %223 = OpBitwiseAnd %17 %201 %42
++        %224 = OpShiftLeftLogical %17 %223 %33
++        %225 = OpIAdd %17 %222 %224
++        %226 = OpBitwiseAnd %17 %220 %43
++        %227 = OpShiftLeftLogical %17 %226 %35
++        %228 = OpIAdd %17 %225 %227
++        %229 = OpBitwiseAnd %17 %201 %44
++        %230 = OpShiftRightArithmetic %17 %229 %35
++        %231 = OpShiftRightArithmetic %17 %199 %41
++        %232 = OpIAdd %17 %230 %231
++        %233 = OpBitwiseAnd %17 %232 %41
++        %234 = OpShiftLeftLogical %17 %233 %45
++        %235 = OpIAdd %17 %228 %234
++        %236 = OpBitwiseAnd %17 %220 %46
++        %237 = OpIAdd %17 %235 %236
++        %238 = OpBitcast %14 %237
++               OpBranch %135
++        %135 = OpLabel
++        %239 = OpPhi %14 %196 %136 %238 %137
++        %240 = OpIMul %15 %129 %89
++        %241 = OpISub %15 %128 %240
++        %242 = OpCompositeExtract %14 %89 0
++        %243 = OpCompositeExtract %14 %89 1
++        %244 = OpIMul %14 %242 %243
++        %245 = OpIMul %14 %239 %244
++        %246 = OpCompositeExtract %14 %241 0
++        %247 = OpIMul %14 %246 %243
++        %248 = OpCompositeExtract %14 %241 1
++        %249 = OpIAdd %14 %247 %248
++        %250 = OpShiftLeftLogical %14 %249 %22
++        %251 = OpBitwiseAnd %14 %125 %22
++        %252 = OpIAdd %14 %250 %251
++        %253 = OpShiftLeftLogical %14 %252 %27
++        %254 = OpIAdd %14 %245 %253
++        %255 = OpIAdd %14 %91 %254
++        %256 = OpShiftRightLogical %14 %255 %47
++        %257 = OpAccessChain %61 %7 %53 %256
++        %258 = OpLoad %16 %257
++        %259 = OpIEqual %20 %86 %22
++        %260 = OpIEqual %20 %86 %23
++        %261 = OpLogicalOr %20 %259 %260
++               OpSelectionMerge %262 None
++               OpBranchConditional %261 %263 %262
++        %263 = OpLabel
++        %264 = OpBitwiseAnd %16 %258 %74
++        %265 = OpShiftLeftLogical %16 %264 %75
++        %266 = OpBitwiseAnd %16 %258 %76
++        %267 = OpShiftRightLogical %16 %266 %75
++        %268 = OpBitwiseOr %16 %265 %267
++               OpBranch %262
++        %262 = OpLabel
++        %269 = OpPhi %16 %258 %135 %268 %263
++        %270 = OpIEqual %20 %86 %27
++        %271 = OpLogicalOr %20 %260 %270
++               OpSelectionMerge %272 None
++               OpBranchConditional %271 %273 %272
++        %273 = OpLabel
++        %274 = OpShiftLeftLogical %16 %269 %77
++        %275 = OpShiftRightLogical %16 %269 %77
++        %276 = OpBitwiseOr %16 %274 %275
++               OpBranch %272
++        %272 = OpLabel
++        %277 = OpPhi %16 %269 %262 %276 %273
++        %278 = OpCompositeExtract %14 %103 0
++        %279 = OpCompositeExtract %14 %103 1
++        %280 = OpCompositeExtract %14 %97 0
++        %281 = OpIAdd %14 %278 %67
++        %282 = OpCompositeExtract %14 %277 0
++        %283 = OpCompositeExtract %14 %277 1
++        %284 = OpBitwiseAnd %14 %282 %65
++        %285 = OpShiftRightLogical %14 %282 %66
++        %286 = OpBitwiseAnd %14 %283 %65
++        %287 = OpShiftRightLogical %14 %283 %66
++        %288 = OpCompositeConstruct %16 %284 %285 %286 %287
++        %289 = OpBitcast %17 %281
++        %290 = OpBitcast %17 %279
++        %291 = OpCompositeConstruct %18 %289 %290
++        %292 = OpULessThan %20 %281 %280
++               OpSelectionMerge %293 None
++               OpBranchConditional %292 %294 %293
++        %294 = OpLabel
++        %295 = OpLoad %63 %10
++               OpImageWrite %295 %291 %288
++               OpBranch %293
++        %293 = OpLabel
++        %296 = OpIAdd %14 %278 %68
++        %297 = OpCompositeExtract %14 %277 2
++        %298 = OpCompositeExtract %14 %277 3
++        %299 = OpBitwiseAnd %14 %297 %65
++        %300 = OpShiftRightLogical %14 %297 %66
++        %301 = OpBitwiseAnd %14 %298 %65
++        %302 = OpShiftRightLogical %14 %298 %66
++        %303 = OpCompositeConstruct %16 %299 %300 %301 %302
++        %304 = OpBitcast %17 %296
++        %305 = OpBitcast %17 %279
++        %306 = OpCompositeConstruct %18 %304 %305
++        %307 = OpULessThan %20 %296 %280
++               OpSelectionMerge %308 None
++               OpBranchConditional %307 %309 %308
++        %309 = OpLabel
++        %310 = OpLoad %63 %10
++               OpImageWrite %310 %306 %303
++               OpBranch %308
++        %308 = OpLabel
++        %311 = OpIAdd %14 %124 %37
++        %312 = OpUGreaterThan %20 %242 %22
++               OpSelectionMerge %313 DontFlatten
++               OpBranchConditional %312 %314 %315
++        %314 = OpLabel
++        %316 = OpUDiv %14 %126 %242
++        %317 = OpIMul %14 %316 %242
++        %318 = OpISub %14 %126 %317
++        %319 = OpIAdd %14 %318 %22
++        %320 = OpIEqual %20 %319 %242
++               OpSelectionMerge %321 None
++               OpBranchConditional %320 %322 %323
++        %322 = OpLabel
++        %324 = OpIMul %14 %50 %242
++        %325 = OpShiftLeftLogical %14 %318 %47
++        %326 = OpISub %14 %324 %325
++               OpBranch %321
++        %323 = OpLabel
++               OpBranch %321
++        %321 = OpLabel
++        %327 = OpPhi %14 %326 %322 %28 %323
++               OpBranch %313
++        %315 = OpLabel
++               OpBranch %313
++        %313 = OpLabel
++        %328 = OpPhi %14 %327 %321 %50 %315
++        %329 = OpIMul %14 %328 %243
++        %330 = OpShiftRightLogical %14 %329 %47
++        %331 = OpIAdd %14 %256 %330
++        %332 = OpAccessChain %61 %7 %53 %331
++        %333 = OpLoad %16 %332
++               OpSelectionMerge %334 None
++               OpBranchConditional %261 %335 %334
++        %335 = OpLabel
++        %336 = OpBitwiseAnd %16 %333 %74
++        %337 = OpShiftLeftLogical %16 %336 %75
++        %338 = OpBitwiseAnd %16 %333 %76
++        %339 = OpShiftRightLogical %16 %338 %75
++        %340 = OpBitwiseOr %16 %337 %339
++               OpBranch %334
++        %334 = OpLabel
++        %341 = OpPhi %16 %333 %313 %340 %335
++               OpSelectionMerge %342 None
++               OpBranchConditional %271 %343 %342
++        %343 = OpLabel
++        %344 = OpShiftLeftLogical %16 %341 %77
++        %345 = OpShiftRightLogical %16 %341 %77
++        %346 = OpBitwiseOr %16 %344 %345
++               OpBranch %342
++        %342 = OpLabel
++        %347 = OpPhi %16 %341 %334 %346 %343
++        %348 = OpCompositeExtract %14 %103 0
++        %349 = OpCompositeExtract %14 %103 1
++        %350 = OpCompositeExtract %14 %97 0
++        %351 = OpIAdd %14 %348 %69
++        %352 = OpCompositeExtract %14 %347 0
++        %353 = OpCompositeExtract %14 %347 1
++        %354 = OpBitwiseAnd %14 %352 %65
++        %355 = OpShiftRightLogical %14 %352 %66
++        %356 = OpBitwiseAnd %14 %353 %65
++        %357 = OpShiftRightLogical %14 %353 %66
++        %358 = OpCompositeConstruct %16 %354 %355 %356 %357
++        %359 = OpBitcast %17 %351
++        %360 = OpBitcast %17 %349
++        %361 = OpCompositeConstruct %18 %359 %360
++        %362 = OpULessThan %20 %351 %350
++               OpSelectionMerge %363 None
++               OpBranchConditional %362 %364 %363
++        %364 = OpLabel
++        %365 = OpLoad %63 %10
++               OpImageWrite %365 %361 %358
++               OpBranch %363
++        %363 = OpLabel
++        %366 = OpIAdd %14 %348 %70
++        %367 = OpCompositeExtract %14 %347 2
++        %368 = OpCompositeExtract %14 %347 3
++        %369 = OpBitwiseAnd %14 %367 %65
++        %370 = OpShiftRightLogical %14 %367 %66
++        %371 = OpBitwiseAnd %14 %368 %65
++        %372 = OpShiftRightLogical %14 %368 %66
++        %373 = OpCompositeConstruct %16 %369 %370 %371 %372
++        %374 = OpBitcast %17 %366
++        %375 = OpBitcast %17 %349
++        %376 = OpCompositeConstruct %18 %374 %375
++        %377 = OpULessThan %20 %366 %350
++               OpSelectionMerge %378 None
++               OpBranchConditional %377 %379 %378
++        %379 = OpLabel
++        %380 = OpLoad %63 %10
++               OpImageWrite %380 %376 %373
++               OpBranch %378
++        %378 = OpLabel
++               OpBranch %79
++         %79 = OpLabel
++               OpReturn
++               OpFunctionEnd
++#endif
++
++const uint32_t texture_load_64bpb_scaled_image_cs[] = {
++    0x07230203, 0x00010000, 0x00070000, 0x0000017D, 0x00000000, 0x00020011, 0x00000001, 0x0006000B,
++    0x00000001, 0x4C534C47, 0x6474732E, 0x3035342E, 0x00000000, 0x0003000E, 0x00000000, 0x00000001,
++    0x0006000F, 0x00000005, 0x00000002, 0x6E69616D, 0x00000000, 0x00000003, 0x00060010, 0x00000002,
++    0x00000011, 0x00000004, 0x00000020, 0x00000001, 0x00030047, 0x00000004, 0x00000002, 0x00050048,
++    0x00000004, 0x00000000, 0x00000023, 0x00000000, 0x00050048, 0x00000004, 0x00000001, 0x00000023,
++    0x00000004, 0x00050048, 0x00000004, 0x00000002, 0x00000023, 0x00000008, 0x00050048, 0x00000004,
++    0x00000003, 0x00000023, 0x0000000C, 0x00050048, 0x00000004, 0x00000004, 0x00000023, 0x00000010,
++    0x00050048, 0x00000004, 0x00000005, 0x00000023, 0x0000001C, 0x00050048, 0x00000004, 0x00000006,
++    0x00000023, 0x00000020, 0x00050048, 0x00000004, 0x00000007, 0x00000023, 0x00000024, 0x00040047,
++    0x00000003, 0x0000000B, 0x0000001C, 0x00040047, 0x00000005, 0x00000006, 0x00000010, 0x00030047,
++    0x00000006, 0x00000003, 0x00040048, 0x00000006, 0x00000000, 0x00000018, 0x00050048, 0x00000006,
++    0x00000000, 0x00000023, 0x00000000, 0x00030047, 0x00000007, 0x00000018, 0x00040047, 0x00000007,
++    0x00000021, 0x00000000, 0x00040047, 0x00000007, 0x00000022, 0x00000001, 0x00040047, 0x00000008,
++    0x00000006, 0x00000010, 0x00030047, 0x00000009, 0x00000003, 0x00040048, 0x00000009, 0x00000000,
++    0x00000019, 0x00050048, 0x00000009, 0x00000000, 0x00000023, 0x00000000, 0x00030047, 0x0000000A,
++    0x00000019, 0x00040047, 0x0000000A, 0x00000021, 0x00000000, 0x00040047, 0x0000000A, 0x00000022,
++    0x00000000, 0x00040047, 0x0000000B, 0x0000000B, 0x00000019, 0x00020013, 0x0000000C, 0x00030021,
++    0x0000000D, 0x0000000C, 0x00040015, 0x0000000E, 0x00000020, 0x00000000, 0x00040017, 0x0000000F,
++    0x0000000E, 0x00000002, 0x00040017, 0x00000010, 0x0000000E, 0x00000004, 0x00040015, 0x00000011,
++    0x00000020, 0x00000001, 0x00040017, 0x00000012, 0x00000011, 0x00000002, 0x00040017, 0x00000013,
++    0x00000011, 0x00000003, 0x00020014, 0x00000014, 0x00040017, 0x00000015, 0x0000000E, 0x00000003,
++    0x0004002B, 0x0000000E, 0x00000016, 0x00000001, 0x0004002B, 0x0000000E, 0x00000017, 0x00000002,
++    0x0004002B, 0x0000000E, 0x00000018, 0x00FF00FF, 0x0004002B, 0x0000000E, 0x00000019, 0x00000008,
++    0x0004002B, 0x0000000E, 0x0000001A, 0xFF00FF00, 0x0004002B, 0x0000000E, 0x0000001B, 0x00000003,
++    0x0004002B, 0x0000000E, 0x0000001C, 0x00000010, 0x0004002B, 0x0000000E, 0x0000001D, 0x00000000,
++    0x0004002B, 0x00000011, 0x0000001E, 0x00000005, 0x0004002B, 0x0000000E, 0x0000001F, 0x00000005,
++    0x0004002B, 0x0000000E, 0x00000020, 0x00000007, 0x0004002B, 0x00000011, 0x00000021, 0x00000007,
++    0x0004002B, 0x00000011, 0x00000022, 0x0000000E, 0x0004002B, 0x00000011, 0x00000023, 0x00000002,
++    0x0004002B, 0x00000011, 0x00000024, 0xFFFFFFF0, 0x0004002B, 0x00000011, 0x00000025, 0x00000001,
++    0x0004002B, 0x00000011, 0x00000026, 0x0000000F, 0x0004002B, 0x00000011, 0x00000027, 0x00000004,
++    0x0004002B, 0x00000011, 0x00000028, 0xFFFFFE00, 0x0004002B, 0x00000011, 0x00000029, 0x00000003,
++    0x0004002B, 0x00000011, 0x0000002A, 0x00000010, 0x0004002B, 0x00000011, 0x0000002B, 0x000001C0,
++    0x0004002B, 0x00000011, 0x0000002C, 0x00000008, 0x0004002B, 0x00000011, 0x0000002D, 0x00000006,
++    0x0004002B, 0x00000011, 0x0000002E, 0x0000003F, 0x0004002B, 0x0000000E, 0x0000002F, 0x00000004,
++    0x0004002B, 0x00000011, 0x00000030, 0x0FFFFFFF, 0x0004002B, 0x00000011, 0x00000031, 0xFFFFFFFE,
++    0x0004002B, 0x0000000E, 0x00000032, 0x00000020, 0x000A001E, 0x00000004, 0x0000000E, 0x0000000E,
++    0x0000000E, 0x0000000E, 0x00000015, 0x0000000E, 0x0000000E, 0x0000000E, 0x00040020, 0x00000033,
++    0x00000009, 0x00000004, 0x0004003B, 0x00000033, 0x00000034, 0x00000009, 0x0004002B, 0x00000011,
++    0x00000035, 0x00000000, 0x00040020, 0x00000036, 0x00000009, 0x0000000E, 0x0005002C, 0x0000000F,
++    0x00000037, 0x0000002F, 0x00000020, 0x00040020, 0x00000038, 0x00000009, 0x00000015, 0x00040020,
++    0x00000039, 0x00000001, 0x00000015, 0x0004003B, 0x00000039, 0x00000003, 0x00000001, 0x0006002C,
++    0x00000015, 0x0000003A, 0x00000017, 0x0000001D, 0x0000001D, 0x00040017, 0x0000003B, 0x00000014,
++    0x00000002, 0x0003001D, 0x00000005, 0x00000010, 0x0003001E, 0x00000006, 0x00000005, 0x00040020,
++    0x0000003C, 0x00000002, 0x00000006, 0x0004003B, 0x0000003C, 0x00000007, 0x00000002, 0x00040020,
++    0x0000003D, 0x00000002, 0x00000010, 0x0003001D, 0x00000008, 0x00000010, 0x0003001E, 0x00000009,
++    0x00000008, 0x00040020, 0x0000003E, 0x00000002, 0x00000009, 0x00090019, 0x0000003F, 0x0000000E,
++    0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000002, 0x0000001F, 0x00040020, 0x00000040,
++    0x00000000, 0x0000003F, 0x0004003B, 0x00000040, 0x0000000A, 0x00000000, 0x0004002B, 0x0000000E,
++    0x00000041, 0x0000FFFF, 0x0004002B, 0x0000000E, 0x00000042, 0x00000010, 0x0004002B, 0x0000000E,
++    0x00000043, 0x00000000, 0x0004002B, 0x0000000E, 0x00000044, 0x00000001, 0x0004002B, 0x0000000E,
++    0x00000045, 0x00000002, 0x0004002B, 0x0000000E, 0x00000046, 0x00000003, 0x0006002C, 0x00000015,
++    0x0000000B, 0x0000002F, 0x00000032, 0x00000016, 0x0005002C, 0x0000000F, 0x00000047, 0x00000020,
++    0x00000020, 0x0004002B, 0x0000000E, 0x00000048, 0x00000009, 0x0004002B, 0x0000000E, 0x00000049,
++    0x0000000A, 0x0007002C, 0x00000010, 0x0000004A, 0x00000018, 0x00000018, 0x00000018, 0x00000018,
++    0x0007002C, 0x00000010, 0x0000004B, 0x00000019, 0x00000019, 0x00000019, 0x00000019, 0x0007002C,
++    0x00000010, 0x0000004C, 0x0000001A, 0x0000001A, 0x0000001A, 0x0000001A, 0x0007002C, 0x00000010,
++    0x0000004D, 0x0000001C, 0x0000001C, 0x0000001C, 0x0000001C, 0x00050036, 0x0000000C, 0x00000002,
++    0x00000000, 0x0000000D, 0x000200F8, 0x0000004E, 0x000300F7, 0x0000004F, 0x00000000, 0x000300FB,
++    0x0000001D, 0x00000050, 0x000200F8, 0x00000050, 0x00050041, 0x00000036, 0x00000051, 0x00000034,
++    0x00000035, 0x0004003D, 0x0000000E, 0x00000052, 0x00000051, 0x000500C7, 0x0000000E, 0x00000053,
++    0x00000052, 0x00000017, 0x000500AB, 0x00000014, 0x00000054, 0x00000053, 0x0000001D, 0x000500C2,
++    0x0000000E, 0x00000055, 0x00000052, 0x00000017, 0x000500C7, 0x0000000E, 0x00000056, 0x00000055,
++    0x0000001B, 0x00050050, 0x0000000F, 0x00000057, 0x00000052, 0x00000052, 0x000500C2, 0x0000000F,
++    0x00000058, 0x00000057, 0x00000037, 0x000500C7, 0x0000000F, 0x00000059, 0x00000058, 0x00000047,
++    0x00050041, 0x00000036, 0x0000005A, 0x00000034, 0x00000025, 0x0004003D, 0x0000000E, 0x0000005B,
++    0x0000005A, 0x00050041, 0x00000036, 0x0000005C, 0x00000034, 0x00000023, 0x0004003D, 0x0000000E,
++    0x0000005D, 0x0000005C, 0x00050041, 0x00000036, 0x0000005E, 0x00000034, 0x00000029, 0x0004003D,
++    0x0000000E, 0x0000005F, 0x0000005E, 0x00050041, 0x00000038, 0x00000060, 0x00000034, 0x00000027,
++    0x0004003D, 0x00000015, 0x00000061, 0x00000060, 0x00050041, 0x00000036, 0x00000062, 0x00000034,
++    0x0000001E, 0x0004003D, 0x0000000E, 0x00000063, 0x00000062, 0x00050041, 0x00000036, 0x00000064,
++    0x00000034, 0x0000002D, 0x0004003D, 0x0000000E, 0x00000065, 0x00000064, 0x0004003D, 0x00000015,
++    0x00000066, 0x00000003, 0x000500C4, 0x00000015, 0x00000067, 0x00000066, 0x0000003A, 0x0007004F,
++    0x0000000F, 0x00000068, 0x00000067, 0x00000067, 0x00000000, 0x00000001, 0x0007004F, 0x0000000F,
++    0x00000069, 0x00000061, 0x00000061, 0x00000000, 0x00000001, 0x000500AE, 0x0000003B, 0x0000006A,
++    0x00000068, 0x00000069, 0x0004009A, 0x00000014, 0x0000006B, 0x0000006A, 0x000300F7, 0x0000006C,
++    0x00000002, 0x000400FA, 0x0000006B, 0x0000006D, 0x0000006C, 0x000200F8, 0x0000006D, 0x000200F9,
++    0x0000004F, 0x000200F8, 0x0000006C, 0x0004007C, 0x00000013, 0x0000006E, 0x00000067, 0x00050051,
++    0x0000000E, 0x0000006F, 0x00000061, 0x00000001, 0x00050051, 0x00000011, 0x00000070, 0x0000006E,
++    0x00000000, 0x00050084, 0x00000011, 0x00000071, 0x00000070, 0x0000002C, 0x00050051, 0x00000011,
++    0x00000072, 0x0000006E, 0x00000002, 0x0004007C, 0x00000011, 0x00000073, 0x0000006F, 0x00050084,
++    0x00000011, 0x00000074, 0x00000072, 0x00000073, 0x00050051, 0x00000011, 0x00000075, 0x0000006E,
++    0x00000001, 0x00050080, 0x00000011, 0x00000076, 0x00000074, 0x00000075, 0x0004007C, 0x00000011,
++    0x00000077, 0x00000065, 0x00050084, 0x00000011, 0x00000078, 0x00000076, 0x00000077, 0x00050080,
++    0x00000011, 0x00000079, 0x00000071, 0x00000078, 0x0004007C, 0x0000000E, 0x0000007A, 0x00000079,
++    0x00050080, 0x0000000E, 0x0000007B, 0x0000007A, 0x00000063, 0x000500C2, 0x0000000E, 0x0000007C,
++    0x0000007B, 0x0000002F, 0x00050051, 0x0000000E, 0x0000007D, 0x00000067, 0x00000000, 0x000500C2,
++    0x0000000E, 0x0000007E, 0x0000007D, 0x00000016, 0x00050051, 0x0000000E, 0x0000007F, 0x00000067,
++    0x00000001, 0x00050050, 0x0000000F, 0x00000080, 0x0000007E, 0x0000007F, 0x00050086, 0x0000000F,
++    0x00000081, 0x00000080, 0x00000059, 0x00050051, 0x0000000E, 0x00000082, 0x00000081, 0x00000000,
++    0x000500C4, 0x0000000E, 0x00000083, 0x00000082, 0x00000016, 0x00050051, 0x0000000E, 0x00000084,
++    0x00000081, 0x00000001, 0x00050051, 0x0000000E, 0x00000085, 0x00000067, 0x00000002, 0x00060050,
++    0x00000015, 0x00000086, 0x00000083, 0x00000084, 0x00000085, 0x000300F7, 0x00000087, 0x00000002,
++    0x000400FA, 0x00000054, 0x00000088, 0x00000089, 0x000200F8, 0x00000088, 0x0004007C, 0x00000013,
++    0x0000008A, 0x00000086, 0x00050051, 0x00000011, 0x0000008B, 0x0000008A, 0x00000001, 0x000500C3,
++    0x00000011, 0x0000008C, 0x0000008B, 0x00000027, 0x00050051, 0x00000011, 0x0000008D, 0x0000008A,
++    0x00000002, 0x000500C3, 0x00000011, 0x0000008E, 0x0000008D, 0x00000023, 0x000500C2, 0x0000000E,
++    0x0000008F, 0x0000005F, 0x0000002F, 0x0004007C, 0x00000011, 0x00000090, 0x0000008F, 0x00050084,
++    0x00000011, 0x00000091, 0x0000008E, 0x00000090, 0x00050080, 0x00000011, 0x00000092, 0x0000008C,
++    0x00000091, 0x000500C2, 0x0000000E, 0x00000093, 0x0000005D, 0x0000001F, 0x0004007C, 0x00000011,
++    0x00000094, 0x00000093, 0x00050084, 0x00000011, 0x00000095, 0x00000092, 0x00000094, 0x00050051,
++    0x00000011, 0x00000096, 0x0000008A, 0x00000000, 0x000500C3, 0x00000011, 0x00000097, 0x00000096,
++    0x0000001E, 0x00050080, 0x00000011, 0x00000098, 0x00000097, 0x00000095, 0x000500C4, 0x00000011,
++    0x00000099, 0x00000098, 0x00000048, 0x000500C7, 0x00000011, 0x0000009A, 0x00000099, 0x00000030,
++    0x000500C4, 0x00000011, 0x0000009B, 0x0000009A, 0x00000025, 0x000500C7, 0x00000011, 0x0000009C,
++    0x00000096, 0x00000021, 0x000500C7, 0x00000011, 0x0000009D, 0x0000008B, 0x0000002D, 0x000500C4,
++    0x00000011, 0x0000009E, 0x0000009D, 0x00000023, 0x00050080, 0x00000011, 0x0000009F, 0x0000009C,
++    0x0000009E, 0x000500C4, 0x00000011, 0x000000A0, 0x0000009F, 0x00000048, 0x000500C3, 0x00000011,
++    0x000000A1, 0x000000A0, 0x0000002D, 0x000500C3, 0x00000011, 0x000000A2, 0x0000008B, 0x00000029,
++    0x00050080, 0x00000011, 0x000000A3, 0x000000A2, 0x0000008E, 0x000500C7, 0x00000011, 0x000000A4,
++    0x000000A3, 0x00000025, 0x000500C3, 0x00000011, 0x000000A5, 0x00000096, 0x00000029, 0x000500C4,
++    0x00000011, 0x000000A6, 0x000000A4, 0x00000025, 0x00050080, 0x00000011, 0x000000A7, 0x000000A5,
++    0x000000A6, 0x000500C7, 0x00000011, 0x000000A8, 0x000000A7, 0x00000029, 0x000500C4, 0x00000011,
++    0x000000A9, 0x000000A8, 0x00000025, 0x00050080, 0x00000011, 0x000000AA, 0x000000A4, 0x000000A9,
++    0x000500C7, 0x00000011, 0x000000AB, 0x000000A1, 0x00000024, 0x00050080, 0x00000011, 0x000000AC,
++    0x0000009B, 0x000000AB, 0x000500C4, 0x00000011, 0x000000AD, 0x000000AC, 0x00000025, 0x000500C7,
++    0x00000011, 0x000000AE, 0x000000A1, 0x00000026, 0x00050080, 0x00000011, 0x000000AF, 0x000000AD,
++    0x000000AE, 0x000500C7, 0x00000011, 0x000000B0, 0x0000008D, 0x00000029, 0x000500C4, 0x00000011,
++    0x000000B1, 0x000000B0, 0x00000048, 0x00050080, 0x00000011, 0x000000B2, 0x000000AF, 0x000000B1,
++    0x000500C7, 0x00000011, 0x000000B3, 0x0000008B, 0x00000025, 0x000500C4, 0x00000011, 0x000000B4,
++    0x000000B3, 0x00000027, 0x00050080, 0x00000011, 0x000000B5, 0x000000B2, 0x000000B4, 0x000500C7,
++    0x00000011, 0x000000B6, 0x000000AA, 0x00000025, 0x000500C4, 0x00000011, 0x000000B7, 0x000000B6,
++    0x00000029, 0x000500C3, 0x00000011, 0x000000B8, 0x000000B5, 0x0000002D, 0x000500C7, 0x00000011,
++    0x000000B9, 0x000000B8, 0x00000021, 0x00050080, 0x00000011, 0x000000BA, 0x000000B7, 0x000000B9,
++    0x000500C4, 0x00000011, 0x000000BB, 0x000000BA, 0x00000029, 0x000500C7, 0x00000011, 0x000000BC,
++    0x000000AA, 0x00000031, 0x00050080, 0x00000011, 0x000000BD, 0x000000BB, 0x000000BC, 0x000500C4,
++    0x00000011, 0x000000BE, 0x000000BD, 0x00000023, 0x000500C7, 0x00000011, 0x000000BF, 0x000000B5,
++    0x00000028, 0x00050080, 0x00000011, 0x000000C0, 0x000000BE, 0x000000BF, 0x000500C4, 0x00000011,
++    0x000000C1, 0x000000C0, 0x00000029, 0x000500C7, 0x00000011, 0x000000C2, 0x000000B5, 0x0000002E,
++    0x00050080, 0x00000011, 0x000000C3, 0x000000C1, 0x000000C2, 0x0004007C, 0x0000000E, 0x000000C4,
++    0x000000C3, 0x000200F9, 0x00000087, 0x000200F8, 0x00000089, 0x0007004F, 0x0000000F, 0x000000C5,
++    0x00000086, 0x00000086, 0x00000000, 0x00000001, 0x0004007C, 0x00000012, 0x000000C6, 0x000000C5,
++    0x00050051, 0x00000011, 0x000000C7, 0x000000C6, 0x00000000, 0x000500C3, 0x00000011, 0x000000C8,
++    0x000000C7, 0x0000001E, 0x00050051, 0x00000011, 0x000000C9, 0x000000C6, 0x00000001, 0x000500C3,
++    0x00000011, 0x000000CA, 0x000000C9, 0x0000001E, 0x000500C2, 0x0000000E, 0x000000CB, 0x0000005D,
++    0x0000001F, 0x0004007C, 0x00000011, 0x000000CC, 0x000000CB, 0x00050084, 0x00000011, 0x000000CD,
++    0x000000CA, 0x000000CC, 0x00050080, 0x00000011, 0x000000CE, 0x000000C8, 0x000000CD, 0x000500C4,
++    0x00000011, 0x000000CF, 0x000000CE, 0x00000049, 0x000500C7, 0x00000011, 0x000000D0, 0x000000C7,
++    0x00000021, 0x000500C7, 0x00000011, 0x000000D1, 0x000000C9, 0x00000022, 0x000500C4, 0x00000011,
++    0x000000D2, 0x000000D1, 0x00000023, 0x00050080, 0x00000011, 0x000000D3, 0x000000D0, 0x000000D2,
++    0x000500C4, 0x00000011, 0x000000D4, 0x000000D3, 0x0000001B, 0x000500C7, 0x00000011, 0x000000D5,
++    0x000000D4, 0x00000024, 0x000500C4, 0x00000011, 0x000000D6, 0x000000D5, 0x00000025, 0x00050080,
++    0x00000011, 0x000000D7, 0x000000CF, 0x000000D6, 0x000500C7, 0x00000011, 0x000000D8, 0x000000D4,
++    0x00000026, 0x00050080, 0x00000011, 0x000000D9, 0x000000D7, 0x000000D8, 0x000500C7, 0x00000011,
++    0x000000DA, 0x000000C9, 0x00000025, 0x000500C4, 0x00000011, 0x000000DB, 0x000000DA, 0x00000027,
++    0x00050080, 0x00000011, 0x000000DC, 0x000000D9, 0x000000DB, 0x000500C7, 0x00000011, 0x000000DD,
++    0x000000DC, 0x00000028, 0x000500C4, 0x00000011, 0x000000DE, 0x000000DD, 0x00000029, 0x000500C7,
++    0x00000011, 0x000000DF, 0x000000C9, 0x0000002A, 0x000500C4, 0x00000011, 0x000000E0, 0x000000DF,
++    0x00000021, 0x00050080, 0x00000011, 0x000000E1, 0x000000DE, 0x000000E0, 0x000500C7, 0x00000011,
++    0x000000E2, 0x000000DC, 0x0000002B, 0x000500C4, 0x00000011, 0x000000E3, 0x000000E2, 0x00000023,
++    0x00050080, 0x00000011, 0x000000E4, 0x000000E1, 0x000000E3, 0x000500C7, 0x00000011, 0x000000E5,
++    0x000000C9, 0x0000002C, 0x000500C3, 0x00000011, 0x000000E6, 0x000000E5, 0x00000023, 0x000500C3,
++    0x00000011, 0x000000E7, 0x000000C7, 0x00000029, 0x00050080, 0x00000011, 0x000000E8, 0x000000E6,
++    0x000000E7, 0x000500C7, 0x00000011, 0x000000E9, 0x000000E8, 0x00000029, 0x000500C4, 0x00000011,
++    0x000000EA, 0x000000E9, 0x0000002D, 0x00050080, 0x00000011, 0x000000EB, 0x000000E4, 0x000000EA,
++    0x000500C7, 0x00000011, 0x000000EC, 0x000000DC, 0x0000002E, 0x00050080, 0x00000011, 0x000000ED,
++    0x000000EB, 0x000000EC, 0x0004007C, 0x0000000E, 0x000000EE, 0x000000ED, 0x000200F9, 0x00000087,
++    0x000200F8, 0x00000087, 0x000700F5, 0x0000000E, 0x000000EF, 0x000000C4, 0x00000088, 0x000000EE,
++    0x00000089, 0x00050084, 0x0000000F, 0x000000F0, 0x00000081, 0x00000059, 0x00050082, 0x0000000F,
++    0x000000F1, 0x00000080, 0x000000F0, 0x00050051, 0x0000000E, 0x000000F2, 0x00000059, 0x00000000,
++    0x00050051, 0x0000000E, 0x000000F3, 0x00000059, 0x00000001, 0x00050084, 0x0000000E, 0x000000F4,
++    0x000000F2, 0x000000F3, 0x00050084, 0x0000000E, 0x000000F5, 0x000000EF, 0x000000F4, 0x00050051,
++    0x0000000E, 0x000000F6, 0x000000F1, 0x00000000, 0x00050084, 0x0000000E, 0x000000F7, 0x000000F6,
++    0x000000F3, 0x00050051, 0x0000000E, 0x000000F8, 0x000000F1, 0x00000001, 0x00050080, 0x0000000E,
++    0x000000F9, 0x000000F7, 0x000000F8, 0x000500C4, 0x0000000E, 0x000000FA, 0x000000F9, 0x00000016,
++    0x000500C7, 0x0000000E, 0x000000FB, 0x0000007D, 0x00000016, 0x00050080, 0x0000000E, 0x000000FC,
++    0x000000FA, 0x000000FB, 0x000500C4, 0x0000000E, 0x000000FD, 0x000000FC, 0x0000001B, 0x00050080,
++    0x0000000E, 0x000000FE, 0x000000F5, 0x000000FD, 0x00050080, 0x0000000E, 0x000000FF, 0x0000005B,
++    0x000000FE, 0x000500C2, 0x0000000E, 0x00000100, 0x000000FF, 0x0000002F, 0x00060041, 0x0000003D,
++    0x00000101, 0x00000007, 0x00000035, 0x00000100, 0x0004003D, 0x00000010, 0x00000102, 0x00000101,
++    0x000500AA, 0x00000014, 0x00000103, 0x00000056, 0x00000016, 0x000500AA, 0x00000014, 0x00000104,
++    0x00000056, 0x00000017, 0x000500A6, 0x00000014, 0x00000105, 0x00000103, 0x00000104, 0x000300F7,
++    0x00000106, 0x00000000, 0x000400FA, 0x00000105, 0x00000107, 0x00000106, 0x000200F8, 0x00000107,
++    0x000500C7, 0x00000010, 0x00000108, 0x00000102, 0x0000004A, 0x000500C4, 0x00000010, 0x00000109,
++    0x00000108, 0x0000004B, 0x000500C7, 0x00000010, 0x0000010A, 0x00000102, 0x0000004C, 0x000500C2,
++    0x00000010, 0x0000010B, 0x0000010A, 0x0000004B, 0x000500C5, 0x00000010, 0x0000010C, 0x00000109,
++    0x0000010B, 0x000200F9, 0x00000106, 0x000200F8, 0x00000106, 0x000700F5, 0x00000010, 0x0000010D,
++    0x00000102, 0x00000087, 0x0000010C, 0x00000107, 0x000500AA, 0x00000014, 0x0000010E, 0x00000056,
++    0x0000001B, 0x000500A6, 0x00000014, 0x0000010F, 0x00000104, 0x0000010E, 0x000300F7, 0x00000110,
++    0x00000000, 0x000400FA, 0x0000010F, 0x00000111, 0x00000110, 0x000200F8, 0x00000111, 0x000500C4,
++    0x00000010, 0x00000112, 0x0000010D, 0x0000004D, 0x000500C2, 0x00000010, 0x00000113, 0x0000010D,
++    0x0000004D, 0x000500C5, 0x00000010, 0x00000114, 0x00000112, 0x00000113, 0x000200F9, 0x00000110,
++    0x000200F8, 0x00000110, 0x000700F5, 0x00000010, 0x00000115, 0x0000010D, 0x00000106, 0x00000114,
++    0x00000111, 0x00050051, 0x0000000E, 0x00000116, 0x00000067, 0x00000000, 0x00050051, 0x0000000E,
++    0x00000117, 0x00000067, 0x00000001, 0x00050051, 0x0000000E, 0x00000118, 0x00000061, 0x00000000,
++    0x00050080, 0x0000000E, 0x00000119, 0x00000116, 0x00000043, 0x00050051, 0x0000000E, 0x0000011A,
++    0x00000115, 0x00000000, 0x00050051, 0x0000000E, 0x0000011B, 0x00000115, 0x00000001, 0x000500C7,
++    0x0000000E, 0x0000011C, 0x0000011A, 0x00000041, 0x000500C2, 0x0000000E, 0x0000011D, 0x0000011A,
++    0x00000042, 0x000500C7, 0x0000000E, 0x0000011E, 0x0000011B, 0x00000041, 0x000500C2, 0x0000000E,
++    0x0000011F, 0x0000011B, 0x00000042, 0x00070050, 0x00000010, 0x00000120, 0x0000011C, 0x0000011D,
++    0x0000011E, 0x0000011F, 0x0004007C, 0x00000011, 0x00000121, 0x00000119, 0x0004007C, 0x00000011,
++    0x00000122, 0x00000117, 0x00050050, 0x00000012, 0x00000123, 0x00000121, 0x00000122, 0x000500B0,
++    0x00000014, 0x00000124, 0x00000119, 0x00000118, 0x000300F7, 0x00000125, 0x00000000, 0x000400FA,
++    0x00000124, 0x00000126, 0x00000125, 0x000200F8, 0x00000126, 0x0004003D, 0x0000003F, 0x00000127,
++    0x0000000A, 0x00040063, 0x00000127, 0x00000123, 0x00000120, 0x000200F9, 0x00000125, 0x000200F8,
++    0x00000125, 0x00050080, 0x0000000E, 0x00000128, 0x00000116, 0x00000044, 0x00050051, 0x0000000E,
++    0x00000129, 0x00000115, 0x00000002, 0x00050051, 0x0000000E, 0x0000012A, 0x00000115, 0x00000003,
++    0x000500C7, 0x0000000E, 0x0000012B, 0x00000129, 0x00000041, 0x000500C2, 0x0000000E, 0x0000012C,
++    0x00000129, 0x00000042, 0x000500C7, 0x0000000E, 0x0000012D, 0x0000012A, 0x00000041, 0x000500C2,
++    0x0000000E, 0x0000012E, 0x0000012A, 0x00000042, 0x00070050, 0x00000010, 0x0000012F, 0x0000012B,
++    0x0000012C, 0x0000012D, 0x0000012E, 0x0004007C, 0x00000011, 0x00000130, 0x00000128, 0x0004007C,
++    0x00000011, 0x00000131, 0x00000117, 0x00050050, 0x00000012, 0x00000132, 0x00000130, 0x00000131,
++    0x000500B0, 0x00000014, 0x00000133, 0x00000128, 0x00000118, 0x000300F7, 0x00000134, 0x00000000,
++    0x000400FA, 0x00000133, 0x00000135, 0x00000134, 0x000200F8, 0x00000135, 0x0004003D, 0x0000003F,
++    0x00000136, 0x0000000A, 0x00040063, 0x00000136, 0x00000132, 0x0000012F, 0x000200F9, 0x00000134,
++    0x000200F8, 0x00000134, 0x00050080, 0x0000000E, 0x00000137, 0x0000007C, 0x00000025, 0x000500AC,
++    0x00000014, 0x00000138, 0x000000F2, 0x00000016, 0x000300F7, 0x00000139, 0x00000002, 0x000400FA,
++    0x00000138, 0x0000013A, 0x0000013B, 0x000200F8, 0x0000013A, 0x00050086, 0x0000000E, 0x0000013C,
++    0x0000007E, 0x000000F2, 0x00050084, 0x0000000E, 0x0000013D, 0x0000013C, 0x000000F2, 0x00050082,
++    0x0000000E, 0x0000013E, 0x0000007E, 0x0000013D, 0x00050080, 0x0000000E, 0x0000013F, 0x0000013E,
++    0x00000016, 0x000500AA, 0x00000014, 0x00000140, 0x0000013F, 0x000000F2, 0x000300F7, 0x00000141,
++    0x00000000, 0x000400FA, 0x00000140, 0x00000142, 0x00000143, 0x000200F8, 0x00000142, 0x00050084,
++    0x0000000E, 0x00000144, 0x00000032, 0x000000F2, 0x000500C4, 0x0000000E, 0x00000145, 0x0000013E,
++    0x0000002F, 0x00050082, 0x0000000E, 0x00000146, 0x00000144, 0x00000145, 0x000200F9, 0x00000141,
++    0x000200F8, 0x00000143, 0x000200F9, 0x00000141, 0x000200F8, 0x00000141, 0x000700F5, 0x0000000E,
++    0x00000147, 0x00000146, 0x00000142, 0x0000001C, 0x00000143, 0x000200F9, 0x00000139, 0x000200F8,
++    0x0000013B, 0x000200F9, 0x00000139, 0x000200F8, 0x00000139, 0x000700F5, 0x0000000E, 0x00000148,
++    0x00000147, 0x00000141, 0x00000032, 0x0000013B, 0x00050084, 0x0000000E, 0x00000149, 0x00000148,
++    0x000000F3, 0x000500C2, 0x0000000E, 0x0000014A, 0x00000149, 0x0000002F, 0x00050080, 0x0000000E,
++    0x0000014B, 0x00000100, 0x0000014A, 0x00060041, 0x0000003D, 0x0000014C, 0x00000007, 0x00000035,
++    0x0000014B, 0x0004003D, 0x00000010, 0x0000014D, 0x0000014C, 0x000300F7, 0x0000014E, 0x00000000,
++    0x000400FA, 0x00000105, 0x0000014F, 0x0000014E, 0x000200F8, 0x0000014F, 0x000500C7, 0x00000010,
++    0x00000150, 0x0000014D, 0x0000004A, 0x000500C4, 0x00000010, 0x00000151, 0x00000150, 0x0000004B,
++    0x000500C7, 0x00000010, 0x00000152, 0x0000014D, 0x0000004C, 0x000500C2, 0x00000010, 0x00000153,
++    0x00000152, 0x0000004B, 0x000500C5, 0x00000010, 0x00000154, 0x00000151, 0x00000153, 0x000200F9,
++    0x0000014E, 0x000200F8, 0x0000014E, 0x000700F5, 0x00000010, 0x00000155, 0x0000014D, 0x00000139,
++    0x00000154, 0x0000014F, 0x000300F7, 0x00000156, 0x00000000, 0x000400FA, 0x0000010F, 0x00000157,
++    0x00000156, 0x000200F8, 0x00000157, 0x000500C4, 0x00000010, 0x00000158, 0x00000155, 0x0000004D,
++    0x000500C2, 0x00000010, 0x00000159, 0x00000155, 0x0000004D, 0x000500C5, 0x00000010, 0x0000015A,
++    0x00000158, 0x00000159, 0x000200F9, 0x00000156, 0x000200F8, 0x00000156, 0x000700F5, 0x00000010,
++    0x0000015B, 0x00000155, 0x0000014E, 0x0000015A, 0x00000157, 0x00050051, 0x0000000E, 0x0000015C,
++    0x00000067, 0x00000000, 0x00050051, 0x0000000E, 0x0000015D, 0x00000067, 0x00000001, 0x00050051,
++    0x0000000E, 0x0000015E, 0x00000061, 0x00000000, 0x00050080, 0x0000000E, 0x0000015F, 0x0000015C,
++    0x00000045, 0x00050051, 0x0000000E, 0x00000160, 0x0000015B, 0x00000000, 0x00050051, 0x0000000E,
++    0x00000161, 0x0000015B, 0x00000001, 0x000500C7, 0x0000000E, 0x00000162, 0x00000160, 0x00000041,
++    0x000500C2, 0x0000000E, 0x00000163, 0x00000160, 0x00000042, 0x000500C7, 0x0000000E, 0x00000164,
++    0x00000161, 0x00000041, 0x000500C2, 0x0000000E, 0x00000165, 0x00000161, 0x00000042, 0x00070050,
++    0x00000010, 0x00000166, 0x00000162, 0x00000163, 0x00000164, 0x00000165, 0x0004007C, 0x00000011,
++    0x00000167, 0x0000015F, 0x0004007C, 0x00000011, 0x00000168, 0x0000015D, 0x00050050, 0x00000012,
++    0x00000169, 0x00000167, 0x00000168, 0x000500B0, 0x00000014, 0x0000016A, 0x0000015F, 0x0000015E,
++    0x000300F7, 0x0000016B, 0x00000000, 0x000400FA, 0x0000016A, 0x0000016C, 0x0000016B, 0x000200F8,
++    0x0000016C, 0x0004003D, 0x0000003F, 0x0000016D, 0x0000000A, 0x00040063, 0x0000016D, 0x00000169,
++    0x00000166, 0x000200F9, 0x0000016B, 0x000200F8, 0x0000016B, 0x00050080, 0x0000000E, 0x0000016E,
++    0x0000015C, 0x00000046, 0x00050051, 0x0000000E, 0x0000016F, 0x0000015B, 0x00000002, 0x00050051,
++    0x0000000E, 0x00000170, 0x0000015B, 0x00000003, 0x000500C7, 0x0000000E, 0x00000171, 0x0000016F,
++    0x00000041, 0x000500C2, 0x0000000E, 0x00000172, 0x0000016F, 0x00000042, 0x000500C7, 0x0000000E,
++    0x00000173, 0x00000170, 0x00000041, 0x000500C2, 0x0000000E, 0x00000174, 0x00000170, 0x00000042,
++    0x00070050, 0x00000010, 0x00000175, 0x00000171, 0x00000172, 0x00000173, 0x00000174, 0x0004007C,
++    0x00000011, 0x00000176, 0x0000016E, 0x0004007C, 0x00000011, 0x00000177, 0x0000015D, 0x00050050,
++    0x00000012, 0x00000178, 0x00000176, 0x00000177, 0x000500B0, 0x00000014, 0x00000179, 0x0000016E,
++    0x0000015E, 0x000300F7, 0x0000017A, 0x00000000, 0x000400FA, 0x00000179, 0x0000017B, 0x0000017A,
++    0x000200F8, 0x0000017B, 0x0004003D, 0x0000003F, 0x0000017C, 0x0000000A, 0x00040063, 0x0000017C,
++    0x00000178, 0x00000175, 0x000200F9, 0x0000017A, 0x000200F8, 0x0000017A, 0x000200F9, 0x0000004F,
++    0x000200F8, 0x0000004F, 0x000100FD, 0x00010038,
++};
+diff --git a/src/graphics/shaders/vulkan_spirv/texture_load_depth_float_scaled_image_cs.h b/src/graphics/shaders/vulkan_spirv/texture_load_depth_float_scaled_image_cs.h
+new file mode 100644
+--- /dev/null
++++ b/src/graphics/shaders/vulkan_spirv/texture_load_depth_float_scaled_image_cs.h
+@@ -0,0 +1,861 @@
++// Generated by tools/spirv_load_to_image.py --bits 32 (KUF port M9) from texture_load_depth_float_scaled_cs.h: the same load,
++// writing the texels into a storage image (set 0, binding 0, R32ui) instead of the staging buffer.
++#if 0
++; SPIR-V
++; Version: 1.0
++; Generator: Khronos SPIR-V Tools Assembler; 0
++; Bound: 454
++; Schema: 0
++               OpCapability Shader
++          %1 = OpExtInstImport "GLSL.std.450"
++               OpMemoryModel Logical GLSL450
++               OpEntryPoint GLCompute %2 "main" %3
++               OpExecutionMode %2 LocalSize 4 32 1
++               OpDecorate %4 Block
++               OpMemberDecorate %4 0 Offset 0
++               OpMemberDecorate %4 1 Offset 4
++               OpMemberDecorate %4 2 Offset 8
++               OpMemberDecorate %4 3 Offset 12
++               OpMemberDecorate %4 4 Offset 16
++               OpMemberDecorate %4 5 Offset 28
++               OpMemberDecorate %4 6 Offset 32
++               OpMemberDecorate %4 7 Offset 36
++               OpDecorate %3 BuiltIn GlobalInvocationId
++               OpDecorate %5 ArrayStride 16
++               OpDecorate %6 BufferBlock
++               OpMemberDecorate %6 0 NonWritable
++               OpMemberDecorate %6 0 Offset 0
++               OpDecorate %7 NonWritable
++               OpDecorate %7 Binding 0
++               OpDecorate %7 DescriptorSet 1
++               OpDecorate %8 ArrayStride 16
++               OpDecorate %9 BufferBlock
++               OpMemberDecorate %9 0 NonReadable
++               OpMemberDecorate %9 0 Offset 0
++               OpDecorate %10 NonReadable
++               OpDecorate %10 Binding 0
++               OpDecorate %10 DescriptorSet 0
++               OpDecorate %11 BuiltIn WorkgroupSize
++         %12 = OpTypeVoid
++         %13 = OpTypeFunction %12
++         %14 = OpTypeInt 32 0
++         %15 = OpTypeVector %14 2
++         %16 = OpTypeVector %14 4
++         %17 = OpTypeInt 32 1
++         %18 = OpTypeVector %17 2
++         %19 = OpTypeVector %17 3
++         %20 = OpTypeBool
++         %21 = OpTypeVector %14 3
++         %22 = OpTypeVector %17 4
++         %23 = OpConstant %14 1048575
++         %24 = OpConstant %14 20
++         %25 = OpTypeVector %20 4
++         %26 = OpConstant %14 0
++         %27 = OpConstant %14 1
++         %28 = OpConstant %14 112
++         %29 = OpConstant %14 23
++         %30 = OpConstant %14 3
++         %31 = OpConstant %14 2
++         %32 = OpConstant %14 16711935
++         %33 = OpConstant %14 8
++         %34 = OpConstant %14 4278255360
++         %35 = OpConstant %14 16
++         %36 = OpConstant %17 5
++         %37 = OpConstant %14 5
++         %38 = OpConstant %14 7
++         %39 = OpConstant %17 7
++         %40 = OpConstant %17 14
++         %41 = OpConstant %17 2
++         %42 = OpConstant %17 -16
++         %43 = OpConstant %17 1
++         %44 = OpConstant %17 15
++         %45 = OpConstant %17 4
++         %46 = OpConstant %17 -512
++         %47 = OpConstant %17 3
++         %48 = OpConstant %17 16
++         %49 = OpConstant %17 448
++         %50 = OpConstant %17 8
++         %51 = OpConstant %17 6
++         %52 = OpConstant %17 63
++         %53 = OpConstant %14 4
++         %54 = OpConstant %17 268435455
++         %55 = OpConstant %17 -2
++         %56 = OpConstant %14 32
++          %4 = OpTypeStruct %14 %14 %14 %14 %21 %14 %14 %14
++         %57 = OpTypePointer PushConstant %4
++         %58 = OpVariable %57 PushConstant
++         %59 = OpConstant %17 0
++         %60 = OpTypePointer PushConstant %14
++         %61 = OpConstantComposite %15 %53 %38
++         %62 = OpTypePointer PushConstant %21
++         %63 = OpTypePointer Input %21
++          %3 = OpVariable %63 Input
++         %64 = OpConstantComposite %21 %30 %26 %26
++         %65 = OpTypeVector %20 2
++          %5 = OpTypeRuntimeArray %16
++          %6 = OpTypeStruct %5
++         %66 = OpTypePointer Uniform %6
++          %7 = OpVariable %66 Uniform
++         %67 = OpTypePointer Uniform %16
++          %8 = OpTypeRuntimeArray %16
++          %9 = OpTypeStruct %8
++         %68 = OpTypePointer Uniform %9
++         %69 = OpTypeImage %14 2D 0 0 0 2 R32ui
++         %70 = OpTypePointer UniformConstant %69
++         %10 = OpVariable %70 UniformConstant
++         %71 = OpConstant %14 65535
++         %72 = OpConstant %14 16
++         %73 = OpConstant %14 0
++         %74 = OpConstant %14 1
++         %75 = OpConstant %14 2
++         %76 = OpConstant %14 3
++         %77 = OpConstant %14 4
++         %78 = OpConstant %14 5
++         %79 = OpConstant %14 6
++         %80 = OpConstant %14 7
++         %11 = OpConstantComposite %21 %53 %56 %27
++         %81 = OpConstantComposite %15 %38 %38
++         %82 = OpConstant %14 9
++         %83 = OpConstantComposite %16 %32 %32 %32 %32
++         %84 = OpConstantComposite %16 %33 %33 %33 %33
++         %85 = OpConstantComposite %16 %34 %34 %34 %34
++         %86 = OpConstantComposite %16 %35 %35 %35 %35
++         %87 = OpConstantComposite %16 %23 %23 %23 %23
++         %88 = OpConstantComposite %16 %24 %24 %24 %24
++         %89 = OpConstantComposite %16 %26 %26 %26 %26
++         %90 = OpConstantComposite %16 %28 %28 %28 %28
++         %91 = OpConstantComposite %16 %29 %29 %29 %29
++         %92 = OpConstantComposite %16 %30 %30 %30 %30
++         %93 = OpConstant %14 4294967277
++         %94 = OpConstantComposite %16 %93 %93 %93 %93
++          %2 = OpFunction %12 None %13
++         %95 = OpLabel
++               OpSelectionMerge %96 None
++               OpSwitch %26 %97
++         %97 = OpLabel
++         %98 = OpAccessChain %60 %58 %59
++         %99 = OpLoad %14 %98
++        %100 = OpBitwiseAnd %14 %99 %31
++        %101 = OpINotEqual %20 %100 %26
++        %102 = OpShiftRightLogical %14 %99 %31
++        %103 = OpBitwiseAnd %14 %102 %30
++        %104 = OpCompositeConstruct %15 %99 %99
++        %105 = OpShiftRightLogical %15 %104 %61
++        %106 = OpBitwiseAnd %15 %105 %81
++        %107 = OpAccessChain %60 %58 %43
++        %108 = OpLoad %14 %107
++        %109 = OpAccessChain %60 %58 %41
++        %110 = OpLoad %14 %109
++        %111 = OpAccessChain %60 %58 %47
++        %112 = OpLoad %14 %111
++        %113 = OpAccessChain %62 %58 %45
++        %114 = OpLoad %21 %113
++        %115 = OpAccessChain %60 %58 %36
++        %116 = OpLoad %14 %115
++        %117 = OpAccessChain %60 %58 %51
++        %118 = OpLoad %14 %117
++        %119 = OpLoad %21 %3
++        %120 = OpShiftLeftLogical %21 %119 %64
++        %121 = OpVectorShuffle %15 %120 %120 0 1
++        %122 = OpVectorShuffle %15 %114 %114 0 1
++        %123 = OpUGreaterThanEqual %65 %121 %122
++        %124 = OpAny %20 %123
++               OpSelectionMerge %125 DontFlatten
++               OpBranchConditional %124 %126 %125
++        %126 = OpLabel
++               OpBranch %96
++        %125 = OpLabel
++        %127 = OpBitcast %19 %120
++        %128 = OpCompositeExtract %14 %114 1
++        %129 = OpCompositeExtract %17 %127 0
++        %130 = OpIMul %17 %129 %45
++        %131 = OpCompositeExtract %17 %127 2
++        %132 = OpBitcast %17 %128
++        %133 = OpIMul %17 %131 %132
++        %134 = OpCompositeExtract %17 %127 1
++        %135 = OpIAdd %17 %133 %134
++        %136 = OpBitcast %17 %118
++        %137 = OpIMul %17 %135 %136
++        %138 = OpIAdd %17 %130 %137
++        %139 = OpBitcast %14 %138
++        %140 = OpIAdd %14 %139 %116
++        %141 = OpShiftRightLogical %14 %140 %53
++        %142 = OpCompositeExtract %14 %120 0
++        %143 = OpShiftRightLogical %14 %142 %31
++        %144 = OpCompositeExtract %14 %120 1
++        %145 = OpCompositeConstruct %15 %143 %144
++        %146 = OpUDiv %15 %145 %106
++        %147 = OpCompositeExtract %14 %146 0
++        %148 = OpShiftLeftLogical %14 %147 %31
++        %149 = OpCompositeExtract %14 %146 1
++        %150 = OpCompositeExtract %14 %120 2
++        %151 = OpCompositeConstruct %21 %148 %149 %150
++               OpSelectionMerge %152 DontFlatten
++               OpBranchConditional %101 %153 %154
++        %153 = OpLabel
++        %155 = OpBitcast %19 %151
++        %156 = OpCompositeExtract %17 %155 1
++        %157 = OpShiftRightArithmetic %17 %156 %45
++        %158 = OpCompositeExtract %17 %155 2
++        %159 = OpShiftRightArithmetic %17 %158 %41
++        %160 = OpShiftRightLogical %14 %112 %53
++        %161 = OpBitcast %17 %160
++        %162 = OpIMul %17 %159 %161
++        %163 = OpIAdd %17 %157 %162
++        %164 = OpShiftRightLogical %14 %110 %37
++        %165 = OpBitcast %17 %164
++        %166 = OpIMul %17 %163 %165
++        %167 = OpCompositeExtract %17 %155 0
++        %168 = OpShiftRightArithmetic %17 %167 %36
++        %169 = OpIAdd %17 %168 %166
++        %170 = OpShiftLeftLogical %17 %169 %33
++        %171 = OpBitwiseAnd %17 %170 %54
++        %172 = OpShiftLeftLogical %17 %171 %43
++        %173 = OpBitwiseAnd %17 %167 %39
++        %174 = OpBitwiseAnd %17 %156 %51
++        %175 = OpShiftLeftLogical %17 %174 %41
++        %176 = OpIAdd %17 %173 %175
++        %177 = OpShiftLeftLogical %17 %176 %33
++        %178 = OpShiftRightArithmetic %17 %177 %51
++        %179 = OpShiftRightArithmetic %17 %156 %47
++        %180 = OpIAdd %17 %179 %159
++        %181 = OpBitwiseAnd %17 %180 %43
++        %182 = OpShiftRightArithmetic %17 %167 %47
++        %183 = OpShiftLeftLogical %17 %181 %43
++        %184 = OpIAdd %17 %182 %183
++        %185 = OpBitwiseAnd %17 %184 %47
++        %186 = OpShiftLeftLogical %17 %185 %43
++        %187 = OpIAdd %17 %181 %186
++        %188 = OpBitwiseAnd %17 %178 %42
++        %189 = OpIAdd %17 %172 %188
++        %190 = OpShiftLeftLogical %17 %189 %43
++        %191 = OpBitwiseAnd %17 %178 %44
++        %192 = OpIAdd %17 %190 %191
++        %193 = OpBitwiseAnd %17 %158 %47
++        %194 = OpShiftLeftLogical %17 %193 %33
++        %195 = OpIAdd %17 %192 %194
++        %196 = OpBitwiseAnd %17 %156 %43
++        %197 = OpShiftLeftLogical %17 %196 %45
++        %198 = OpIAdd %17 %195 %197
++        %199 = OpBitwiseAnd %17 %187 %43
++        %200 = OpShiftLeftLogical %17 %199 %47
++        %201 = OpShiftRightArithmetic %17 %198 %51
++        %202 = OpBitwiseAnd %17 %201 %39
++        %203 = OpIAdd %17 %200 %202
++        %204 = OpShiftLeftLogical %17 %203 %47
++        %205 = OpBitwiseAnd %17 %187 %55
++        %206 = OpIAdd %17 %204 %205
++        %207 = OpShiftLeftLogical %17 %206 %41
++        %208 = OpBitwiseAnd %17 %198 %46
++        %209 = OpIAdd %17 %207 %208
++        %210 = OpShiftLeftLogical %17 %209 %47
++        %211 = OpBitwiseAnd %17 %198 %52
++        %212 = OpIAdd %17 %210 %211
++        %213 = OpBitcast %14 %212
++               OpBranch %152
++        %154 = OpLabel
++        %214 = OpVectorShuffle %15 %151 %151 0 1
++        %215 = OpBitcast %18 %214
++        %216 = OpCompositeExtract %17 %215 0
++        %217 = OpShiftRightArithmetic %17 %216 %36
++        %218 = OpCompositeExtract %17 %215 1
++        %219 = OpShiftRightArithmetic %17 %218 %36
++        %220 = OpShiftRightLogical %14 %110 %37
++        %221 = OpBitcast %17 %220
++        %222 = OpIMul %17 %219 %221
++        %223 = OpIAdd %17 %217 %222
++        %224 = OpShiftLeftLogical %17 %223 %82
++        %225 = OpBitwiseAnd %17 %216 %39
++        %226 = OpBitwiseAnd %17 %218 %40
++        %227 = OpShiftLeftLogical %17 %226 %41
++        %228 = OpIAdd %17 %225 %227
++        %229 = OpShiftLeftLogical %17 %228 %31
++        %230 = OpBitwiseAnd %17 %229 %42
++        %231 = OpShiftLeftLogical %17 %230 %43
++        %232 = OpIAdd %17 %224 %231
++        %233 = OpBitwiseAnd %17 %229 %44
++        %234 = OpIAdd %17 %232 %233
++        %235 = OpBitwiseAnd %17 %218 %43
++        %236 = OpShiftLeftLogical %17 %235 %45
++        %237 = OpIAdd %17 %234 %236
++        %238 = OpBitwiseAnd %17 %237 %46
++        %239 = OpShiftLeftLogical %17 %238 %47
++        %240 = OpBitwiseAnd %17 %218 %48
++        %241 = OpShiftLeftLogical %17 %240 %39
++        %242 = OpIAdd %17 %239 %241
++        %243 = OpBitwiseAnd %17 %237 %49
++        %244 = OpShiftLeftLogical %17 %243 %41
++        %245 = OpIAdd %17 %242 %244
++        %246 = OpBitwiseAnd %17 %218 %50
++        %247 = OpShiftRightArithmetic %17 %246 %41
++        %248 = OpShiftRightArithmetic %17 %216 %47
++        %249 = OpIAdd %17 %247 %248
++        %250 = OpBitwiseAnd %17 %249 %47
++        %251 = OpShiftLeftLogical %17 %250 %51
++        %252 = OpIAdd %17 %245 %251
++        %253 = OpBitwiseAnd %17 %237 %52
++        %254 = OpIAdd %17 %252 %253
++        %255 = OpBitcast %14 %254
++               OpBranch %152
++        %152 = OpLabel
++        %256 = OpPhi %14 %213 %153 %255 %154
++        %257 = OpIMul %15 %146 %106
++        %258 = OpISub %15 %145 %257
++        %259 = OpCompositeExtract %14 %106 0
++        %260 = OpCompositeExtract %14 %106 1
++        %261 = OpIMul %14 %259 %260
++        %262 = OpIMul %14 %256 %261
++        %263 = OpCompositeExtract %14 %258 0
++        %264 = OpIMul %14 %263 %260
++        %265 = OpCompositeExtract %14 %258 1
++        %266 = OpIAdd %14 %264 %265
++        %267 = OpShiftLeftLogical %14 %266 %31
++        %268 = OpBitwiseAnd %14 %142 %30
++        %269 = OpIAdd %14 %267 %268
++        %270 = OpShiftLeftLogical %14 %269 %31
++        %271 = OpIAdd %14 %262 %270
++        %272 = OpIAdd %14 %108 %271
++        %273 = OpShiftRightLogical %14 %272 %53
++        %274 = OpAccessChain %67 %7 %59 %273
++        %275 = OpLoad %16 %274
++        %276 = OpIEqual %20 %103 %27
++        %277 = OpIEqual %20 %103 %31
++        %278 = OpLogicalOr %20 %276 %277
++               OpSelectionMerge %279 None
++               OpBranchConditional %278 %280 %279
++        %280 = OpLabel
++        %281 = OpBitwiseAnd %16 %275 %83
++        %282 = OpShiftLeftLogical %16 %281 %84
++        %283 = OpBitwiseAnd %16 %275 %85
++        %284 = OpShiftRightLogical %16 %283 %84
++        %285 = OpBitwiseOr %16 %282 %284
++               OpBranch %279
++        %279 = OpLabel
++        %286 = OpPhi %16 %275 %152 %285 %280
++        %287 = OpIEqual %20 %103 %30
++        %288 = OpLogicalOr %20 %277 %287
++               OpSelectionMerge %289 None
++               OpBranchConditional %288 %290 %289
++        %290 = OpLabel
++        %291 = OpShiftLeftLogical %16 %286 %86
++        %292 = OpShiftRightLogical %16 %286 %86
++        %293 = OpBitwiseOr %16 %291 %292
++               OpBranch %289
++        %289 = OpLabel
++        %294 = OpPhi %16 %286 %279 %293 %290
++        %295 = OpShiftRightLogical %16 %294 %84
++        %296 = OpBitwiseAnd %16 %295 %87
++        %297 = OpShiftRightLogical %16 %295 %88
++        %298 = OpIEqual %25 %297 %89
++        %299 = OpExtInst %22 %1 FindUMsb %296
++        %300 = OpBitcast %16 %299
++        %301 = OpISub %16 %88 %300
++        %302 = OpIAdd %16 %300 %94
++        %303 = OpSelect %16 %298 %302 %297
++        %304 = OpShiftLeftLogical %16 %296 %301
++        %305 = OpBitwiseAnd %16 %304 %87
++        %306 = OpSelect %16 %298 %305 %296
++        %307 = OpIAdd %16 %303 %90
++        %308 = OpShiftLeftLogical %16 %307 %91
++        %309 = OpShiftLeftLogical %16 %306 %92
++        %310 = OpBitwiseOr %16 %308 %309
++        %311 = OpIEqual %25 %295 %89
++        %312 = OpSelect %16 %311 %89 %310
++        %313 = OpCompositeExtract %14 %120 0
++        %314 = OpCompositeExtract %14 %120 1
++        %315 = OpCompositeExtract %14 %114 0
++        %316 = OpIAdd %14 %313 %73
++        %317 = OpCompositeExtract %14 %312 0
++        %318 = OpCompositeConstruct %16 %317 %73 %73 %73
++        %319 = OpBitcast %17 %316
++        %320 = OpBitcast %17 %314
++        %321 = OpCompositeConstruct %18 %319 %320
++        %322 = OpULessThan %20 %316 %315
++               OpSelectionMerge %323 None
++               OpBranchConditional %322 %324 %323
++        %324 = OpLabel
++        %325 = OpLoad %69 %10
++               OpImageWrite %325 %321 %318
++               OpBranch %323
++        %323 = OpLabel
++        %326 = OpIAdd %14 %313 %74
++        %327 = OpCompositeExtract %14 %312 1
++        %328 = OpCompositeConstruct %16 %327 %73 %73 %73
++        %329 = OpBitcast %17 %326
++        %330 = OpBitcast %17 %314
++        %331 = OpCompositeConstruct %18 %329 %330
++        %332 = OpULessThan %20 %326 %315
++               OpSelectionMerge %333 None
++               OpBranchConditional %332 %334 %333
++        %334 = OpLabel
++        %335 = OpLoad %69 %10
++               OpImageWrite %335 %331 %328
++               OpBranch %333
++        %333 = OpLabel
++        %336 = OpIAdd %14 %313 %75
++        %337 = OpCompositeExtract %14 %312 2
++        %338 = OpCompositeConstruct %16 %337 %73 %73 %73
++        %339 = OpBitcast %17 %336
++        %340 = OpBitcast %17 %314
++        %341 = OpCompositeConstruct %18 %339 %340
++        %342 = OpULessThan %20 %336 %315
++               OpSelectionMerge %343 None
++               OpBranchConditional %342 %344 %343
++        %344 = OpLabel
++        %345 = OpLoad %69 %10
++               OpImageWrite %345 %341 %338
++               OpBranch %343
++        %343 = OpLabel
++        %346 = OpIAdd %14 %313 %76
++        %347 = OpCompositeExtract %14 %312 3
++        %348 = OpCompositeConstruct %16 %347 %73 %73 %73
++        %349 = OpBitcast %17 %346
++        %350 = OpBitcast %17 %314
++        %351 = OpCompositeConstruct %18 %349 %350
++        %352 = OpULessThan %20 %346 %315
++               OpSelectionMerge %353 None
++               OpBranchConditional %352 %354 %353
++        %354 = OpLabel
++        %355 = OpLoad %69 %10
++               OpImageWrite %355 %351 %348
++               OpBranch %353
++        %353 = OpLabel
++        %356 = OpIAdd %14 %141 %43
++        %357 = OpUGreaterThan %20 %259 %27
++               OpSelectionMerge %358 DontFlatten
++               OpBranchConditional %357 %359 %360
++        %359 = OpLabel
++        %361 = OpUDiv %14 %143 %259
++        %362 = OpIMul %14 %361 %259
++        %363 = OpISub %14 %143 %362
++        %364 = OpIAdd %14 %363 %27
++        %365 = OpIEqual %20 %364 %259
++               OpSelectionMerge %366 None
++               OpBranchConditional %365 %367 %368
++        %367 = OpLabel
++        %369 = OpIMul %14 %56 %259
++        %370 = OpShiftLeftLogical %14 %363 %53
++        %371 = OpISub %14 %369 %370
++               OpBranch %366
++        %368 = OpLabel
++               OpBranch %366
++        %366 = OpLabel
++        %372 = OpPhi %14 %371 %367 %35 %368
++               OpBranch %358
++        %360 = OpLabel
++               OpBranch %358
++        %358 = OpLabel
++        %373 = OpPhi %14 %372 %366 %56 %360
++        %374 = OpIMul %14 %373 %260
++        %375 = OpShiftRightLogical %14 %374 %53
++        %376 = OpIAdd %14 %273 %375
++        %377 = OpAccessChain %67 %7 %59 %376
++        %378 = OpLoad %16 %377
++               OpSelectionMerge %379 None
++               OpBranchConditional %278 %380 %379
++        %380 = OpLabel
++        %381 = OpBitwiseAnd %16 %378 %83
++        %382 = OpShiftLeftLogical %16 %381 %84
++        %383 = OpBitwiseAnd %16 %378 %85
++        %384 = OpShiftRightLogical %16 %383 %84
++        %385 = OpBitwiseOr %16 %382 %384
++               OpBranch %379
++        %379 = OpLabel
++        %386 = OpPhi %16 %378 %358 %385 %380
++               OpSelectionMerge %387 None
++               OpBranchConditional %288 %388 %387
++        %388 = OpLabel
++        %389 = OpShiftLeftLogical %16 %386 %86
++        %390 = OpShiftRightLogical %16 %386 %86
++        %391 = OpBitwiseOr %16 %389 %390
++               OpBranch %387
++        %387 = OpLabel
++        %392 = OpPhi %16 %386 %379 %391 %388
++        %393 = OpShiftRightLogical %16 %392 %84
++        %394 = OpBitwiseAnd %16 %393 %87
++        %395 = OpShiftRightLogical %16 %393 %88
++        %396 = OpIEqual %25 %395 %89
++        %397 = OpExtInst %22 %1 FindUMsb %394
++        %398 = OpBitcast %16 %397
++        %399 = OpISub %16 %88 %398
++        %400 = OpIAdd %16 %398 %94
++        %401 = OpSelect %16 %396 %400 %395
++        %402 = OpShiftLeftLogical %16 %394 %399
++        %403 = OpBitwiseAnd %16 %402 %87
++        %404 = OpSelect %16 %396 %403 %394
++        %405 = OpIAdd %16 %401 %90
++        %406 = OpShiftLeftLogical %16 %405 %91
++        %407 = OpShiftLeftLogical %16 %404 %92
++        %408 = OpBitwiseOr %16 %406 %407
++        %409 = OpIEqual %25 %393 %89
++        %410 = OpSelect %16 %409 %89 %408
++        %411 = OpCompositeExtract %14 %120 0
++        %412 = OpCompositeExtract %14 %120 1
++        %413 = OpCompositeExtract %14 %114 0
++        %414 = OpIAdd %14 %411 %77
++        %415 = OpCompositeExtract %14 %410 0
++        %416 = OpCompositeConstruct %16 %415 %73 %73 %73
++        %417 = OpBitcast %17 %414
++        %418 = OpBitcast %17 %412
++        %419 = OpCompositeConstruct %18 %417 %418
++        %420 = OpULessThan %20 %414 %413
++               OpSelectionMerge %421 None
++               OpBranchConditional %420 %422 %421
++        %422 = OpLabel
++        %423 = OpLoad %69 %10
++               OpImageWrite %423 %419 %416
++               OpBranch %421
++        %421 = OpLabel
++        %424 = OpIAdd %14 %411 %78
++        %425 = OpCompositeExtract %14 %410 1
++        %426 = OpCompositeConstruct %16 %425 %73 %73 %73
++        %427 = OpBitcast %17 %424
++        %428 = OpBitcast %17 %412
++        %429 = OpCompositeConstruct %18 %427 %428
++        %430 = OpULessThan %20 %424 %413
++               OpSelectionMerge %431 None
++               OpBranchConditional %430 %432 %431
++        %432 = OpLabel
++        %433 = OpLoad %69 %10
++               OpImageWrite %433 %429 %426
++               OpBranch %431
++        %431 = OpLabel
++        %434 = OpIAdd %14 %411 %79
++        %435 = OpCompositeExtract %14 %410 2
++        %436 = OpCompositeConstruct %16 %435 %73 %73 %73
++        %437 = OpBitcast %17 %434
++        %438 = OpBitcast %17 %412
++        %439 = OpCompositeConstruct %18 %437 %438
++        %440 = OpULessThan %20 %434 %413
++               OpSelectionMerge %441 None
++               OpBranchConditional %440 %442 %441
++        %442 = OpLabel
++        %443 = OpLoad %69 %10
++               OpImageWrite %443 %439 %436
++               OpBranch %441
++        %441 = OpLabel
++        %444 = OpIAdd %14 %411 %80
++        %445 = OpCompositeExtract %14 %410 3
++        %446 = OpCompositeConstruct %16 %445 %73 %73 %73
++        %447 = OpBitcast %17 %444
++        %448 = OpBitcast %17 %412
++        %449 = OpCompositeConstruct %18 %447 %448
++        %450 = OpULessThan %20 %444 %413
++               OpSelectionMerge %451 None
++               OpBranchConditional %450 %452 %451
++        %452 = OpLabel
++        %453 = OpLoad %69 %10
++               OpImageWrite %453 %449 %446
++               OpBranch %451
++        %451 = OpLabel
++               OpBranch %96
++         %96 = OpLabel
++               OpReturn
++               OpFunctionEnd
++#endif
++
++const uint32_t texture_load_depth_float_scaled_image_cs[] = {
++    0x07230203, 0x00010000, 0x00070000, 0x000001C6, 0x00000000, 0x00020011, 0x00000001, 0x0006000B,
++    0x00000001, 0x4C534C47, 0x6474732E, 0x3035342E, 0x00000000, 0x0003000E, 0x00000000, 0x00000001,
++    0x0006000F, 0x00000005, 0x00000002, 0x6E69616D, 0x00000000, 0x00000003, 0x00060010, 0x00000002,
++    0x00000011, 0x00000004, 0x00000020, 0x00000001, 0x00030047, 0x00000004, 0x00000002, 0x00050048,
++    0x00000004, 0x00000000, 0x00000023, 0x00000000, 0x00050048, 0x00000004, 0x00000001, 0x00000023,
++    0x00000004, 0x00050048, 0x00000004, 0x00000002, 0x00000023, 0x00000008, 0x00050048, 0x00000004,
++    0x00000003, 0x00000023, 0x0000000C, 0x00050048, 0x00000004, 0x00000004, 0x00000023, 0x00000010,
++    0x00050048, 0x00000004, 0x00000005, 0x00000023, 0x0000001C, 0x00050048, 0x00000004, 0x00000006,
++    0x00000023, 0x00000020, 0x00050048, 0x00000004, 0x00000007, 0x00000023, 0x00000024, 0x00040047,
++    0x00000003, 0x0000000B, 0x0000001C, 0x00040047, 0x00000005, 0x00000006, 0x00000010, 0x00030047,
++    0x00000006, 0x00000003, 0x00040048, 0x00000006, 0x00000000, 0x00000018, 0x00050048, 0x00000006,
++    0x00000000, 0x00000023, 0x00000000, 0x00030047, 0x00000007, 0x00000018, 0x00040047, 0x00000007,
++    0x00000021, 0x00000000, 0x00040047, 0x00000007, 0x00000022, 0x00000001, 0x00040047, 0x00000008,
++    0x00000006, 0x00000010, 0x00030047, 0x00000009, 0x00000003, 0x00040048, 0x00000009, 0x00000000,
++    0x00000019, 0x00050048, 0x00000009, 0x00000000, 0x00000023, 0x00000000, 0x00030047, 0x0000000A,
++    0x00000019, 0x00040047, 0x0000000A, 0x00000021, 0x00000000, 0x00040047, 0x0000000A, 0x00000022,
++    0x00000000, 0x00040047, 0x0000000B, 0x0000000B, 0x00000019, 0x00020013, 0x0000000C, 0x00030021,
++    0x0000000D, 0x0000000C, 0x00040015, 0x0000000E, 0x00000020, 0x00000000, 0x00040017, 0x0000000F,
++    0x0000000E, 0x00000002, 0x00040017, 0x00000010, 0x0000000E, 0x00000004, 0x00040015, 0x00000011,
++    0x00000020, 0x00000001, 0x00040017, 0x00000012, 0x00000011, 0x00000002, 0x00040017, 0x00000013,
++    0x00000011, 0x00000003, 0x00020014, 0x00000014, 0x00040017, 0x00000015, 0x0000000E, 0x00000003,
++    0x00040017, 0x00000016, 0x00000011, 0x00000004, 0x0004002B, 0x0000000E, 0x00000017, 0x000FFFFF,
++    0x0004002B, 0x0000000E, 0x00000018, 0x00000014, 0x00040017, 0x00000019, 0x00000014, 0x00000004,
++    0x0004002B, 0x0000000E, 0x0000001A, 0x00000000, 0x0004002B, 0x0000000E, 0x0000001B, 0x00000001,
++    0x0004002B, 0x0000000E, 0x0000001C, 0x00000070, 0x0004002B, 0x0000000E, 0x0000001D, 0x00000017,
++    0x0004002B, 0x0000000E, 0x0000001E, 0x00000003, 0x0004002B, 0x0000000E, 0x0000001F, 0x00000002,
++    0x0004002B, 0x0000000E, 0x00000020, 0x00FF00FF, 0x0004002B, 0x0000000E, 0x00000021, 0x00000008,
++    0x0004002B, 0x0000000E, 0x00000022, 0xFF00FF00, 0x0004002B, 0x0000000E, 0x00000023, 0x00000010,
++    0x0004002B, 0x00000011, 0x00000024, 0x00000005, 0x0004002B, 0x0000000E, 0x00000025, 0x00000005,
++    0x0004002B, 0x0000000E, 0x00000026, 0x00000007, 0x0004002B, 0x00000011, 0x00000027, 0x00000007,
++    0x0004002B, 0x00000011, 0x00000028, 0x0000000E, 0x0004002B, 0x00000011, 0x00000029, 0x00000002,
++    0x0004002B, 0x00000011, 0x0000002A, 0xFFFFFFF0, 0x0004002B, 0x00000011, 0x0000002B, 0x00000001,
++    0x0004002B, 0x00000011, 0x0000002C, 0x0000000F, 0x0004002B, 0x00000011, 0x0000002D, 0x00000004,
++    0x0004002B, 0x00000011, 0x0000002E, 0xFFFFFE00, 0x0004002B, 0x00000011, 0x0000002F, 0x00000003,
++    0x0004002B, 0x00000011, 0x00000030, 0x00000010, 0x0004002B, 0x00000011, 0x00000031, 0x000001C0,
++    0x0004002B, 0x00000011, 0x00000032, 0x00000008, 0x0004002B, 0x00000011, 0x00000033, 0x00000006,
++    0x0004002B, 0x00000011, 0x00000034, 0x0000003F, 0x0004002B, 0x0000000E, 0x00000035, 0x00000004,
++    0x0004002B, 0x00000011, 0x00000036, 0x0FFFFFFF, 0x0004002B, 0x00000011, 0x00000037, 0xFFFFFFFE,
++    0x0004002B, 0x0000000E, 0x00000038, 0x00000020, 0x000A001E, 0x00000004, 0x0000000E, 0x0000000E,
++    0x0000000E, 0x0000000E, 0x00000015, 0x0000000E, 0x0000000E, 0x0000000E, 0x00040020, 0x00000039,
++    0x00000009, 0x00000004, 0x0004003B, 0x00000039, 0x0000003A, 0x00000009, 0x0004002B, 0x00000011,
++    0x0000003B, 0x00000000, 0x00040020, 0x0000003C, 0x00000009, 0x0000000E, 0x0005002C, 0x0000000F,
++    0x0000003D, 0x00000035, 0x00000026, 0x00040020, 0x0000003E, 0x00000009, 0x00000015, 0x00040020,
++    0x0000003F, 0x00000001, 0x00000015, 0x0004003B, 0x0000003F, 0x00000003, 0x00000001, 0x0006002C,
++    0x00000015, 0x00000040, 0x0000001E, 0x0000001A, 0x0000001A, 0x00040017, 0x00000041, 0x00000014,
++    0x00000002, 0x0003001D, 0x00000005, 0x00000010, 0x0003001E, 0x00000006, 0x00000005, 0x00040020,
++    0x00000042, 0x00000002, 0x00000006, 0x0004003B, 0x00000042, 0x00000007, 0x00000002, 0x00040020,
++    0x00000043, 0x00000002, 0x00000010, 0x0003001D, 0x00000008, 0x00000010, 0x0003001E, 0x00000009,
++    0x00000008, 0x00040020, 0x00000044, 0x00000002, 0x00000009, 0x00090019, 0x00000045, 0x0000000E,
++    0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000002, 0x00000021, 0x00040020, 0x00000046,
++    0x00000000, 0x00000045, 0x0004003B, 0x00000046, 0x0000000A, 0x00000000, 0x0004002B, 0x0000000E,
++    0x00000047, 0x0000FFFF, 0x0004002B, 0x0000000E, 0x00000048, 0x00000010, 0x0004002B, 0x0000000E,
++    0x00000049, 0x00000000, 0x0004002B, 0x0000000E, 0x0000004A, 0x00000001, 0x0004002B, 0x0000000E,
++    0x0000004B, 0x00000002, 0x0004002B, 0x0000000E, 0x0000004C, 0x00000003, 0x0004002B, 0x0000000E,
++    0x0000004D, 0x00000004, 0x0004002B, 0x0000000E, 0x0000004E, 0x00000005, 0x0004002B, 0x0000000E,
++    0x0000004F, 0x00000006, 0x0004002B, 0x0000000E, 0x00000050, 0x00000007, 0x0006002C, 0x00000015,
++    0x0000000B, 0x00000035, 0x00000038, 0x0000001B, 0x0005002C, 0x0000000F, 0x00000051, 0x00000026,
++    0x00000026, 0x0004002B, 0x0000000E, 0x00000052, 0x00000009, 0x0007002C, 0x00000010, 0x00000053,
++    0x00000020, 0x00000020, 0x00000020, 0x00000020, 0x0007002C, 0x00000010, 0x00000054, 0x00000021,
++    0x00000021, 0x00000021, 0x00000021, 0x0007002C, 0x00000010, 0x00000055, 0x00000022, 0x00000022,
++    0x00000022, 0x00000022, 0x0007002C, 0x00000010, 0x00000056, 0x00000023, 0x00000023, 0x00000023,
++    0x00000023, 0x0007002C, 0x00000010, 0x00000057, 0x00000017, 0x00000017, 0x00000017, 0x00000017,
++    0x0007002C, 0x00000010, 0x00000058, 0x00000018, 0x00000018, 0x00000018, 0x00000018, 0x0007002C,
++    0x00000010, 0x00000059, 0x0000001A, 0x0000001A, 0x0000001A, 0x0000001A, 0x0007002C, 0x00000010,
++    0x0000005A, 0x0000001C, 0x0000001C, 0x0000001C, 0x0000001C, 0x0007002C, 0x00000010, 0x0000005B,
++    0x0000001D, 0x0000001D, 0x0000001D, 0x0000001D, 0x0007002C, 0x00000010, 0x0000005C, 0x0000001E,
++    0x0000001E, 0x0000001E, 0x0000001E, 0x0004002B, 0x0000000E, 0x0000005D, 0xFFFFFFED, 0x0007002C,
++    0x00000010, 0x0000005E, 0x0000005D, 0x0000005D, 0x0000005D, 0x0000005D, 0x00050036, 0x0000000C,
++    0x00000002, 0x00000000, 0x0000000D, 0x000200F8, 0x0000005F, 0x000300F7, 0x00000060, 0x00000000,
++    0x000300FB, 0x0000001A, 0x00000061, 0x000200F8, 0x00000061, 0x00050041, 0x0000003C, 0x00000062,
++    0x0000003A, 0x0000003B, 0x0004003D, 0x0000000E, 0x00000063, 0x00000062, 0x000500C7, 0x0000000E,
++    0x00000064, 0x00000063, 0x0000001F, 0x000500AB, 0x00000014, 0x00000065, 0x00000064, 0x0000001A,
++    0x000500C2, 0x0000000E, 0x00000066, 0x00000063, 0x0000001F, 0x000500C7, 0x0000000E, 0x00000067,
++    0x00000066, 0x0000001E, 0x00050050, 0x0000000F, 0x00000068, 0x00000063, 0x00000063, 0x000500C2,
++    0x0000000F, 0x00000069, 0x00000068, 0x0000003D, 0x000500C7, 0x0000000F, 0x0000006A, 0x00000069,
++    0x00000051, 0x00050041, 0x0000003C, 0x0000006B, 0x0000003A, 0x0000002B, 0x0004003D, 0x0000000E,
++    0x0000006C, 0x0000006B, 0x00050041, 0x0000003C, 0x0000006D, 0x0000003A, 0x00000029, 0x0004003D,
++    0x0000000E, 0x0000006E, 0x0000006D, 0x00050041, 0x0000003C, 0x0000006F, 0x0000003A, 0x0000002F,
++    0x0004003D, 0x0000000E, 0x00000070, 0x0000006F, 0x00050041, 0x0000003E, 0x00000071, 0x0000003A,
++    0x0000002D, 0x0004003D, 0x00000015, 0x00000072, 0x00000071, 0x00050041, 0x0000003C, 0x00000073,
++    0x0000003A, 0x00000024, 0x0004003D, 0x0000000E, 0x00000074, 0x00000073, 0x00050041, 0x0000003C,
++    0x00000075, 0x0000003A, 0x00000033, 0x0004003D, 0x0000000E, 0x00000076, 0x00000075, 0x0004003D,
++    0x00000015, 0x00000077, 0x00000003, 0x000500C4, 0x00000015, 0x00000078, 0x00000077, 0x00000040,
++    0x0007004F, 0x0000000F, 0x00000079, 0x00000078, 0x00000078, 0x00000000, 0x00000001, 0x0007004F,
++    0x0000000F, 0x0000007A, 0x00000072, 0x00000072, 0x00000000, 0x00000001, 0x000500AE, 0x00000041,
++    0x0000007B, 0x00000079, 0x0000007A, 0x0004009A, 0x00000014, 0x0000007C, 0x0000007B, 0x000300F7,
++    0x0000007D, 0x00000002, 0x000400FA, 0x0000007C, 0x0000007E, 0x0000007D, 0x000200F8, 0x0000007E,
++    0x000200F9, 0x00000060, 0x000200F8, 0x0000007D, 0x0004007C, 0x00000013, 0x0000007F, 0x00000078,
++    0x00050051, 0x0000000E, 0x00000080, 0x00000072, 0x00000001, 0x00050051, 0x00000011, 0x00000081,
++    0x0000007F, 0x00000000, 0x00050084, 0x00000011, 0x00000082, 0x00000081, 0x0000002D, 0x00050051,
++    0x00000011, 0x00000083, 0x0000007F, 0x00000002, 0x0004007C, 0x00000011, 0x00000084, 0x00000080,
++    0x00050084, 0x00000011, 0x00000085, 0x00000083, 0x00000084, 0x00050051, 0x00000011, 0x00000086,
++    0x0000007F, 0x00000001, 0x00050080, 0x00000011, 0x00000087, 0x00000085, 0x00000086, 0x0004007C,
++    0x00000011, 0x00000088, 0x00000076, 0x00050084, 0x00000011, 0x00000089, 0x00000087, 0x00000088,
++    0x00050080, 0x00000011, 0x0000008A, 0x00000082, 0x00000089, 0x0004007C, 0x0000000E, 0x0000008B,
++    0x0000008A, 0x00050080, 0x0000000E, 0x0000008C, 0x0000008B, 0x00000074, 0x000500C2, 0x0000000E,
++    0x0000008D, 0x0000008C, 0x00000035, 0x00050051, 0x0000000E, 0x0000008E, 0x00000078, 0x00000000,
++    0x000500C2, 0x0000000E, 0x0000008F, 0x0000008E, 0x0000001F, 0x00050051, 0x0000000E, 0x00000090,
++    0x00000078, 0x00000001, 0x00050050, 0x0000000F, 0x00000091, 0x0000008F, 0x00000090, 0x00050086,
++    0x0000000F, 0x00000092, 0x00000091, 0x0000006A, 0x00050051, 0x0000000E, 0x00000093, 0x00000092,
++    0x00000000, 0x000500C4, 0x0000000E, 0x00000094, 0x00000093, 0x0000001F, 0x00050051, 0x0000000E,
++    0x00000095, 0x00000092, 0x00000001, 0x00050051, 0x0000000E, 0x00000096, 0x00000078, 0x00000002,
++    0x00060050, 0x00000015, 0x00000097, 0x00000094, 0x00000095, 0x00000096, 0x000300F7, 0x00000098,
++    0x00000002, 0x000400FA, 0x00000065, 0x00000099, 0x0000009A, 0x000200F8, 0x00000099, 0x0004007C,
++    0x00000013, 0x0000009B, 0x00000097, 0x00050051, 0x00000011, 0x0000009C, 0x0000009B, 0x00000001,
++    0x000500C3, 0x00000011, 0x0000009D, 0x0000009C, 0x0000002D, 0x00050051, 0x00000011, 0x0000009E,
++    0x0000009B, 0x00000002, 0x000500C3, 0x00000011, 0x0000009F, 0x0000009E, 0x00000029, 0x000500C2,
++    0x0000000E, 0x000000A0, 0x00000070, 0x00000035, 0x0004007C, 0x00000011, 0x000000A1, 0x000000A0,
++    0x00050084, 0x00000011, 0x000000A2, 0x0000009F, 0x000000A1, 0x00050080, 0x00000011, 0x000000A3,
++    0x0000009D, 0x000000A2, 0x000500C2, 0x0000000E, 0x000000A4, 0x0000006E, 0x00000025, 0x0004007C,
++    0x00000011, 0x000000A5, 0x000000A4, 0x00050084, 0x00000011, 0x000000A6, 0x000000A3, 0x000000A5,
++    0x00050051, 0x00000011, 0x000000A7, 0x0000009B, 0x00000000, 0x000500C3, 0x00000011, 0x000000A8,
++    0x000000A7, 0x00000024, 0x00050080, 0x00000011, 0x000000A9, 0x000000A8, 0x000000A6, 0x000500C4,
++    0x00000011, 0x000000AA, 0x000000A9, 0x00000021, 0x000500C7, 0x00000011, 0x000000AB, 0x000000AA,
++    0x00000036, 0x000500C4, 0x00000011, 0x000000AC, 0x000000AB, 0x0000002B, 0x000500C7, 0x00000011,
++    0x000000AD, 0x000000A7, 0x00000027, 0x000500C7, 0x00000011, 0x000000AE, 0x0000009C, 0x00000033,
++    0x000500C4, 0x00000011, 0x000000AF, 0x000000AE, 0x00000029, 0x00050080, 0x00000011, 0x000000B0,
++    0x000000AD, 0x000000AF, 0x000500C4, 0x00000011, 0x000000B1, 0x000000B0, 0x00000021, 0x000500C3,
++    0x00000011, 0x000000B2, 0x000000B1, 0x00000033, 0x000500C3, 0x00000011, 0x000000B3, 0x0000009C,
++    0x0000002F, 0x00050080, 0x00000011, 0x000000B4, 0x000000B3, 0x0000009F, 0x000500C7, 0x00000011,
++    0x000000B5, 0x000000B4, 0x0000002B, 0x000500C3, 0x00000011, 0x000000B6, 0x000000A7, 0x0000002F,
++    0x000500C4, 0x00000011, 0x000000B7, 0x000000B5, 0x0000002B, 0x00050080, 0x00000011, 0x000000B8,
++    0x000000B6, 0x000000B7, 0x000500C7, 0x00000011, 0x000000B9, 0x000000B8, 0x0000002F, 0x000500C4,
++    0x00000011, 0x000000BA, 0x000000B9, 0x0000002B, 0x00050080, 0x00000011, 0x000000BB, 0x000000B5,
++    0x000000BA, 0x000500C7, 0x00000011, 0x000000BC, 0x000000B2, 0x0000002A, 0x00050080, 0x00000011,
++    0x000000BD, 0x000000AC, 0x000000BC, 0x000500C4, 0x00000011, 0x000000BE, 0x000000BD, 0x0000002B,
++    0x000500C7, 0x00000011, 0x000000BF, 0x000000B2, 0x0000002C, 0x00050080, 0x00000011, 0x000000C0,
++    0x000000BE, 0x000000BF, 0x000500C7, 0x00000011, 0x000000C1, 0x0000009E, 0x0000002F, 0x000500C4,
++    0x00000011, 0x000000C2, 0x000000C1, 0x00000021, 0x00050080, 0x00000011, 0x000000C3, 0x000000C0,
++    0x000000C2, 0x000500C7, 0x00000011, 0x000000C4, 0x0000009C, 0x0000002B, 0x000500C4, 0x00000011,
++    0x000000C5, 0x000000C4, 0x0000002D, 0x00050080, 0x00000011, 0x000000C6, 0x000000C3, 0x000000C5,
++    0x000500C7, 0x00000011, 0x000000C7, 0x000000BB, 0x0000002B, 0x000500C4, 0x00000011, 0x000000C8,
++    0x000000C7, 0x0000002F, 0x000500C3, 0x00000011, 0x000000C9, 0x000000C6, 0x00000033, 0x000500C7,
++    0x00000011, 0x000000CA, 0x000000C9, 0x00000027, 0x00050080, 0x00000011, 0x000000CB, 0x000000C8,
++    0x000000CA, 0x000500C4, 0x00000011, 0x000000CC, 0x000000CB, 0x0000002F, 0x000500C7, 0x00000011,
++    0x000000CD, 0x000000BB, 0x00000037, 0x00050080, 0x00000011, 0x000000CE, 0x000000CC, 0x000000CD,
++    0x000500C4, 0x00000011, 0x000000CF, 0x000000CE, 0x00000029, 0x000500C7, 0x00000011, 0x000000D0,
++    0x000000C6, 0x0000002E, 0x00050080, 0x00000011, 0x000000D1, 0x000000CF, 0x000000D0, 0x000500C4,
++    0x00000011, 0x000000D2, 0x000000D1, 0x0000002F, 0x000500C7, 0x00000011, 0x000000D3, 0x000000C6,
++    0x00000034, 0x00050080, 0x00000011, 0x000000D4, 0x000000D2, 0x000000D3, 0x0004007C, 0x0000000E,
++    0x000000D5, 0x000000D4, 0x000200F9, 0x00000098, 0x000200F8, 0x0000009A, 0x0007004F, 0x0000000F,
++    0x000000D6, 0x00000097, 0x00000097, 0x00000000, 0x00000001, 0x0004007C, 0x00000012, 0x000000D7,
++    0x000000D6, 0x00050051, 0x00000011, 0x000000D8, 0x000000D7, 0x00000000, 0x000500C3, 0x00000011,
++    0x000000D9, 0x000000D8, 0x00000024, 0x00050051, 0x00000011, 0x000000DA, 0x000000D7, 0x00000001,
++    0x000500C3, 0x00000011, 0x000000DB, 0x000000DA, 0x00000024, 0x000500C2, 0x0000000E, 0x000000DC,
++    0x0000006E, 0x00000025, 0x0004007C, 0x00000011, 0x000000DD, 0x000000DC, 0x00050084, 0x00000011,
++    0x000000DE, 0x000000DB, 0x000000DD, 0x00050080, 0x00000011, 0x000000DF, 0x000000D9, 0x000000DE,
++    0x000500C4, 0x00000011, 0x000000E0, 0x000000DF, 0x00000052, 0x000500C7, 0x00000011, 0x000000E1,
++    0x000000D8, 0x00000027, 0x000500C7, 0x00000011, 0x000000E2, 0x000000DA, 0x00000028, 0x000500C4,
++    0x00000011, 0x000000E3, 0x000000E2, 0x00000029, 0x00050080, 0x00000011, 0x000000E4, 0x000000E1,
++    0x000000E3, 0x000500C4, 0x00000011, 0x000000E5, 0x000000E4, 0x0000001F, 0x000500C7, 0x00000011,
++    0x000000E6, 0x000000E5, 0x0000002A, 0x000500C4, 0x00000011, 0x000000E7, 0x000000E6, 0x0000002B,
++    0x00050080, 0x00000011, 0x000000E8, 0x000000E0, 0x000000E7, 0x000500C7, 0x00000011, 0x000000E9,
++    0x000000E5, 0x0000002C, 0x00050080, 0x00000011, 0x000000EA, 0x000000E8, 0x000000E9, 0x000500C7,
++    0x00000011, 0x000000EB, 0x000000DA, 0x0000002B, 0x000500C4, 0x00000011, 0x000000EC, 0x000000EB,
++    0x0000002D, 0x00050080, 0x00000011, 0x000000ED, 0x000000EA, 0x000000EC, 0x000500C7, 0x00000011,
++    0x000000EE, 0x000000ED, 0x0000002E, 0x000500C4, 0x00000011, 0x000000EF, 0x000000EE, 0x0000002F,
++    0x000500C7, 0x00000011, 0x000000F0, 0x000000DA, 0x00000030, 0x000500C4, 0x00000011, 0x000000F1,
++    0x000000F0, 0x00000027, 0x00050080, 0x00000011, 0x000000F2, 0x000000EF, 0x000000F1, 0x000500C7,
++    0x00000011, 0x000000F3, 0x000000ED, 0x00000031, 0x000500C4, 0x00000011, 0x000000F4, 0x000000F3,
++    0x00000029, 0x00050080, 0x00000011, 0x000000F5, 0x000000F2, 0x000000F4, 0x000500C7, 0x00000011,
++    0x000000F6, 0x000000DA, 0x00000032, 0x000500C3, 0x00000011, 0x000000F7, 0x000000F6, 0x00000029,
++    0x000500C3, 0x00000011, 0x000000F8, 0x000000D8, 0x0000002F, 0x00050080, 0x00000011, 0x000000F9,
++    0x000000F7, 0x000000F8, 0x000500C7, 0x00000011, 0x000000FA, 0x000000F9, 0x0000002F, 0x000500C4,
++    0x00000011, 0x000000FB, 0x000000FA, 0x00000033, 0x00050080, 0x00000011, 0x000000FC, 0x000000F5,
++    0x000000FB, 0x000500C7, 0x00000011, 0x000000FD, 0x000000ED, 0x00000034, 0x00050080, 0x00000011,
++    0x000000FE, 0x000000FC, 0x000000FD, 0x0004007C, 0x0000000E, 0x000000FF, 0x000000FE, 0x000200F9,
++    0x00000098, 0x000200F8, 0x00000098, 0x000700F5, 0x0000000E, 0x00000100, 0x000000D5, 0x00000099,
++    0x000000FF, 0x0000009A, 0x00050084, 0x0000000F, 0x00000101, 0x00000092, 0x0000006A, 0x00050082,
++    0x0000000F, 0x00000102, 0x00000091, 0x00000101, 0x00050051, 0x0000000E, 0x00000103, 0x0000006A,
++    0x00000000, 0x00050051, 0x0000000E, 0x00000104, 0x0000006A, 0x00000001, 0x00050084, 0x0000000E,
++    0x00000105, 0x00000103, 0x00000104, 0x00050084, 0x0000000E, 0x00000106, 0x00000100, 0x00000105,
++    0x00050051, 0x0000000E, 0x00000107, 0x00000102, 0x00000000, 0x00050084, 0x0000000E, 0x00000108,
++    0x00000107, 0x00000104, 0x00050051, 0x0000000E, 0x00000109, 0x00000102, 0x00000001, 0x00050080,
++    0x0000000E, 0x0000010A, 0x00000108, 0x00000109, 0x000500C4, 0x0000000E, 0x0000010B, 0x0000010A,
++    0x0000001F, 0x000500C7, 0x0000000E, 0x0000010C, 0x0000008E, 0x0000001E, 0x00050080, 0x0000000E,
++    0x0000010D, 0x0000010B, 0x0000010C, 0x000500C4, 0x0000000E, 0x0000010E, 0x0000010D, 0x0000001F,
++    0x00050080, 0x0000000E, 0x0000010F, 0x00000106, 0x0000010E, 0x00050080, 0x0000000E, 0x00000110,
++    0x0000006C, 0x0000010F, 0x000500C2, 0x0000000E, 0x00000111, 0x00000110, 0x00000035, 0x00060041,
++    0x00000043, 0x00000112, 0x00000007, 0x0000003B, 0x00000111, 0x0004003D, 0x00000010, 0x00000113,
++    0x00000112, 0x000500AA, 0x00000014, 0x00000114, 0x00000067, 0x0000001B, 0x000500AA, 0x00000014,
++    0x00000115, 0x00000067, 0x0000001F, 0x000500A6, 0x00000014, 0x00000116, 0x00000114, 0x00000115,
++    0x000300F7, 0x00000117, 0x00000000, 0x000400FA, 0x00000116, 0x00000118, 0x00000117, 0x000200F8,
++    0x00000118, 0x000500C7, 0x00000010, 0x00000119, 0x00000113, 0x00000053, 0x000500C4, 0x00000010,
++    0x0000011A, 0x00000119, 0x00000054, 0x000500C7, 0x00000010, 0x0000011B, 0x00000113, 0x00000055,
++    0x000500C2, 0x00000010, 0x0000011C, 0x0000011B, 0x00000054, 0x000500C5, 0x00000010, 0x0000011D,
++    0x0000011A, 0x0000011C, 0x000200F9, 0x00000117, 0x000200F8, 0x00000117, 0x000700F5, 0x00000010,
++    0x0000011E, 0x00000113, 0x00000098, 0x0000011D, 0x00000118, 0x000500AA, 0x00000014, 0x0000011F,
++    0x00000067, 0x0000001E, 0x000500A6, 0x00000014, 0x00000120, 0x00000115, 0x0000011F, 0x000300F7,
++    0x00000121, 0x00000000, 0x000400FA, 0x00000120, 0x00000122, 0x00000121, 0x000200F8, 0x00000122,
++    0x000500C4, 0x00000010, 0x00000123, 0x0000011E, 0x00000056, 0x000500C2, 0x00000010, 0x00000124,
++    0x0000011E, 0x00000056, 0x000500C5, 0x00000010, 0x00000125, 0x00000123, 0x00000124, 0x000200F9,
++    0x00000121, 0x000200F8, 0x00000121, 0x000700F5, 0x00000010, 0x00000126, 0x0000011E, 0x00000117,
++    0x00000125, 0x00000122, 0x000500C2, 0x00000010, 0x00000127, 0x00000126, 0x00000054, 0x000500C7,
++    0x00000010, 0x00000128, 0x00000127, 0x00000057, 0x000500C2, 0x00000010, 0x00000129, 0x00000127,
++    0x00000058, 0x000500AA, 0x00000019, 0x0000012A, 0x00000129, 0x00000059, 0x0006000C, 0x00000016,
++    0x0000012B, 0x00000001, 0x0000004B, 0x00000128, 0x0004007C, 0x00000010, 0x0000012C, 0x0000012B,
++    0x00050082, 0x00000010, 0x0000012D, 0x00000058, 0x0000012C, 0x00050080, 0x00000010, 0x0000012E,
++    0x0000012C, 0x0000005E, 0x000600A9, 0x00000010, 0x0000012F, 0x0000012A, 0x0000012E, 0x00000129,
++    0x000500C4, 0x00000010, 0x00000130, 0x00000128, 0x0000012D, 0x000500C7, 0x00000010, 0x00000131,
++    0x00000130, 0x00000057, 0x000600A9, 0x00000010, 0x00000132, 0x0000012A, 0x00000131, 0x00000128,
++    0x00050080, 0x00000010, 0x00000133, 0x0000012F, 0x0000005A, 0x000500C4, 0x00000010, 0x00000134,
++    0x00000133, 0x0000005B, 0x000500C4, 0x00000010, 0x00000135, 0x00000132, 0x0000005C, 0x000500C5,
++    0x00000010, 0x00000136, 0x00000134, 0x00000135, 0x000500AA, 0x00000019, 0x00000137, 0x00000127,
++    0x00000059, 0x000600A9, 0x00000010, 0x00000138, 0x00000137, 0x00000059, 0x00000136, 0x00050051,
++    0x0000000E, 0x00000139, 0x00000078, 0x00000000, 0x00050051, 0x0000000E, 0x0000013A, 0x00000078,
++    0x00000001, 0x00050051, 0x0000000E, 0x0000013B, 0x00000072, 0x00000000, 0x00050080, 0x0000000E,
++    0x0000013C, 0x00000139, 0x00000049, 0x00050051, 0x0000000E, 0x0000013D, 0x00000138, 0x00000000,
++    0x00070050, 0x00000010, 0x0000013E, 0x0000013D, 0x00000049, 0x00000049, 0x00000049, 0x0004007C,
++    0x00000011, 0x0000013F, 0x0000013C, 0x0004007C, 0x00000011, 0x00000140, 0x0000013A, 0x00050050,
++    0x00000012, 0x00000141, 0x0000013F, 0x00000140, 0x000500B0, 0x00000014, 0x00000142, 0x0000013C,
++    0x0000013B, 0x000300F7, 0x00000143, 0x00000000, 0x000400FA, 0x00000142, 0x00000144, 0x00000143,
++    0x000200F8, 0x00000144, 0x0004003D, 0x00000045, 0x00000145, 0x0000000A, 0x00040063, 0x00000145,
++    0x00000141, 0x0000013E, 0x000200F9, 0x00000143, 0x000200F8, 0x00000143, 0x00050080, 0x0000000E,
++    0x00000146, 0x00000139, 0x0000004A, 0x00050051, 0x0000000E, 0x00000147, 0x00000138, 0x00000001,
++    0x00070050, 0x00000010, 0x00000148, 0x00000147, 0x00000049, 0x00000049, 0x00000049, 0x0004007C,
++    0x00000011, 0x00000149, 0x00000146, 0x0004007C, 0x00000011, 0x0000014A, 0x0000013A, 0x00050050,
++    0x00000012, 0x0000014B, 0x00000149, 0x0000014A, 0x000500B0, 0x00000014, 0x0000014C, 0x00000146,
++    0x0000013B, 0x000300F7, 0x0000014D, 0x00000000, 0x000400FA, 0x0000014C, 0x0000014E, 0x0000014D,
++    0x000200F8, 0x0000014E, 0x0004003D, 0x00000045, 0x0000014F, 0x0000000A, 0x00040063, 0x0000014F,
++    0x0000014B, 0x00000148, 0x000200F9, 0x0000014D, 0x000200F8, 0x0000014D, 0x00050080, 0x0000000E,
++    0x00000150, 0x00000139, 0x0000004B, 0x00050051, 0x0000000E, 0x00000151, 0x00000138, 0x00000002,
++    0x00070050, 0x00000010, 0x00000152, 0x00000151, 0x00000049, 0x00000049, 0x00000049, 0x0004007C,
++    0x00000011, 0x00000153, 0x00000150, 0x0004007C, 0x00000011, 0x00000154, 0x0000013A, 0x00050050,
++    0x00000012, 0x00000155, 0x00000153, 0x00000154, 0x000500B0, 0x00000014, 0x00000156, 0x00000150,
++    0x0000013B, 0x000300F7, 0x00000157, 0x00000000, 0x000400FA, 0x00000156, 0x00000158, 0x00000157,
++    0x000200F8, 0x00000158, 0x0004003D, 0x00000045, 0x00000159, 0x0000000A, 0x00040063, 0x00000159,
++    0x00000155, 0x00000152, 0x000200F9, 0x00000157, 0x000200F8, 0x00000157, 0x00050080, 0x0000000E,
++    0x0000015A, 0x00000139, 0x0000004C, 0x00050051, 0x0000000E, 0x0000015B, 0x00000138, 0x00000003,
++    0x00070050, 0x00000010, 0x0000015C, 0x0000015B, 0x00000049, 0x00000049, 0x00000049, 0x0004007C,
++    0x00000011, 0x0000015D, 0x0000015A, 0x0004007C, 0x00000011, 0x0000015E, 0x0000013A, 0x00050050,
++    0x00000012, 0x0000015F, 0x0000015D, 0x0000015E, 0x000500B0, 0x00000014, 0x00000160, 0x0000015A,
++    0x0000013B, 0x000300F7, 0x00000161, 0x00000000, 0x000400FA, 0x00000160, 0x00000162, 0x00000161,
++    0x000200F8, 0x00000162, 0x0004003D, 0x00000045, 0x00000163, 0x0000000A, 0x00040063, 0x00000163,
++    0x0000015F, 0x0000015C, 0x000200F9, 0x00000161, 0x000200F8, 0x00000161, 0x00050080, 0x0000000E,
++    0x00000164, 0x0000008D, 0x0000002B, 0x000500AC, 0x00000014, 0x00000165, 0x00000103, 0x0000001B,
++    0x000300F7, 0x00000166, 0x00000002, 0x000400FA, 0x00000165, 0x00000167, 0x00000168, 0x000200F8,
++    0x00000167, 0x00050086, 0x0000000E, 0x00000169, 0x0000008F, 0x00000103, 0x00050084, 0x0000000E,
++    0x0000016A, 0x00000169, 0x00000103, 0x00050082, 0x0000000E, 0x0000016B, 0x0000008F, 0x0000016A,
++    0x00050080, 0x0000000E, 0x0000016C, 0x0000016B, 0x0000001B, 0x000500AA, 0x00000014, 0x0000016D,
++    0x0000016C, 0x00000103, 0x000300F7, 0x0000016E, 0x00000000, 0x000400FA, 0x0000016D, 0x0000016F,
++    0x00000170, 0x000200F8, 0x0000016F, 0x00050084, 0x0000000E, 0x00000171, 0x00000038, 0x00000103,
++    0x000500C4, 0x0000000E, 0x00000172, 0x0000016B, 0x00000035, 0x00050082, 0x0000000E, 0x00000173,
++    0x00000171, 0x00000172, 0x000200F9, 0x0000016E, 0x000200F8, 0x00000170, 0x000200F9, 0x0000016E,
++    0x000200F8, 0x0000016E, 0x000700F5, 0x0000000E, 0x00000174, 0x00000173, 0x0000016F, 0x00000023,
++    0x00000170, 0x000200F9, 0x00000166, 0x000200F8, 0x00000168, 0x000200F9, 0x00000166, 0x000200F8,
++    0x00000166, 0x000700F5, 0x0000000E, 0x00000175, 0x00000174, 0x0000016E, 0x00000038, 0x00000168,
++    0x00050084, 0x0000000E, 0x00000176, 0x00000175, 0x00000104, 0x000500C2, 0x0000000E, 0x00000177,
++    0x00000176, 0x00000035, 0x00050080, 0x0000000E, 0x00000178, 0x00000111, 0x00000177, 0x00060041,
++    0x00000043, 0x00000179, 0x00000007, 0x0000003B, 0x00000178, 0x0004003D, 0x00000010, 0x0000017A,
++    0x00000179, 0x000300F7, 0x0000017B, 0x00000000, 0x000400FA, 0x00000116, 0x0000017C, 0x0000017B,
++    0x000200F8, 0x0000017C, 0x000500C7, 0x00000010, 0x0000017D, 0x0000017A, 0x00000053, 0x000500C4,
++    0x00000010, 0x0000017E, 0x0000017D, 0x00000054, 0x000500C7, 0x00000010, 0x0000017F, 0x0000017A,
++    0x00000055, 0x000500C2, 0x00000010, 0x00000180, 0x0000017F, 0x00000054, 0x000500C5, 0x00000010,
++    0x00000181, 0x0000017E, 0x00000180, 0x000200F9, 0x0000017B, 0x000200F8, 0x0000017B, 0x000700F5,
++    0x00000010, 0x00000182, 0x0000017A, 0x00000166, 0x00000181, 0x0000017C, 0x000300F7, 0x00000183,
++    0x00000000, 0x000400FA, 0x00000120, 0x00000184, 0x00000183, 0x000200F8, 0x00000184, 0x000500C4,
++    0x00000010, 0x00000185, 0x00000182, 0x00000056, 0x000500C2, 0x00000010, 0x00000186, 0x00000182,
++    0x00000056, 0x000500C5, 0x00000010, 0x00000187, 0x00000185, 0x00000186, 0x000200F9, 0x00000183,
++    0x000200F8, 0x00000183, 0x000700F5, 0x00000010, 0x00000188, 0x00000182, 0x0000017B, 0x00000187,
++    0x00000184, 0x000500C2, 0x00000010, 0x00000189, 0x00000188, 0x00000054, 0x000500C7, 0x00000010,
++    0x0000018A, 0x00000189, 0x00000057, 0x000500C2, 0x00000010, 0x0000018B, 0x00000189, 0x00000058,
++    0x000500AA, 0x00000019, 0x0000018C, 0x0000018B, 0x00000059, 0x0006000C, 0x00000016, 0x0000018D,
++    0x00000001, 0x0000004B, 0x0000018A, 0x0004007C, 0x00000010, 0x0000018E, 0x0000018D, 0x00050082,
++    0x00000010, 0x0000018F, 0x00000058, 0x0000018E, 0x00050080, 0x00000010, 0x00000190, 0x0000018E,
++    0x0000005E, 0x000600A9, 0x00000010, 0x00000191, 0x0000018C, 0x00000190, 0x0000018B, 0x000500C4,
++    0x00000010, 0x00000192, 0x0000018A, 0x0000018F, 0x000500C7, 0x00000010, 0x00000193, 0x00000192,
++    0x00000057, 0x000600A9, 0x00000010, 0x00000194, 0x0000018C, 0x00000193, 0x0000018A, 0x00050080,
++    0x00000010, 0x00000195, 0x00000191, 0x0000005A, 0x000500C4, 0x00000010, 0x00000196, 0x00000195,
++    0x0000005B, 0x000500C4, 0x00000010, 0x00000197, 0x00000194, 0x0000005C, 0x000500C5, 0x00000010,
++    0x00000198, 0x00000196, 0x00000197, 0x000500AA, 0x00000019, 0x00000199, 0x00000189, 0x00000059,
++    0x000600A9, 0x00000010, 0x0000019A, 0x00000199, 0x00000059, 0x00000198, 0x00050051, 0x0000000E,
++    0x0000019B, 0x00000078, 0x00000000, 0x00050051, 0x0000000E, 0x0000019C, 0x00000078, 0x00000001,
++    0x00050051, 0x0000000E, 0x0000019D, 0x00000072, 0x00000000, 0x00050080, 0x0000000E, 0x0000019E,
++    0x0000019B, 0x0000004D, 0x00050051, 0x0000000E, 0x0000019F, 0x0000019A, 0x00000000, 0x00070050,
++    0x00000010, 0x000001A0, 0x0000019F, 0x00000049, 0x00000049, 0x00000049, 0x0004007C, 0x00000011,
++    0x000001A1, 0x0000019E, 0x0004007C, 0x00000011, 0x000001A2, 0x0000019C, 0x00050050, 0x00000012,
++    0x000001A3, 0x000001A1, 0x000001A2, 0x000500B0, 0x00000014, 0x000001A4, 0x0000019E, 0x0000019D,
++    0x000300F7, 0x000001A5, 0x00000000, 0x000400FA, 0x000001A4, 0x000001A6, 0x000001A5, 0x000200F8,
++    0x000001A6, 0x0004003D, 0x00000045, 0x000001A7, 0x0000000A, 0x00040063, 0x000001A7, 0x000001A3,
++    0x000001A0, 0x000200F9, 0x000001A5, 0x000200F8, 0x000001A5, 0x00050080, 0x0000000E, 0x000001A8,
++    0x0000019B, 0x0000004E, 0x00050051, 0x0000000E, 0x000001A9, 0x0000019A, 0x00000001, 0x00070050,
++    0x00000010, 0x000001AA, 0x000001A9, 0x00000049, 0x00000049, 0x00000049, 0x0004007C, 0x00000011,
++    0x000001AB, 0x000001A8, 0x0004007C, 0x00000011, 0x000001AC, 0x0000019C, 0x00050050, 0x00000012,
++    0x000001AD, 0x000001AB, 0x000001AC, 0x000500B0, 0x00000014, 0x000001AE, 0x000001A8, 0x0000019D,
++    0x000300F7, 0x000001AF, 0x00000000, 0x000400FA, 0x000001AE, 0x000001B0, 0x000001AF, 0x000200F8,
++    0x000001B0, 0x0004003D, 0x00000045, 0x000001B1, 0x0000000A, 0x00040063, 0x000001B1, 0x000001AD,
++    0x000001AA, 0x000200F9, 0x000001AF, 0x000200F8, 0x000001AF, 0x00050080, 0x0000000E, 0x000001B2,
++    0x0000019B, 0x0000004F, 0x00050051, 0x0000000E, 0x000001B3, 0x0000019A, 0x00000002, 0x00070050,
++    0x00000010, 0x000001B4, 0x000001B3, 0x00000049, 0x00000049, 0x00000049, 0x0004007C, 0x00000011,
++    0x000001B5, 0x000001B2, 0x0004007C, 0x00000011, 0x000001B6, 0x0000019C, 0x00050050, 0x00000012,
++    0x000001B7, 0x000001B5, 0x000001B6, 0x000500B0, 0x00000014, 0x000001B8, 0x000001B2, 0x0000019D,
++    0x000300F7, 0x000001B9, 0x00000000, 0x000400FA, 0x000001B8, 0x000001BA, 0x000001B9, 0x000200F8,
++    0x000001BA, 0x0004003D, 0x00000045, 0x000001BB, 0x0000000A, 0x00040063, 0x000001BB, 0x000001B7,
++    0x000001B4, 0x000200F9, 0x000001B9, 0x000200F8, 0x000001B9, 0x00050080, 0x0000000E, 0x000001BC,
++    0x0000019B, 0x00000050, 0x00050051, 0x0000000E, 0x000001BD, 0x0000019A, 0x00000003, 0x00070050,
++    0x00000010, 0x000001BE, 0x000001BD, 0x00000049, 0x00000049, 0x00000049, 0x0004007C, 0x00000011,
++    0x000001BF, 0x000001BC, 0x0004007C, 0x00000011, 0x000001C0, 0x0000019C, 0x00050050, 0x00000012,
++    0x000001C1, 0x000001BF, 0x000001C0, 0x000500B0, 0x00000014, 0x000001C2, 0x000001BC, 0x0000019D,
++    0x000300F7, 0x000001C3, 0x00000000, 0x000400FA, 0x000001C2, 0x000001C4, 0x000001C3, 0x000200F8,
++    0x000001C4, 0x0004003D, 0x00000045, 0x000001C5, 0x0000000A, 0x00040063, 0x000001C5, 0x000001C1,
++    0x000001BE, 0x000200F9, 0x000001C3, 0x000200F8, 0x000001C3, 0x000200F9, 0x00000060, 0x000200F8,
++    0x00000060, 0x000100FD, 0x00010038,
++};

@@ -2,6 +2,9 @@
 # tutorial skip with B/A, status (Start) and inventory (RB), left-stick movement, right-stick camera, attacks
 # and Dash, pause (Back) and resume (B). Anchored to the game's state like new_game.toml.
 
+# K74 (M9): since M7 the storage question is answered for the player, so the route needs one confirmation fewer; the
+# former 1650 press landed at the start of the intro and, by load timing, sometimes skipped it.
+
 [scenario]
 description = "Controller: end tutorial, status/inventory, left stick walk, right stick camera, attack, pause/resume"
 seconds = 150
@@ -15,7 +18,6 @@ script = """
 1250 pad press a
 1350 pad press a
 1500 pad press a
-1650 pad press a
 1800 repeat 60 until gameplay pad down a
 1803 repeat 60 until gameplay pad up a
 @menu#2+60 pad press b

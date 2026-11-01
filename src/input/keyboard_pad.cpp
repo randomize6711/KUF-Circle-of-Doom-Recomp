@@ -136,7 +136,7 @@ Bindings Bindings::Defaults() {
   };
   static const Default kDefaults[] = {
       {Control::kA, "Space,Return,NumpadEnter,MouseLeft", "MouseLeft,Return"},
-      {Control::kB, "Escape,Backspace,MouseRight", "Space"},
+      {Control::kB, "Escape,MouseRight", "Space"},  // never Backspace in menus (text deletion only)
       {Control::kX, "X", "MouseRight,X"},
       {Control::kY, "Y", "E,Y"},
       {Control::kLeftShoulder, "Q,PageUp", "Q,1"},
@@ -178,6 +178,11 @@ bool Bindings::Set(Context context, Control control, std::string_view key_list, 
       *error += std::string(" for ") + ControlName(control);
     }
     return false;
+  }
+  if (context != Context::kGameplay) {
+    // Backspace deletes text in the menus (the lobby fields) and is never a menu control: not Back, not B, not
+    // anything else, even when a setting names it (the player's own gameplay keys may still use it).
+    std::erase(keys, kBackspaceKey);
   }
   keys_[static_cast<size_t>(context)][static_cast<size_t>(control)] = std::move(keys);
   return true;
@@ -221,8 +226,12 @@ void KeyboardPad::set_bindings(Bindings bindings) {
 }
 
 void KeyboardPad::set_context(Context context) {
-  if (context != Context::kGameplay) {
+  if (context != context_) {
+    // A change either way starts the camera from rest (no jump from motion made before a menu opened or while it
+    // closed) and drops queued wheel steps (a menu scroll never reaches gameplay). Held keys keep their press-time
+    // meaning (KeyDown), so a button held into a menu is never re-read as a menu action.
     look_dx_ = look_dy_ = 0;
+    wheel_pulses_.clear();
   }
   context_ = context;
 }

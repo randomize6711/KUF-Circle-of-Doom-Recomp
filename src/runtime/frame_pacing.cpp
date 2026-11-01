@@ -31,6 +31,8 @@
 // what makes them the tick's frames is in render_frames.cpp), the input script's `trace` (K35), which points the SDK's
 // GPU trace at the next frame showing a new tick, and its items' delivery at each tick start (K38).
 
+#include "coop/coop_runtime.h"
+#include "runtime/lobby_screen.h"
 #include "runtime/frame_pacing.h"
 #include "runtime/controls_screen.h"
 #include "runtime/menu_pointer.h"
@@ -70,6 +72,7 @@
 #include "runtime/render_frames.h"
 #include "runtime/telemetry.h"
 #include "runtime/tick_schedule.h"
+#include "runtime/adaptive_rate.h"
 
 REXCVAR_DEFINE_BOOL(kuf_fixed_tick, true, "KUF",
                     "Run the game's 30 Hz ticks on a host clock, so the guest's vblank rate, VSync and the display "
@@ -116,6 +119,18 @@ REXCVAR_DEFINE_INT32(kuf_debug_tick_stall_us, 0, "KUF/Debug", "M6D K44 test: see
 REXCVAR_DEFINE_BOOL(kuf_present_clock_align, true, "KUF/Frame Rate",
                     "D6 (K49): at frame rates that are a multiple of 30, the frames between ticks on the tick's "
                     "schedule (evenly spaced); false: the clock keeps the phase it restarted with (D5)");
+REXCVAR_DEFINE_BOOL(kuf_present_clock_from_handoff, true, "KUF/Frame Rate",
+                    "M8: with the clock on the tick's schedule (kuf_present_clock_align), the frames between ticks step "
+                    "from when the tick's own frame was handed to the render thread, not from the tick's scheduled "
+                    "start (that frame reaches the renderer after the tick's work: 60 fps alternated 14 / 19.5 ms)");
+REXCVAR_DEFINE_BOOL(kuf_frame_rate_adaptive, false, "KUF/Frame Rate",
+                    "M8: at a frame-rate limit that is a multiple of 30, when the GPU's time per frame shows it cannot "
+                    "draw that many frames, draw the largest multiple of 30 it can (evenly spaced on the tick's "
+                    "schedule) instead of dropping frames unevenly; back up when it can again (needs "
+                    "--gpu_timestamp_stats for the GPU's time)");
+REXCVAR_DEFINE_DOUBLE(kuf_frame_rate_adaptive_load, 0.93, "KUF/Frame Rate",
+                      "M8: --kuf_frame_rate_adaptive draws n frames per tick while n x the GPU's time per frame stays "
+                      "within this share of a tick");
 REXCVAR_DEFINE_BOOL(kuf_present_clock_keep_late_phase, false, "KUF/Debug",
                     "M6D K44 test, not for play: the presentation clock as before K44 (a frame step too late to build "
                     "before the next tick is skipped and the clock keeps its phase, which can lock the frame rate "
@@ -769,6 +784,30 @@ BuildFreeze g_build_freeze;  // g_mutex
 
 bool Building() { return g_builds_per_tick > 0 || g_frame_rate != 0; }
 
+// M8 adaptive frame rate (--kuf_frame_rate_adaptive). When the GPU cannot draw the limit's frames, the render thread
+// waits for ring space, steps are dropped as "render busy" and the frames that are drawn come in bursts (at 3840x2160
+// with a 120 limit: alternately about 5 and 21 ms apart), so the shown motion advances unevenly. Instead the frames
+// per tick follow the GPU's measured time per frame (SDK patch 0012), on the tick's schedule: an even 60 or 90
+// (adaptive_rate.h: down after half a second below the rate in effect, up one step after two seconds above it).
+kuf::pacing::AdaptiveRate g_adaptive;  // game thread
+int EffectiveFrameRate() {
+  if (!REXCVAR_GET(kuf_frame_rate_adaptive) || g_frame_rate <= 30 || g_frame_rate % 30 != 0) {
+    g_adaptive.Reset();
+    return g_frame_rate;
+  }
+  // The GPU plugin's measurement (SDK patch 0012, --gpu_timestamp_stats), through the cvar registry: the plugin is
+  // loaded at run time, its functions are not on this executable's link line.
+  const double gpu_ms = rex::cvar::Query<int32_t>("gpu_recent_frame_us") / 1000.0;
+  const int before = g_adaptive.n() > 0 ? g_adaptive.n() : g_frame_rate / 30;
+  const int n = g_adaptive.Update(g_frame_rate / 30, gpu_ms,
+                                  kuf::pacing::TickSchedule::kTickNs / 1e6 * REXCVAR_GET(kuf_frame_rate_adaptive_load));
+  if (n != before) {
+    REXLOG_INFO("[kuf-pacing] adaptive frame rate: {} -> {} frames per second (GPU {:.2f} ms per frame, limit {})",
+                before * 30, n * 30, gpu_ms, g_frame_rate);
+  }
+  return n * 30;
+}
+
 // The frame-rate settings (D5): g_frame_rate from the setting's limit (30: the original, 0: no render-only frames;
 // unlimited: -1), and what is interpolated.
 int RateOf(int fps_limit) {
@@ -1088,6 +1127,7 @@ bool ApplyFrameRequest(PPCContext& ctx, uint8_t* base, uint32_t sync) {
     kuf::render_frames::OnTickStart(ctx, base, 1);
   }
   g_frame_rate = rate;
+  g_adaptive.Reset();  // M8: the adaptive rate starts again from the new limit
   g_interpolation = what;
   g_active_frame = want;
   kuf::presentation::Configure(Building(), what);
@@ -1151,7 +1191,8 @@ void AfterTick(PPCContext& ctx, uint8_t* base, uint32_t sync) {
   // A step too late to build before the next tick is due (and the steps after it) goes to the next tick's own frame:
   // the clock stays there, behind the next tick's start, which restarts it (K44: the clock kept its phase past such a
   // step, so after one late tick every tick could skip the same step: 60 locked at 30, 120 at 90).
-  const auto period = std::chrono::nanoseconds(1000000000ll / g_frame_rate);
+  const int rate = EffectiveFrameRate();
+  const auto period = std::chrono::nanoseconds(1000000000ll / rate);
   const bool trace = REXCVAR_GET(kuf_trace_frame_clock) >= 0 &&
                      g_ticks.load() >= uint64_t(REXCVAR_GET(kuf_trace_frame_clock)) &&
                      g_ticks.load() < uint64_t(REXCVAR_GET(kuf_trace_frame_clock)) + 900;
@@ -1159,15 +1200,35 @@ void AfterTick(PPCContext& ctx, uint8_t* base, uint32_t sync) {
   const double phase_in_ms = Ms(g_present_clock - g_tick_began);
   bool restart = false;
   auto end = due;  // steps from here on are the next tick's frame
-  if (g_frame_rate % 30 == 0 && REXCVAR_GET(kuf_present_clock_align) &&
+  auto step = std::chrono::duration_cast<Clock::duration>(period);  // between the frames of this tick
+  if (rate % 30 == 0 && REXCVAR_GET(kuf_present_clock_align) &&
       !REXCVAR_GET(kuf_present_clock_keep_late_phase)) {  // (the K44 fault test keeps the old clock)
     // D6 (K49): a whole number of frames per tick: the steps on the tick's schedule (phase 0), so the frames are
     // evenly spaced and the last one leaves a full step before the next tick. Steps already past when the tick
     // started late are the tick's own frame's.
-    g_present_clock = scheduled + period;
-    while (g_present_clock <= g_tick_began) g_present_clock += period;
-    g_present_clock -= period;  // the loop below starts by stepping past the tick's frame
-    end = due - period / 2;  // n steps of 1 / rate end nanoseconds short of the tick: that last one is the next tick's
+    if (REXCVAR_GET(kuf_present_clock_from_handoff)) {
+      // M8: the tick's own frame was handed to the render thread just now, after the tick's work and its scene build
+      // (several ms after the tick's start); stepping from the tick's start put the first render-only frame that much
+      // closer to it than the next tick's frame is to the last one (60 fps: 14 / 19.5 ms; at 120 the first step also
+      // found the renderer still busy with the tick's frame and was dropped). The steps run from the hand-off; a step
+      // that cannot be built before the next tick is due is still late (below).
+      // When the hand-off came so late that the last step could not be built before the next tick is due, the steps
+      // are drawn closer together (all of them fit) instead of dropping the last one (at 120 fps in 2560x1440 the
+      // hand-off came 5-7 ms into the tick and a third of the ticks lost their last frame).
+      const auto handoff = Clock::now();
+      const int render_only = rate / 30 - 1;
+      if (render_only > 0) {
+        step = std::min(step, (due - cost - handoff) / render_only);
+        step = std::max(step, std::chrono::duration_cast<Clock::duration>(period * 3 / 4));  // never bunched
+      }
+      g_present_clock = handoff;  // the tick's frame: the loop below starts by stepping past it
+      end = handoff + render_only * step + step / 2;
+    } else {
+      g_present_clock = scheduled + period;
+      while (g_present_clock <= g_tick_began) g_present_clock += period;
+      g_present_clock -= period;  // the loop below starts by stepping past the tick's frame
+      end = due - period / 2;  // n steps of 1 / rate end nanoseconds short of the tick: that last one is the next tick's
+    }
   } else {
     restart = g_present_clock < g_tick_began;
     if (restart) {
@@ -1178,7 +1239,7 @@ void AfterTick(PPCContext& ctx, uint8_t* base, uint32_t sync) {
   g_present_clock += period;  // the tick's frame
   int frames = 1, late = 0, busy = 0;
   std::string steps;
-  for (;; g_present_clock += period) {
+  for (;; g_present_clock += step) {
     const auto at = g_present_clock;
     if (at >= end) break;  // the next tick's frame
     if (std::max(at, Clock::now()) + cost > due) {
@@ -1618,6 +1679,8 @@ REX_HOOK_RAW(sub_826F0D58) {  // one game tick: (world)
     kuf::title_menu::OnTick(ctx, base);
     kuf::pc_menu::OnTick(ctx, base);
     kuf::menu_pointer::OnTick(ctx, base);  // UX fix 1: hover and clicks before the tick reads input
+    kuf::lobby_screen::OnTick(ctx, base);  // the multiplayer menus on the game type screen
+    kuf::coop::Maintain();                 // the lobby's events and Steam's callbacks, once per tick
     kuf::controls_screen::OnTick(ctx, base);  // UI polish: the Controls page for the device in use
     ctx = saved;
   }

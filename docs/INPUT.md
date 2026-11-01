@@ -46,16 +46,34 @@ The game itself tells which of three situations it is in (game_input_hooks.cpp, 
 - **Press START**: the input object's "waiting for START" byte (+48) is set (title screen).
 - **Gameplay**: user 0's input-target handle (+8) is valid, i.e. the player character has control. This
   includes the tutorial's hint boxes after their ~30-frame opening animation.
-- **Menu**: everything else: main menus, dialogs and the in-game status/options menus (pause).
+- **Menu**: everything else: main menus, dialogs and the in-game status/options menus (pause). In co-op the world
+  keeps running under the in-game menus and the target stays valid, so a menu also counts when the UI's focused
+  control (0x82ABBB90) is a live control of an in-game menu scene (status, items, options, quests, map, Settings and
+  the PC pages, Controls, message boxes, trade, fusion, abilities, level-up points, game over, act clear;
+  `src/input/game_context.cpp`). Gameplay overlays that take the focus during play (the letterbox 0x023, gauges,
+  minimap, remote players' panels) do not. `--kuf_menu_focus_context=false` turns this off (the target alone).
+
+Backspace is not a menu control in any context but gameplay (`Bindings::Set` drops it from menu and Press START
+bindings, also when a setting names it). **Text fields** (the multiplayer menus' lobby name, password, invite code):
+while one is edited the driver's text entry (`src/input/text_entry.cpp`) turns the platform's text input on (SDL
+text events: the only source of characters, so nothing is typed twice; received by a listener above the SDK's ImGui
+drawer, window input layer 64, which marks every character event handled even with no overlay open; printable ASCII
+and Latin-1, so Å Ä Ö and the like, kept as UTF-8, drawn as Latin-1) and takes every key-down (Ctrl+C copies, never a
+password): Backspace, Delete,
+Left/Right, Home/End, Ctrl+A, Ctrl+V (one line of the clipboard), Enter (done), Escape (cancel); no key reaches the
+game or the menu meanwhile, and the pointer's hover does not move the selection (a click ends the edit and acts on
+the row under it).
 
 Keys and mouse buttons take their meaning from the context **when pressed** and keep it until released.
-Mouse look is active only in gameplay; in menus the pointer is free.
+Mouse look is active only in gameplay; in menus the pointer is free. A context change starts the camera from rest
+(pending mouse movement dropped) and drops queued wheel steps. Losing the window's focus releases the pointer and
+every key; regaining it captures the pointer again only in gameplay.
 
 ## Keyboard (defaults)
 | Gamepad | Menus | Gameplay (the game's action) |
 |---|---|---|
 | A | **Enter**, Space, left click | **Left click** (use A weapon), Enter |
-| B | **Escape**, Backspace, right click | **Space** (use B ability: Dash) |
+| B | **Escape**, right click (**never Backspace**: it only deletes text in the menus' text fields) | **Space** (use B ability: Dash) |
 | X | X | **Right click** (use X weapon), X |
 | Y | Y | **E** (pick up items, detection), Y |
 | Start | F1, Pause; **Enter / left click at "Press START"** | **Tab** (status menu: equipment, inventory), F1, Pause |
@@ -68,8 +86,8 @@ Mouse look is active only in gameplay; in menus the pointer is free.
 | Stick clicks | Shift / middle click | Shift / **middle click**, V (centre camera) |
 
 In the status menu (a menu context) RB is Page Down or E: Inventory; LB is Page Up or Q: Resistances. On the
-tutorial's hint boxes (gameplay context once open) Enter confirms and Space goes back; the game then offers
-"End tutorial?" (Enter: yes).
+tutorial's hint boxes (a menu context since M7's a359b0e: in-game menus count as menus while the world runs) Enter or
+Space confirms and Escape goes back; the game then offers "End tutorial?" (Enter: yes).
 
 **Rebinding in the game (M7 feature 5):** PC Settings > **Key Bindings** lists the 24 gameplay actions with their
 keys (eight rows at a time; Up / Down past the edge scroll). Select a row, then press the key or mouse button for it

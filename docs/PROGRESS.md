@@ -1473,3 +1473,47 @@ later), so a run could meet only no-drop seeds. No loot is a valid outcome of th
 - **Integrity (2026-10-30):** SDK patches apply; game folder unchanged (138 files); 53 save files unchanged
   (sha256); tracked files clean.
 - Commits: cbb6931, 90bf881, d0e5a5a, cca44ac, 8c70d75 and the docs.
+
+## M8: performance and stability optimisation (branch m8/performance, from m7/feature-completion 3eb605e; 2026-10-31)
+
+The player's M8 brief: evidence-driven performance and stability work with automated, sandboxed benchmarking and
+stability testing (game launches authorised for isolated tests; no multiplayer, no network, no push or merge).
+Report: docs/PERFORMANCE.md section 7.
+
+| Item | Status |
+|---|---|
+| Benchmark framework (tools/bench.py, the matrix, three workloads, GPU timestamps and sections: SDK patch 0012) | IMPLEMENTED, VERIFIED (78 matrix runs and the A/B runs, none invalid) |
+| Baseline (39 runs) and final measurement (39 runs) | VERIFIED |
+| CPU / GPU bottlenecks | investigated: GPU (4K) render target transfers, texture loads from resolves, resolves; CPU (1440p+) the GPU command processor and the D3D ring wait |
+| Render target extents (K73: execute_unclipped_draw_vs_on_cpu on) | IMPLEMENTED, VERIFIED (4K/120: 77.6 -> 90.1 fps, 1 % low 33.2 -> 43.0, p99 26.1 -> 22.3 ms; render equivalence within 2 levels) |
+| Frames stepped from the tick frame's hand-off | IMPLEMENTED, VERIFIED (60 fps jitter roughly halved; timing / presentation / render tests pass) |
+| Adaptive frame rate | IMPLEMENTED (opt-in, unit-tested; even 60 at 4K/120 instead of an uneven 90) |
+| Register-write lookup (SDK) | tried, no measurable gain, REVERTED |
+| Fast loading | NOT IMPLEMENTED: loading is paced by the game tick (10.1 s -> 3.1 s uncapped, diagnostic); needs the loading state identified |
+| 120 fps at 4K | NOT REACHED (about 90; GPU-bound). At 2560x1440 / 1920x1080 a 120 limit gives 101-114 fps (CPU side) |
+| Memory and resource lifetime | VERIFIED for the measured workloads (no growth); stability: 22 of 22 stability runs passed (30 minutes at 120 fps: +4 MB RSS after the first quarter; play under real memory pressure, memory.high 800 MB) |
+| Co-op disconnect crash (K72) | PARTIAL: static analysis only; BLOCKED for verification (no multiplayer sessions in M8) |
+| Regression | timing, presentation, render, camera, gameplay: 92 of 96 pass; 3 pre-existing failures (K74, the same with the baseline build), 1 intermittent route timing |
+| Original game files and saves | VERIFIED unchanged (the game folder's 138 files match the manifest, nothing in it newer than M8's start; no save fixture, manual save or backup modified; no game content tracked) |
+
+Commits: 5f38941 .. HEAD on m8/performance (tools, patch 0012, K73, pacing, docs).
+
+## M9: deep GPU, Vulkan and ReXGlue optimisation (branch m9/deep-optimization, from m8/performance 61a061f; 2026-11-01)
+
+The player's M9 brief: per-pass GPU and CPU profiling, Vulkan synchronisation, render targets, shaders, the 1440p
+extent-estimate question, no visual-quality reduction, at least 5 interleaved runs for claims, the stale M8 regression
+routes. Report: docs/PERFORMANCE.md section 8.
+
+| Item | Status |
+|---|---|
+| Profiling: per-frame Vulkan command counts, per-pass GPU timeline, GPU idle, texture copies section, extent-estimate CPU cost (SDK patch 0012); GPU clock / temperature / power per run and interleaved runs (tools/bench.py) | IMPLEMENTED, VERIFIED (instrumented build within the M8 build's noise, 5+5) |
+| Render-to-texture results loaded straight into their images (SDK patch 0013, on by default) | IMPLEMENTED, VERIFIED: 4K/120 vs M8 (5+5, own caches): 91.2 -> 95.5 fps, 1 % low 41.5 -> 46.2, p99 22.2 -> 19.8 ms, jitter 5.6 -> 3.2 ms, GPU 10.07 -> 8.83 ms; 1440p / 1080p no measurable change; gameplay captures bit-identical (`render.direct_load`) |
+| Upload look-ahead, one submission per frame, submissions every 128 draws | tried, slower or no gain, REVERTED / not adopted |
+| execute_unclipped_draw_vs_on_cpu at 1440p | MEASURED: no trade-off (0.008 ms CPU per frame; on is equal or better); M8's claim corrected (7.5.1, K73) |
+| K74 stale regression routes | FIXED (routes only, assertions unchanged); all five pass |
+| Vulkan validation | no message from the new path; pre-existing SDK messages recorded (K75) |
+| Regression / stability | 115 of 116 + the reworked `render.direct_load`: pass; stability 21 of 21 |
+| 120 fps at 4K | NOT REACHED (95-101 fps, GPU 8.8 ms + 0.9 ms idle per frame) |
+| Game folder, saves, tracked files | VERIFIED unchanged / clean |
+
+Commits: ca5de18 .. HEAD on m9/deep-optimization.

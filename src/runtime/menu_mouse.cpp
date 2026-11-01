@@ -376,6 +376,9 @@ bool g_icons_cleared = false;
 void StatusPrompts(PPCContext& ctx, uint8_t* base, uint32_t menu) {
   const bool keyboard = kuf::prompts::Current() == kuf::input::PromptDevice::kKeyboard;
   const uint32_t scene = Load32(base, menu + 32);
+  // StatusMenu may match through the row-0 scene (+48); a menu being torn down (the return to the title after a save)
+  // can leave junk here (0x2A seen, a crash in the control lookup), so the equipment scene is checked too.
+  if (!kuf::menu_pointer::GuestReadable(scene, 12) || Load32(base, scene + 8) != kStatusScene) return;
   auto trigger = [&](uint32_t id) {
     ctx.r3.u64 = scene;
     ctx.r4.u64 = id;

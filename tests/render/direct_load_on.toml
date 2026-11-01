@@ -1,0 +1,40 @@
+# M9 (SDK patch 0013, docs/PERFORMANCE.md section 8): the render equivalence route (tests/perf/render_equivalence.toml)
+# at native 4K with --vulkan_texture_load_direct_to_image=true: render-to-texture results loaded through the
+# written directly into the images. tests/render/direct_load_check.py compares the gameplay captures of the two runs.
+
+[scenario]
+description = "M9: render-to-texture loads (written directly into the images), native 4K"
+seconds = 120
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_display_size=3840x2160", "--kuf_pc_settings=display.render_scale=0", "--vulkan_texture_load_direct_to_image=true"]
+script = """
+500 tap Return
+600 capture title_menu
+700 press Return
+800 capture after_continue
+850 press Return
+950 capture slot_list
+1000 press Down
+1100 press Return
+1300 repeat 10 until gameplay press Return
+@gameplay+60 capture play_start
+@gameplay+100 down W
+@gameplay+280 up W
+@gameplay+300 capture play_walk
+@gameplay+310 down L
+@gameplay+335 up L
+@gameplay+400 capture play_turn
+@gameplay+450 tap Tab
+@gameplay+530 capture status
+@gameplay+540 tap PageDown
+@gameplay+620 capture inventory
+@gameplay+630 tap Escape
+@gameplay+690 tap Escape
+@gameplay+760 capture back_in_play
+@gameplay+800 tap Escape
+@gameplay+880 capture pause
+@gameplay+890 tap Escape
+@gameplay+960 capture resumed
+@gameplay+970 log route_end
+"""
+log_expect = ["[kuf-input] context: gameplay", "route_end"]

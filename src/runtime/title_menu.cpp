@@ -43,6 +43,8 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#include "coop/coop_runtime.h"
+#include "runtime/lobby_screen.h"
 #include "runtime/menu_pointer.h"
 #include "runtime/pc_settings.h"
 #include "runtime/prompt_text.h"
@@ -675,12 +677,16 @@ bool BeforeInput(PPCContext& ctx, uint8_t* base) {
 // Public, Quick Match, Co-op Lobby) and abort any co-op action. The port has no online co-op (docs/NETWORKING.md), so
 // the gate answers "not available" without asking the console's account services and without the box: the rows stay
 // unavailable (the same callers, and the screen's own poll, sub_82668698, which never posts), nothing pretends to be
-// signed in to Xbox LIVE.
+// signed in to Xbox LIVE. Only the developer co-op configuration (kuf_coop, src/coop/coop_runtime.cpp) opens the gate.
 REXCVAR_DEFINE_BOOL(kuf_xbox_live_notice, false, "KUF/Settings",
                     "M7 UI follow-up: the console's co-op check with its Xbox LIVE Gold message box (false: co-op "
                     "rows unavailable without the message; online co-op is not implemented)");
 REX_EXTERN(__imp__sub_82669770);
 REX_HOOK_RAW(sub_82669770) {  // the co-op gate (no arguments; returns 1 if co-op may be used)
+  if (kuf::coop::Enabled() || kuf::lobby_screen::Active()) {  // a lobby (coop_runtime.cpp) or the lobby menus
+    ctx.r3.u64 = 1;
+    return;
+  }
   if (REXCVAR_GET(kuf_xbox_live_notice)) {
     __imp__sub_82669770(ctx, base);
     return;

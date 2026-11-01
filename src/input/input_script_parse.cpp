@@ -167,6 +167,10 @@ bool Add(std::multimap<uint64_t, Event>& out, uint64_t frame, Event e, std::stri
     if (!a.empty()) {
       return bad("pointer takes no arguments");
     }
+  } else if (e.verb == "framerate") {
+    if (a.size() != 1 || !IsInt(a[0]) || (std::stol(a[0]) != 0 && (std::stol(a[0]) < 30 || std::stol(a[0]) > 480))) {
+      return bad("expected framerate <30-480, or 0 for unlimited>");
+    }
   } else if (e.verb != "log") {
     return bad("unknown verb");
   }

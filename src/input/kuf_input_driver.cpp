@@ -1,6 +1,7 @@
 #include "input/kuf_input_driver.h"
 
 #include "input/game_input_hooks.h"
+#include "input/key_routing.h"
 #include "runtime/menu_pointer.h"
 #include "runtime/pc_settings.h"
 #include "runtime/prompt_text.h"
@@ -16,6 +17,11 @@
 #include <rex/ui/virtual_key.h>
 #include <rex/ui/window.h>
 
+#include <SDL3/SDL_clipboard.h>
+
+REXCVAR_DEFINE_BOOL(kuf_trace_text_input, false, "KUF/Debug",
+                    "Log the text fields' input lifecycle: editing on/off, SDL text input, events received and "
+                    "delivered (counts only: never the characters) ([kuf-text])");
 REXCVAR_DEFINE_BOOL(kuf_keyboard, true, "KUF/Input", "Keyboard and mouse drive guest user 0 as a gamepad");
 REXCVAR_DEFINE_BOOL(kuf_mouse_wheel, true, "KUF/Input", "Mouse wheel presses D-pad up/down, one press per detent");
 REXCVAR_DEFINE_BOOL(kuf_menu_pointer, true, "KUF/Input",
@@ -241,6 +247,8 @@ void KufInputDriver::OnWindowAvailable(rex::ui::Window* window) {
     attached_window_ = window;
   }
   window->AddInputListener(this, window_z_order());
+  char_listener_.driver = this;
+  window->AddInputListener(&char_listener_, kCharListenerZOrder);
   window->AddListener(this);
 }
 
@@ -259,6 +267,7 @@ void KufInputDriver::Detach() {
     window->ReleaseMouse();
   }
   if (window) {
+    window->RemoveInputListener(&char_listener_);
     window->RemoveInputListener(this);
     window->RemoveListener(this);
   }
@@ -351,7 +360,77 @@ void KufInputDriver::OnKeyDown(rex::ui::KeyEvent& e) {
     if (!repeat) CaptureLocked(static_cast<HostKey>(e.virtual_key()));
     return;
   }
-  pad_.KeyDown(static_cast<HostKey>(e.virtual_key()), repeat);
+  // A text field being edited takes the key, else the keyboard's emulated controller does (never both).
+  RouteKeyDown(text_, pad_, uint32_t(e.virtual_key()), e.is_ctrl_pressed(), e.is_alt_pressed(), repeat, [] {
+    // OnKeyDown runs on the UI thread, where the clipboard is read.
+    std::string out;
+    if (char* clip = SDL_GetClipboardText()) {
+      out = clip;
+      SDL_free(clip);
+    }
+    return out;
+  });
+}
+
+void KufInputDriver::CharListener::OnKeyChar(rex::ui::KeyEvent& e) {
+  std::lock_guard lock(driver->mutex_);
+  if (!driver->text_.active()) return;  // not ours: the overlays' (their console)
+  const uint32_t before = driver->text_.chars_seen();
+  driver->text_.Char(uint32_t(e.virtual_key()));
+  e.set_handled(true);
+  if (REXCVAR_GET(kuf_trace_text_input) && before == 0 && driver->text_.chars_seen() == 1) {
+    REXLOG_INFO("[kuf-text] text input events arriving (characters not logged)");
+  }
+}
+
+void KufInputDriver::BeginTextEntry() {
+  rex::ui::Window* w;
+  {
+    std::lock_guard lock(mutex_);
+    if (text_.active()) return;
+    text_.Begin();
+    click_pending_ = false;
+    w = attached_window_;
+  }
+  // The platform's text input (SDL_StartTextInput) is off unless asked for: without it no character arrives.
+  if (w) {
+    w->app_context().CallInUIThreadDeferred([w] {
+      w->SetTextInputActive(true);
+      if (REXCVAR_GET(kuf_trace_text_input)) {
+        REXLOG_INFO("[kuf-text] editing: text input on ({})", w->IsTextInputActive() ? "SDL text input started" : "not started");
+      }
+    });
+  }
+}
+
+std::vector<TextEvent> KufInputDriver::TakeTextEntry() {
+  std::lock_guard lock(mutex_);
+  return text_.Take();
+}
+
+void KufInputDriver::EndTextEntry() {
+  rex::ui::Window* w;
+  {
+    std::lock_guard lock(mutex_);
+    if (!text_.active()) return;
+    if (REXCVAR_GET(kuf_trace_text_input)) {
+      REXLOG_INFO("[kuf-text] editing ended: {} text input character(s) received; text input off", text_.chars_seen());
+    }
+    text_.End();
+    w = attached_window_;
+  }
+  if (w) w->app_context().CallInUIThreadDeferred([w] { w->SetTextInputActive(false); });
+}
+
+bool KufInputDriver::TextEntryActive() const {
+  std::lock_guard lock(mutex_);
+  return text_.active();
+}
+
+void KufInputDriver::CopyToClipboard(const std::string& text) {
+  rex::ui::Window* w = window();
+  if (!w) return;
+  w->app_context().CallInUIThreadDeferred([text] { SDL_SetClipboardText(text.c_str()); });
 }
 
 void KufInputDriver::OnKeyUp(rex::ui::KeyEvent& e) {

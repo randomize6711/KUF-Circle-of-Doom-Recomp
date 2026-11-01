@@ -82,13 +82,13 @@ TEST_CASE("a tap shorter than one poll is latched for exactly one poll", "[input
 }
 
 TEST_CASE("two keys on one control: released only when both are up", "[input][keyboard]") {
-  KeyboardPad pad;  // B = Escape, Backspace
+  KeyboardPad pad;  // B = Escape, MouseRight (Backspace is never a menu control)
   pad.KeyDown(K(VK::kEscape));
-  pad.KeyDown(K(VK::kBack));
+  pad.KeyDown(K(VK::kRButton));
   CHECK(pad.Poll().buttons == b::kB);
   pad.KeyUp(K(VK::kEscape));
   CHECK(pad.Poll().buttons == b::kB);
-  pad.KeyUp(K(VK::kBack));
+  pad.KeyUp(K(VK::kRButton));
   CHECK(pad.Poll().buttons == 0);
 }
 
@@ -340,7 +340,7 @@ TEST_CASE("bindings: custom lists, multiple controls per key, unknown names reje
   CHECK(bindings.Set(Context::kMenu, Control::kStart, "K"));
   CHECK_FALSE(bindings.Set(Context::kMenu, Control::kB, "Escape,NotAKey", &error));
   CHECK(error.find("NotAKey") != std::string::npos);
-  CHECK(bindings.keys(Context::kMenu, Control::kB).size() == 3);  // Escape, Backspace, MouseRight: unchanged
+  CHECK(bindings.keys(Context::kMenu, Control::kB).size() == 2);  // Escape, MouseRight: unchanged
   CHECK(bindings.Set(Context::kMenu, Control::kY, ""));            // unbind
   KeyboardPad pad(bindings);
   pad.KeyDown(K("K"));
@@ -569,6 +569,20 @@ TEST_CASE("input script parser: freeze (M6D diagnostic)", "[input][script]") {
   }
 }
 
+TEST_CASE("input script parser: framerate (M8 stability tests)", "[input][script]") {
+  std::multimap<uint64_t, script::Event> ev;
+  std::string error;
+  REQUIRE(script::Parse("@gameplay+300 framerate 120; 400 framerate 30; 500 framerate 0; 600 framerate 480", ev,
+                        &error) == 4);
+  CHECK(ev.find(400)->second.args[0] == "30");
+  CHECK(ev.find(500)->second.args[0] == "0");
+  for (const char* bad : {"10 framerate", "10 framerate 29", "10 framerate 481", "10 framerate -1", "10 framerate x",
+                          "10 framerate 60 90"}) {
+    INFO(bad);
+    CHECK(script::Parse(bad, ev, &error) == -1);
+  }
+}
+
 TEST_CASE("input script parser: trace (K35, the GPU trace of the next tick frame)", "[input][script]") {
   std::multimap<uint64_t, script::Event> ev;
   std::string error;
@@ -576,4 +590,21 @@ TEST_CASE("input script parser: trace (K35, the GPU trace of the next tick frame
   CHECK(ev.find(1840)->second.verb == "trace");
   CHECK(ev.find(1840)->second.args.empty());
   CHECK(script::Parse("10 trace 3", ev, &error) == -1);
+}
+
+TEST_CASE("a context change starts the camera from rest and drops queued wheel steps", "[input][keyboard][context]") {
+  KeyboardPad pad;
+  pad.set_context(Context::kGameplay);
+  pad.Look(40, 0);
+  pad.set_context(Context::kMenu);      // a menu opens with movement pending
+  pad.set_context(Context::kGameplay);  // and closes: no turn carried over
+  CHECK(pad.Poll().thumb_rx == 0);
+  pad.set_context(Context::kMenu);
+  pad.Wheel(-5);                        // scrolling a menu, then it closes before the steps are polled
+  pad.set_context(Context::kGameplay);
+  CHECK(pad.pending_pulses() == 0);
+  pad.set_context(Context::kGameplay);  // no change: nothing dropped
+  pad.Look(10, 0);
+  pad.set_context(Context::kGameplay);
+  CHECK(pad.Poll().thumb_rx > 0);
 }
