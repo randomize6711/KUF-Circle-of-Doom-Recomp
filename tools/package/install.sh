@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Installs this package (run from the unpacked package directory): docs/STEAM_DECK.md.
-#   ./install.sh [--root DIR] [--repo owner/name] [--signers allowed_signers]
+#   ./install.sh [--root DIR] [--repo owner/name] [--signers allowed_signers] [--api http://127.0.0.1:PORT]
 # Updates come from the project's GitHub releases by default (DEFAULT_REPO) and are verified against the release key
 # shipped in the package (allowed_signers); --repo / --signers override them.
 # Copies the package into <root>/versions/<version> (default root: $XDG_DATA_HOME/kuf-cod-recomp/app), checks its
 # MANIFEST.sha256, points <root>/current at it and writes <root>/kuf-cod (the stable launcher for Steam shortcuts).
-# --repo and --signers configure updates (tools/updater/kuf_update.py). The player's
+# --repo and --signers configure updates (tools/updater/kuf_update.py); --api points them at a loopback test release
+# server (disposable update tests only, tools/updater/update_test.sh). The player's
 # saves and settings ($XDG_DATA_HOME/kuf-cod-recomp/data) are not touched.
 set -euo pipefail
 PKG="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -13,11 +14,13 @@ ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/kuf-cod-recomp/app"
 DEFAULT_REPO="randomize6711/KUF-Circle-of-Doom-Recomp"
 REPO=""
 SIGNERS=""
+API=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --root) ROOT="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
     --signers) SIGNERS="$(realpath "$2")"; shift 2 ;;
+    --api) API="$2"; shift 2 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -53,5 +56,9 @@ elif [[ -n "$REPO" ]]; then
   sed -i "s|^repo = .*|repo = $REPO|" "$ROOT/update.conf"
 fi
 [[ -n "$SIGNERS" ]] && install -m 0644 "$SIGNERS" "$ROOT/allowed_signers"
+if [[ -n "$API" ]]; then
+  sed -i '/^api = /d' "$ROOT/update.conf"
+  printf 'api = %s\n' "$API" >> "$ROOT/update.conf"
+fi
 echo "installed $VERSION in $ROOT"
 echo "start: $ROOT/kuf-cod   (first start: $ROOT/kuf-cod --game-dir /path/to/your/game)"

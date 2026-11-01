@@ -194,6 +194,7 @@ std::string DialogText(Dialog dialog, const Reply& reply, std::string_view insta
 
 std::string ProgressLabel(const Reply& p) {
   if (p.stage == "verifying") return "VERIFYING THE UPDATE...";
+  if (p.stage == "installing") return "INSTALLING THE UPDATE...";
   if (p.progress < 0) return "DOWNLOADING...";
   const int percent = p.total > 0 ? int(p.progress * 100 / p.total) : 0;
   return "DOWNLOADING " + std::to_string(percent) + "%";

@@ -2,25 +2,29 @@
 # Builds a relocatable Linux package of the current build (personal use; see docs/STEAM_DECK.md before sharing it:
 # it contains code recompiled from the player's own copy of the game).
 #
-#   tools/package/package_linux.sh [--build DIR] [--out DIR] [--version V] [--strip]
+#   tools/package/package_linux.sh [--build DIR] [--out DIR] [--version V] [--strip] [--signers FILE]
 #
 # Output: <out>/kuf-cod-recomp-<version>-linux-x86_64.tar.gz with one top directory:
 #   bin/ (kuf_cod and its libraries, RUNPATH $ORIGIN), kuf-cod.sh (launcher), install.sh, kuf_update.py,
 #   VERSION, MANIFEST.sha256 (every other file), README-PACKAGE.txt, licenses/.
 # No game data: the game folder is the player's, chosen at the first start. --strip removes debug symbols (smaller;
-# crash reports then name fewer host frames). Sign it with tools/package/sign_package.sh.
+# crash reports then name fewer host frames). --signers embeds that release public key (allowed_signers format)
+# instead of tools/package/allowed_signers (the throwaway key of a disposable update test). Sign it with
+# tools/package/sign_package.sh; a whole release: tools/package/make_release.sh.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD="$ROOT/build/linux-amd64-relwithdebinfo"
 OUT="$ROOT/build/packages"
 VERSION=""
 STRIP=0
+SIGNERS="$ROOT/tools/package/allowed_signers"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --build) BUILD="$(realpath "$2")"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --version) VERSION="$2"; shift 2 ;;
     --strip) STRIP=1; shift ;;
+    --signers) SIGNERS="$(realpath "$2")"; shift 2 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -49,8 +53,8 @@ install -m 0755 "$ROOT/tools/package/install.sh" "$P/install.sh"
 install -m 0755 "$ROOT/tools/updater/kuf_update.py" "$P/kuf_update.py"
 install -m 0644 "$ROOT/tools/package/README-PACKAGE.txt" "$P/README-PACKAGE.txt"
 # The release public key (updates are verified against it; tools/package/sign_package.sh --new-key makes the pair).
-if [[ -f "$ROOT/tools/package/allowed_signers" ]]; then
-  install -m 0644 "$ROOT/tools/package/allowed_signers" "$P/allowed_signers"
+if [[ -f "$SIGNERS" ]]; then
+  install -m 0644 "$SIGNERS" "$P/allowed_signers"
 fi
 install -m 0644 "$ROOT/thirdparty/rexglue-sdk/LICENSE" "$P/licenses/rexglue-sdk-LICENSE"
 echo "$VERSION" > "$P/VERSION"

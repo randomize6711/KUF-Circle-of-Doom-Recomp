@@ -9,6 +9,10 @@ project(kuf_cod LANGUAGES C CXX)
 # The port's version (src/runtime/version.h): the base here, the commit added at build time.
 set(KUFCOD_BASE_VERSION "0.7.0")
 
+# Published binaries carry no build-machine paths: __FILE__ (asserts, log locations) relative to the source tree,
+# for this project and the SDK alike (debug information is unchanged, and stripped from packages).
+add_compile_options("-fmacro-prefix-map=${CMAKE_SOURCE_DIR}/=")
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 

@@ -8,16 +8,25 @@
   kuf_update.py --install-root DIR install-package PACKAGE.tar.gz SIGNATURE   # a local signed package
 
 Install root layout (tools/package/install.sh makes it):
-  update.conf              repo = owner/name (the only source of releases), key_identity, asset_prefix
+  update.conf              repo = owner/name (the only source of releases), key_identity, asset_prefix; api (tests
+                           only: http://127.0.0.1:<port>, a loopback release server, tools/updater/release_server.py)
   allowed_signers          the release public key(s), ssh-keygen allowed-signers format
   versions/<version>/      unpacked packages (each with VERSION and MANIFEST.sha256)
   current -> versions/<v>  the version the launcher starts
   previous                 the version switched away from last (for rollback)
+  .first-start             written after an update: the launcher switches back if the new version fails to start
 The player's saves, settings and logs are elsewhere (the launcher's data directory) and never touched.
+
+A release (docs/RELEASING.md) has three signed assets: the package <prefix>-<v>-<platform>.tar.gz and its .sig, and
+the update manifest <prefix>-<v>-<platform>.update.json and its .sig (version, platform, the package's name, size and
+SHA-256, notes, the oldest installed version it can update).
 
 Security (docs/STEAM_DECK.md "Updates"):
   - releases only from the repository in update.conf, over HTTPS with certificate verification; redirects only to
-    HTTPS hosts of GitHub's;
+    HTTPS hosts of GitHub's (or, when update.conf sets a loopback api, only to that origin);
+  - the newest release's manifest is verified (`ssh-keygen -Y verify`, namespace kuf-cod-recomp-manifest) before
+    anything else is used; its version must be the release tag's and its platform the install's; the package
+    download must have the manifest's size and SHA-256;
   - each package is verified with `ssh-keygen -Y verify` against allowed_signers (namespace kuf-cod-recomp-release)
     before it is opened; the package's own VERSION must equal the release's, and every file must match the
     package's MANIFEST.sha256;
@@ -45,17 +54,25 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
 NAMESPACE = "kuf-cod-recomp-release"
-API = "https://api.github.com/repos/{repo}/releases"
+MANIFEST_NAMESPACE = "kuf-cod-recomp-manifest"
+MANIFEST_SCHEMA = 1
+PRODUCT = "kuf-cod-recomp"
+GITHUB_API = "https://api.github.com"
 ALLOWED_HOSTS = ("api.github.com", "github.com", "objects.githubusercontent.com",
                  "release-assets.githubusercontent.com", "codeload.github.com")
+LOOPBACK_HOSTS = ("127.0.0.1", "::1")
 MAX_PACKAGE = 2 << 30          # 2 GiB download
 MAX_UNPACKED = 4 << 30         # 4 GiB on disk
 MAX_FILES = 10000
 MAX_JSON = 8 << 20
+MAX_MANIFEST = 64 << 10
+MAX_SIGNATURE = 16 << 10
+FIRST_START = ".first-start"
 KEEP_VERSIONS = 3
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -128,6 +145,9 @@ class Install:
         conf.setdefault("key_identity", "release@kuf-cod-recomp")
         conf.setdefault("asset_prefix", "kuf-cod-recomp")
         conf.setdefault("platform", "linux-x86_64")
+        conf["api"] = conf.get("api", GITHUB_API).rstrip("/")
+        if conf["api"] != GITHUB_API and _loopback_origin(conf["api"]) is None:
+            raise Failed(f"{path}: api must be {GITHUB_API} or http://127.0.0.1:<port> (a local test server)")
         return conf
 
     def current(self):
@@ -200,31 +220,63 @@ def _fsync_dir(path):
         os.close(fd)
 
 
-# ---- network (HTTPS to GitHub only) ----
+# ---- network (HTTPS to GitHub only; a loopback test server when update.conf names one) ----
 
-def _check_url(url):
+def _loopback_origin(url):
+    """(scheme, host, port) of an http URL on a loopback address with a port, else None (tests only)."""
     u = urllib.parse.urlsplit(url)
-    if u.scheme != "https" or u.hostname not in ALLOWED_HOSTS or u.username or u.password or u.port not in (None, 443):
+    try:
+        port = u.port
+    except ValueError:
+        return None
+    if u.scheme == "http" and u.hostname in LOOPBACK_HOSTS and port and not (u.username or u.password) \
+            and u.path in ("", "/") and not (u.query or u.fragment):
+        return ("http", u.hostname, port)
+    return None
+
+
+def _check_url(url, loopback=None):
+    u = urllib.parse.urlsplit(url)
+    try:
+        port = u.port
+    except ValueError:
+        port = -1
+    if loopback is not None and (u.scheme, u.hostname, port) == loopback and not (u.username or u.password):
+        return url
+    if u.scheme != "https" or u.hostname not in ALLOWED_HOSTS or u.username or u.password or port not in (None, 443):
         raise Refused(f"refused URL (only HTTPS to GitHub): {url}")
     return url
 
 
 class _Redirects(urllib.request.HTTPRedirectHandler):
+    def __init__(self, loopback):
+        super().__init__()
+        self.loopback = loopback
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        _check_url(newurl)
+        _check_url(newurl, self.loopback)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _opener():
+def _opener(loopback=None):
     ctx = ssl.create_default_context()  # certificate and host name verification
-    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx), _Redirects())
+    handlers = [urllib.request.HTTPSHandler(context=ctx), _Redirects(loopback)]
+    if loopback is None:  # plain HTTP only to the configured loopback test server
+        handlers.append(_NoHttp())
+    return urllib.request.build_opener(*handlers)
 
 
-def _get(url, limit, out=None, accept="application/vnd.github+json", progress=None):
-    req = urllib.request.Request(_check_url(url), headers={"Accept": accept, "User-Agent": "kuf-cod-recomp-updater"})
+class _NoHttp(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        raise Refused(f"refused URL (only HTTPS to GitHub): {req.full_url}")
+
+
+def _get(url, limit, out=None, accept="application/vnd.github+json", progress=None, loopback=None):
+    req = urllib.request.Request(_check_url(url, loopback),
+                                 headers={"Accept": accept, "User-Agent": "kuf-cod-recomp-updater"})
     try:
-        with _opener().open(req, timeout=60) as r:
-            _check_url(r.geturl())
+        with _opener(loopback).open(req, timeout=60) as r:
+            _check_url(r.geturl(), loopback)
             total = 0
             data = bytearray()
             length = int(r.headers.get("Content-Length") or 0)
@@ -241,28 +293,63 @@ def _get(url, limit, out=None, accept="application/vnd.github+json", progress=No
                     out.write(chunk)
                 else:
                     data += chunk
+            if length and total != length:  # the connection ended early: an interrupted download
+                raise Failed(f"{url}: incomplete download ({total} of {length} bytes)")
             return bytes(data)
-    except Refused:
+    except (Refused, Failed, Cancelled):
         raise
+    except urllib.error.HTTPError as e:
+        raise Failed(_http_problem(url, e.code, e.headers))
+    except urllib.error.URLError as e:
+        raise Failed(f"could not reach {urllib.parse.urlsplit(url).hostname} (no network connection?): {e.reason}")
+    except TimeoutError:
+        raise Failed(f"{urllib.parse.urlsplit(url).hostname} did not answer in time (try again later)")
     except (OSError, ValueError) as e:
         raise Failed(f"{url}: {e}")
 
 
+def _http_problem(url, code, headers):
+    """A player-readable reason for an HTTP error from GitHub (rate limit, missing repository or asset, outage)."""
+    headers = headers or {}
+    if code in (403, 429) and (headers.get("X-RateLimit-Remaining") == "0" or code == 429):
+        when = ""
+        try:
+            when = " (after " + time.strftime("%H:%M", time.localtime(int(headers.get("X-RateLimit-Reset")))) + ")"
+        except (TypeError, ValueError):
+            if headers.get("Retry-After", "").isdigit():
+                when = f" (in {int(headers['Retry-After']) // 60 + 1} minutes)"
+        return f"GitHub's limit for update checks without an account is reached; try again later{when}"
+    if code == 404:
+        if "/download/" in url:
+            return f"a release file is missing on GitHub (404): {url}"
+        return f"the release repository was not found on GitHub (404): {url}"
+    if 500 <= code < 600:
+        return f"GitHub is not available right now (HTTP {code}); try again later"
+    return f"GitHub answered HTTP {code} for {url}"
+
+
 class GitHubSource:
-    def __init__(self, repo):
+    """GitHub's releases API (or the loopback test server update.conf's api names: the same requests)."""
+
+    def __init__(self, repo, api=GITHUB_API):
         self.repo = repo
+        self.api = api
+        self.loopback = _loopback_origin(api) if api != GITHUB_API else None
 
     def releases(self):
-        data = _get(API.format(repo=self.repo) + "?per_page=30", MAX_JSON)
+        data = _get(f"{self.api}/repos/{self.repo}/releases?per_page=30", MAX_JSON, loopback=self.loopback)
         try:
             return json.loads(data)
         except ValueError as e:
             raise Failed(f"release list: {e}")
 
+    def fetch(self, asset, limit):
+        return _get(asset["browser_download_url"], limit, accept="application/octet-stream", loopback=self.loopback)
+
     def download(self, asset, dest, progress=None):
         with open(dest, "wb") as f:
             _get(asset["browser_download_url"], MAX_PACKAGE, out=f, accept="application/octet-stream",
-                 progress=progress)
+                 progress=progress, loopback=self.loopback)
 
 
 class DirectorySource:
@@ -274,6 +361,12 @@ class DirectorySource:
 
     def releases(self):
         return json.load(open(os.path.join(self.path, "releases.json")))
+
+    def fetch(self, asset, limit):
+        src = os.path.join(self.path, os.path.basename(asset["name"]))
+        if os.path.getsize(src) > limit:
+            raise Refused(f"{asset['name']}: larger than {limit} bytes")
+        return open(src, "rb").read()
 
     def download(self, asset, dest, progress=None):
         src = os.path.join(self.path, os.path.basename(asset["name"]))
@@ -294,32 +387,99 @@ class DirectorySource:
 # ---- choosing a release ----
 
 def newest_release(install, source, allow_prerelease):
+    """The newest release with a signed package and a signed update manifest:
+    (key, version, package asset, its signature asset, release, manifest asset, its signature asset)."""
     best = None
     for rel in source.releases():
-        if rel.get("draft") or (rel.get("prerelease") and not allow_prerelease):
+        if not isinstance(rel, dict) or rel.get("draft") or (rel.get("prerelease") and not allow_prerelease):
             continue
         version = version_of_tag(str(rel.get("tag_name", "")))
         try:
             key = parse_version(version)
         except Refused:
             continue
-        name = f"{install.conf['asset_prefix']}-{version}-{install.conf['platform']}.tar.gz"
-        assets = {a.get("name"): a for a in rel.get("assets", [])}
-        if name not in assets or name + ".sig" not in assets:
+        base = f"{install.conf['asset_prefix']}-{version}-{install.conf['platform']}"
+        name, manifest = base + ".tar.gz", base + ".update.json"
+        assets = {a.get("name"): a for a in rel.get("assets", []) if isinstance(a, dict)}
+        if any(n not in assets for n in (name, name + ".sig", manifest, manifest + ".sig")):
             continue
         if best is None or key > best[0]:
-            best = (key, version, assets[name], assets[name + ".sig"], rel)
+            best = (key, version, assets[name], assets[name + ".sig"], rel, assets[manifest], assets[manifest + ".sig"])
     return best
+
+
+def read_manifest(install, source, best, tmp):
+    """Downloads, verifies and checks the chosen release's update manifest; returns it (a dict)."""
+    _, version, asset, _, _, m_asset, m_sig_asset = best
+    path = os.path.join(tmp, os.path.basename(m_asset["name"]))
+    with open(path, "wb") as f:
+        f.write(source.fetch(m_asset, MAX_MANIFEST))
+    with open(path + ".sig", "wb") as f:
+        f.write(source.fetch(m_sig_asset, MAX_SIGNATURE))
+    verify_signature(install, path, path + ".sig", MANIFEST_NAMESPACE)  # before it is parsed
+    try:
+        m = json.load(open(path, encoding="utf-8"))
+    except ValueError as e:
+        raise Refused(f"update manifest of {version}: not JSON ({e})")
+    pkg = m.get("package") if isinstance(m, dict) else None
+    if not isinstance(pkg, dict):
+        raise Refused(f"update manifest of {version}: no package entry")
+    problems = []
+    if m.get("schema") != MANIFEST_SCHEMA:
+        problems.append(f"schema {m.get('schema')!r} (this updater reads {MANIFEST_SCHEMA})")
+    if m.get("product") != PRODUCT:
+        problems.append(f"product {m.get('product')!r}")
+    if m.get("version") != version:
+        problems.append(f"version {m.get('version')!r} is not the release's {version!r}")
+    if m.get("platform") != install.conf["platform"]:
+        problems.append(f"platform {m.get('platform')!r} is not this install's {install.conf['platform']!r}")
+    if pkg.get("name") != asset.get("name"):
+        problems.append(f"package {pkg.get('name')!r} is not the release's {asset.get('name')!r}")
+    size = pkg.get("size")
+    if not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= MAX_PACKAGE:
+        problems.append(f"package size {size!r}")
+    if not (isinstance(pkg.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", pkg["sha256"])):
+        problems.append("package sha256")
+    if "min_installed" in m:
+        try:
+            parse_version(str(m["min_installed"]))
+        except Refused:
+            problems.append(f"min_installed {m['min_installed']!r}")
+    if problems:
+        raise Refused(f"update manifest of {version}: " + "; ".join(problems))
+    return m
+
+
+def check_compatible(manifest, current):
+    """An update that needs a newer installed version than this one (a reinstall with the setup) is refused."""
+    need = manifest.get("min_installed")
+    if need and current and _sort_key(current) < (0, parse_version(str(need))):
+        raise Refused(f"{manifest['version']} cannot update {current} (it needs {need} or later installed): "
+                      "install it with the setup instead")
+
+
+def verify_download(path, manifest):
+    """The package file must have the size and SHA-256 its signed manifest names."""
+    want = manifest["package"]
+    size = os.path.getsize(path)
+    if size != want["size"]:
+        raise Refused(f"{want['name']}: {size} bytes, the manifest says {want['size']}")
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    if h.hexdigest() != want["sha256"]:
+        raise Refused(f"{want['name']}: SHA-256 does not match the signed manifest")
 
 
 # ---- verification and extraction ----
 
-def verify_signature(install, package, signature):
+def verify_signature(install, package, signature, namespace=NAMESPACE):
     if not os.path.isfile(install.signers) or os.path.getsize(install.signers) == 0:
         raise Refused("no release key installed (allowed_signers)")
     with open(package, "rb") as data:
         r = subprocess.run(["ssh-keygen", "-Y", "verify", "-f", install.signers, "-I", install.conf["key_identity"],
-                            "-n", NAMESPACE, "-s", signature], stdin=data, capture_output=True, text=True)
+                            "-n", namespace, "-s", signature], stdin=data, capture_output=True, text=True)
     if r.returncode != 0:
         raise Refused(f"signature not valid for {install.conf['key_identity']}: "
                       f"{(r.stderr or r.stdout).strip().splitlines()[-1:] or ['ssh-keygen failed']}")
@@ -397,6 +557,10 @@ def install_package(install, package, signature, version, allow_downgrade):
         top = safe_extract(package, staging)
         unpacked = os.path.join(staging, top)
         verify_manifest(unpacked, version)
+        for need in ("kuf-cod.sh", "kuf_update.py", "bin/kuf_cod"):  # what the launcher and the next update run
+            p = os.path.join(unpacked, need)
+            if not (os.path.isfile(p) and os.access(p, os.X_OK)):
+                raise Refused(f"package has no executable {need}")
         final = os.path.join(install.versions, version)
         if os.path.exists(final):
             if current == version:
@@ -443,9 +607,17 @@ def main(argv=None):
     def on_signal(signum, frame):
         raise Cancelled(f"cancelled (signal {signum})")
 
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
+    try:
+        return _run(args, report)
+    finally:  # the caller's handlers back (an ignored signal would be inherited by later child processes)
+        for sig, handler in saved.items():
+            signal.signal(sig, handler)
 
+
+def _run(args, report):
     try:
         install = Install(args.install_root)
         os.makedirs(install.root, exist_ok=True)
@@ -467,6 +639,10 @@ def main(argv=None):
             if not prev or prev not in install.installed():
                 raise Failed("no previous version to go back to")
             install.switch(prev)
+            try:
+                os.unlink(os.path.join(install.root, FIRST_START))
+            except FileNotFoundError:
+                pass
             return report(0, current=prev, message=f"switched back to {prev}")
         if args.cmd == "install-package":
             version = args.version or re.sub(rf"^{re.escape(install.conf['asset_prefix'])}-(.+)-"
@@ -475,43 +651,57 @@ def main(argv=None):
             parse_version(version)
             install_package(install, args.package, args.signature, version, args.allow_downgrade)
             return report(0, current=version, message=f"installed {version}")
-        source = DirectorySource(args.source_dir, args.source_rate) if args.source_dir else GitHubSource(install.conf["repo"])
-        best = newest_release(install, source, args.prerelease)
+        if args.source_dir:
+            source = DirectorySource(args.source_dir, args.source_rate)
+        else:
+            source = GitHubSource(install.conf["repo"], install.conf["api"])
+        allow_prerelease = args.prerelease or install.conf.get("channel") == "prerelease"
+        best = newest_release(install, source, allow_prerelease)
         if best is None:
             return report(3, current=current, latest=None, message="no signed release found")
-        _, version, asset, sig_asset, rel = best
-        newer = current is None or parse_version(version) > parse_version(current)
-        if args.cmd == "check" or not newer:
-            return report(0 if newer else 3, current=current, latest=version, update=newer,
-                          published=str(rel.get("published_at") or "")[:10], notes=release_notes(rel),
-                          size=int(asset.get("size", 0)),
-                          message=(f"update available: {version} (installed {current})" if newer
-                                   else f"up to date ({current})"))
-        if not args.yes:
-            if not sys.stdin.isatty() or input(f"Install {version} (installed {current})? [y/N] ").lower() != "y":
-                return report(1, message="not installed")
+        _, version, asset, sig_asset, rel = best[:5]
         with tempfile.TemporaryDirectory(prefix=".download-", dir=install.root) as tmp:
+            manifest = read_manifest(install, source, best, tmp)  # signed: nothing unverified is shown or used
+            newer = current is None or parse_version(version) > parse_version(current)
+            if newer:
+                check_compatible(manifest, current)
+            if args.cmd == "check" or not newer:
+                notes = release_notes({"body": manifest.get("notes", "")})
+                return report(0 if newer else 3, current=current, latest=version, update=newer,
+                              published=str(manifest.get("published") or "")[:10], notes=notes,
+                              size=manifest["package"]["size"],
+                              message=(f"update available: {version} (installed {current})" if newer
+                                       else f"up to date ({current})"))
+            if not args.yes:
+                if not sys.stdin.isatty() or input(f"Install {version} (installed {current})? [y/N] ").lower() != "y":
+                    return report(1, message="not installed")
             package = os.path.join(tmp, asset["name"])
             signature = package + ".sig"
-            if int(asset.get("size", 0)) > MAX_PACKAGE:
-                raise Refused(f"{asset['name']} is larger than {MAX_PACKAGE} bytes")
+            size = manifest["package"]["size"]
             last = [-1]
 
             def progress(done, total):
-                total = total or int(asset.get("size", 0))
-                percent = done * 100 // total if total else 0
+                if done > size:
+                    raise Refused(f"{asset['name']}: larger than the manifest's {size} bytes")
+                percent = done * 100 // size
                 if args.json and percent != last[0]:
                     last[0] = percent
-                    print(json.dumps({"progress": done, "total": total}), flush=True)
+                    print(json.dumps({"progress": done, "total": size}), flush=True)
 
-            source.download(sig_asset, signature)
+            with open(signature, "wb") as f:
+                f.write(source.fetch(sig_asset, MAX_SIGNATURE))
             source.download(asset, package, progress)
             if args.json:
                 print(json.dumps({"stage": "verifying"}), flush=True)
+            verify_download(package, manifest)
             # From here on the switch is atomic: a signal no longer cancels (the install completes or changes nothing).
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             signal.signal(signal.SIGINT, signal.SIG_IGN)
+            if args.json:
+                print(json.dumps({"stage": "installing"}), flush=True)
             install_package(install, package, signature, version, args.allow_downgrade)
+            # The launcher's first start of the new version: if it fails to start, the launcher switches back.
+            _write_atomic(os.path.join(install.root, FIRST_START), f"{version}\n{current or ''}\n")
         return report(0, current=version, previous=current, message=f"updated {current} -> {version}")
     except Cancelled as e:
         return report(5, error=str(e), message=str(e))

@@ -13,7 +13,7 @@ namespace {
 
 // The entries the setup creates inside an installation folder (and the updater's lock): only these are removed.
 constexpr const char* kOwned[] = {"versions", "current", "previous", "kuf-cod", "kuf-update", "update.conf",
-                                  "allowed_signers", "game", "share", ".update.lock", kRecordFile};
+                                  "allowed_signers", "game", "share", ".update.lock", ".first-start", kRecordFile};
 
 std::string NowUtc() {
   const std::time_t t = std::time(nullptr);

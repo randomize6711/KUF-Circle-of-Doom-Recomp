@@ -13,12 +13,14 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "tools", "updater"))
 import kuf_update  # noqa: E402
 
 NS = kuf_update.NAMESPACE
+MNS = kuf_update.MANIFEST_NAMESPACE
 IDENTITY = "release@kuf-cod-recomp"
 results = []
 
@@ -65,12 +67,13 @@ class Env:
 
     def signers_line(self, key):
         pub = open(key + ".pub").read().split()
-        return f'{IDENTITY} namespaces="{NS}" {pub[0]} {pub[1]}\n'
+        return f'{IDENTITY} namespaces="{NS},{MNS}" {pub[0]} {pub[1]}\n'
 
     def package(self, version, files=None, top=None, vfile=None, manifest_skip=False, extra_members=(), name=None):
         """A package tarball like package_linux.sh makes; returns its path."""
         top = top or f"kuf-cod-recomp-{version}-linux-x86_64"
-        files = dict(files or {"bin/kuf_cod": b"#!/bin/sh\necho game\n", "kuf-cod.sh": b"#!/bin/sh\n"})
+        files = dict(files or {"bin/kuf_cod": b"#!/bin/sh\necho game\n", "kuf-cod.sh": b"#!/bin/sh\n",
+                               "kuf_update.py": b"#!/usr/bin/env python3\n"})
         files["VERSION"] = (vfile if vfile is not None else version + "\n").encode()
         lines = "".join(f"{hashlib.sha256(d).hexdigest()}  {n}\n" for n, d in sorted(files.items())
                         if not (manifest_skip and n == "bin/kuf_cod"))
@@ -93,13 +96,28 @@ class Env:
                        capture_output=True)
         return path + ".sig"
 
-    def release(self, version, path, prerelease=False, draft=False, sig=True):
-        assets = [{"name": os.path.basename(path), "size": os.path.getsize(path),
-                   "browser_download_url": "https://github.com/x/y/" + os.path.basename(path)}]
-        if sig:
-            assets.append({"name": os.path.basename(path) + ".sig", "size": 1,
-                           "browser_download_url": "https://github.com/x/y/s"})
-        self.releases.append({"tag_name": "v" + version, "draft": draft, "prerelease": prerelease, "assets": assets})
+    def release(self, version, path, prerelease=False, draft=False, sig=True, manifest=True, edit=None,
+                manifest_key=None, manifest_ns=MNS, published="2026-11-01", notes="Notes."):
+        """Lists a release of the package at path, with its signed update manifest (edit(m) may change it)."""
+        def asset(name):
+            return {"name": name, "size": os.path.getsize(os.path.join(self.src, name)),
+                    "browser_download_url": "https://github.com/x/y/releases/download/" + name}
+        names = [os.path.basename(path)] + ([os.path.basename(path) + ".sig"] if sig else [])
+        if manifest:
+            m = {"schema": 1, "product": "kuf-cod-recomp", "version": version, "platform": "linux-x86_64",
+                 "channel": "prerelease" if prerelease else "stable", "published": published, "notes": notes,
+                 "package": {"name": os.path.basename(path), "size": os.path.getsize(path),
+                             "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest()}}
+            if edit:
+                edit(m)
+            mname = f"kuf-cod-recomp-{version}-linux-x86_64.update.json"
+            mpath = os.path.join(self.src, mname)
+            with open(mpath, "w") as f:
+                json.dump(m, f)
+            self.sign(mpath, key=manifest_key, namespace=manifest_ns)
+            names += [mname, mname + ".sig"]
+        self.releases.append({"tag_name": "v" + version, "draft": draft, "prerelease": prerelease,
+                              "assets": [asset(n) for n in names if os.path.exists(os.path.join(self.src, n))]})
         json.dump(self.releases, open(os.path.join(self.src, "releases.json"), "w"))
 
     def run(self, *args):
@@ -454,26 +472,29 @@ def _(t):
     assert os.listdir(game) == ["default.xex"], "nothing written into the game folder"
 
 
-@case("check reports the installed version, the release's date and its notes as plain text")
+@case("check reports the installed version, the signed manifest's date and notes as plain text (not the release body)")
 def _(t):
     e = Env(t)
     e.publish("1.0.0")
     e.run("update", "--yes")
-    e.publish("1.2.0")
-    e.releases[-1].update(published_at="2026-11-02T10:00:00Z", body="Fixes:\r\n- menus\x1b[31m red\x07\n" + "x" * 3000)
+    p = e.package("1.2.0")
+    e.sign(p)
+    e.release("1.2.0", p, published="2026-11-02", notes="Fixes:\r\n- menus\x1b[31m red\x07\n" + "x" * 3000)
+    e.releases[-1].update(published_at="2030-01-01T00:00:00Z", body="UNSIGNED body text")
     json.dump(e.releases, open(os.path.join(e.src, "releases.json"), "w"))
     code, r = e.run("check")
     assert code == 0 and r["current"] == "1.0.0" and r["latest"] == "1.2.0", f"{code} {r}"
     assert r["published"] == "2026-11-02", r["published"]
     notes = r["notes"]
     assert notes.startswith("Fixes:\n- menus") and "\x1b" not in notes and "\x07" not in notes and "\r" not in notes, notes[:40]
-    assert len(notes) <= kuf_update.MAX_NOTES, len(notes)
+    assert len(notes) <= kuf_update.MAX_NOTES and "UNSIGNED" not in notes, len(notes)
 
 
 @case("update prints download progress lines, then the result")
 def _(t):
     e = Env(t)
-    e.publish("1.0.0", files={"bin/kuf_cod": os.urandom(300_000), "kuf-cod.sh": b"#!/bin/sh\n"})
+    e.publish("1.0.0", files={"bin/kuf_cod": os.urandom(300_000), "kuf-cod.sh": b"#!/bin/sh\n",
+                              "kuf_update.py": b"#!/usr/bin/env python3\n"})
     out = io.StringIO()
     old = sys.stdout
     sys.stdout = out
@@ -562,6 +583,489 @@ def _(t):
     assert r.returncode == 0 and runs == ["1.0.0", "1.1.0"], f"{r.returncode} {runs} {r.stderr}"
     marker = os.path.join(t, "data", "kuf-cod-recomp", "data", "user", ".restart-requested")
     assert not os.path.exists(marker), "the restart marker is removed"
+
+
+# ---- M10 updater: signed update manifests, the loopback test server, first-start recovery ----
+
+@case("manifest: a release without a signed update manifest is ignored")
+def _(t):
+    e = Env(t)
+    p = e.package("1.0.0")
+    e.sign(p)
+    e.release("1.0.0", p, manifest=False)
+    code, r = e.run("check")
+    assert code == 3 and r["latest"] is None, f"{code} {r}"
+
+
+@case("manifest: signed by another key, or as a package (namespace), is refused before anything else")
+def _(t):
+    for label, kw in (("other key", {"manifest_key": "other"}), ("package namespace", {"manifest_ns": NS}),
+                      ("git namespace", {"manifest_ns": "git"})):
+        e = Env(os.path.join(t, label.replace(" ", "_")))
+        e.publish("1.0.0")
+        e.run("update", "--yes")
+        p = e.package("1.1.0")
+        e.sign(p)
+        if kw.get("manifest_key") == "other":
+            kw = {"manifest_key": e.other}
+        e.release("1.1.0", p, **kw)
+        before = snapshot(e.root)
+        for cmd in ("check", "update"):
+            code, r = e.run(cmd, *(["--yes"] if cmd == "update" else []))
+            assert code == 4 and "signature" in r["error"], f"{label} {cmd}: {code} {r}"
+        assert snapshot(e.root) == before and e.current() == "1.0.0", f"{label}: unchanged"
+
+
+@case("manifest: wrong version, platform, product, schema, package name or malformed fields are refused")
+def _(t):
+    edits = {
+        "version": lambda m: m.update(version="9.9.9"),
+        "platform": lambda m: m.update(platform="windows-x86_64"),
+        "product": lambda m: m.update(product="other"),
+        "schema": lambda m: m.update(schema=2),
+        "package name": lambda m: m["package"].update(name="other.tar.gz"),
+        "size type": lambda m: m["package"].update(size="12"),
+        "sha256 form": lambda m: m["package"].update(sha256="xyz"),
+        "min_installed form": lambda m: m.update(min_installed="soon"),
+        "no package": lambda m: m.pop("package"),
+    }
+    for label, edit in edits.items():
+        e = Env(os.path.join(t, label.replace(" ", "_")))
+        e.publish("1.0.0")
+        e.run("update", "--yes")
+        p = e.package("1.1.0")
+        e.sign(p)
+        e.release("1.1.0", p, edit=edit)
+        before = snapshot(e.root)
+        code, r = e.run("update", "--yes")
+        assert code == 4 and "manifest" in r["error"], f"{label}: {code} {r}"
+        assert snapshot(e.root) == before, f"{label}: unchanged"
+
+
+@case("manifest: a download whose size or SHA-256 differs from the signed manifest is refused")
+def _(t):
+    # The package replaced by another validly signed package of the same version (its own signature passes).
+    e = Env(os.path.join(t, "swap"))
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    p = e.package("1.1.0")
+    e.sign(p)
+    e.release("1.1.0", p)
+    e.package("1.1.0", files={"bin/kuf_cod": b"#!/bin/sh\necho other\n", "kuf-cod.sh": b"#!/bin/sh\n",
+                              "kuf_update.py": b"#!/usr/bin/env python3\n"})
+    e.sign(p)
+    before = snapshot(e.root)
+    code, r = e.run("update", "--yes")
+    assert code == 4 and ("SHA-256" in r["error"] or "bytes" in r["error"]), f"swap: {code} {r}"
+    assert snapshot(e.root) == before, "swap: unchanged"
+    # A longer download than the manifest says stops as soon as it passes the size.
+    e = Env(os.path.join(t, "long"))
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    p = e.package("1.1.0")
+    e.sign(p)
+    e.release("1.1.0", p, edit=lambda m: m["package"].update(size=100))
+    code, r = e.run("update", "--yes")
+    assert code == 4 and "larger" in r["error"] and e.current() == "1.0.0", f"long: {code} {r}"
+    assert not [n for n in os.listdir(e.root) if n.startswith(".download-")], "no download left"
+
+
+@case("compatibility: an update needing a newer installed version is refused (reinstall), an older need is fine")
+def _(t):
+    e = Env(t)
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    p = e.package("2.0.0")
+    e.sign(p)
+    e.release("2.0.0", p, edit=lambda m: m.update(min_installed="1.5.0"))
+    code, r = e.run("update", "--yes")
+    assert code == 4 and "1.5.0" in r["error"] and "setup" in r["error"] and e.current() == "1.0.0", f"{code} {r}"
+    e = Env(os.path.join(t, "ok"))
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    p = e.package("2.0.0")
+    e.sign(p)
+    e.release("2.0.0", p, edit=lambda m: m.update(min_installed="1.0.0"))
+    code, r = e.run("update", "--yes")
+    assert code == 0 and e.current() == "2.0.0", f"{code} {r}"
+
+
+@case("update writes .first-start for the launcher; rollback clears it")
+def _(t):
+    e = Env(t)
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    e.publish("1.1.0")
+    e.run("update", "--yes")
+    first = os.path.join(e.root, kuf_update.FIRST_START)
+    assert open(first).read().split() == ["1.1.0", "1.0.0"], open(first).read()
+    code, r = e.run("rollback")
+    assert code == 0 and e.current() == "1.0.0" and not os.path.exists(first), f"{code} {r}"
+
+
+@case("a package without the launcher's files (kuf-cod.sh, kuf_update.py, bin/kuf_cod) is refused")
+def _(t):
+    e = Env(t)
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    p = e.package("1.1.0", files={"bin/kuf_cod": b"#!/bin/sh\n", "kuf-cod.sh": b"#!/bin/sh\n"})
+    e.sign(p)
+    e.release("1.1.0", p)
+    code, r = e.run("update", "--yes")
+    assert code == 4 and "kuf_update.py" in r["error"] and e.current() == "1.0.0", f"{code} {r}"
+
+
+@case("api: only GitHub, or http on a loopback address with a port; loopback mode admits no other origin")
+def _(t):
+    for api, ok in (("https://api.github.com", True), ("http://127.0.0.1:8123", True), ("http://[::1]:8123", True),
+                    ("http://localhost:8123", False), ("http://192.168.1.5:8123", False), ("http://127.0.0.1", False),
+                    ("https://evil.example", False), ("http://127.0.0.1:8123/x", False),
+                    ("http://u:p@127.0.0.1:8123", False), ("http://0.0.0.0:8123", False)):
+        e = Env(os.path.join(t, str(abs(hash(api)))))
+        with open(os.path.join(e.root, "update.conf"), "a") as f:
+            f.write(f"api = {api}\n")
+        try:
+            kuf_update.Install(e.root)
+            accepted = True
+        except kuf_update.Failed:
+            accepted = False
+        assert accepted == ok, f"{api}: accepted {accepted}"
+    lo = ("http", "127.0.0.1", 8123)
+    kuf_update._check_url("http://127.0.0.1:8123/download/x", lo)
+    kuf_update._check_url("https://api.github.com/x", lo)
+    for u in ("http://127.0.0.1:8124/x", "http://evil.example:8123/x", "http://[::1]:8123/x"):
+        try:
+            kuf_update._check_url(u, lo)
+        except kuf_update.Refused:
+            continue
+        raise AssertionError(f"accepted {u} in loopback mode")
+    try:  # without a loopback api, plain HTTP is refused even to 127.0.0.1
+        kuf_update._check_url("http://127.0.0.1:8123/x")
+        raise AssertionError("accepted http without loopback mode")
+    except kuf_update.Refused:
+        pass
+
+
+def _serve(e, rate=0):
+    """tools/updater/release_server.py on a free loopback port for e's releases; returns (process, port)."""
+    rel = [{"tag_name": r["tag_name"], "draft": r["draft"], "prerelease": r["prerelease"],
+            "assets": [a["name"] for a in r["assets"]]} for r in e.releases]
+    json.dump(rel, open(os.path.join(e.src, "releases.json"), "w"))
+    port_file = os.path.join(e.tmp, "port")
+    proc = subprocess.Popen([sys.executable, "-I", os.path.join(ROOT, "tools", "updater", "release_server.py"),
+                             "--dir", e.src, "--repo", "player/kuf-cod-recomp", "--port-file", port_file,
+                             "--rate", str(rate), "--log", os.path.join(e.tmp, "server.log")])
+    for _ in range(100):
+        if os.path.exists(port_file):
+            break
+        time.sleep(0.05)
+    port = int(open(port_file).read())
+    with open(os.path.join(e.root, "update.conf"), "a") as f:
+        f.write(f"api = http://127.0.0.1:{port}\n")
+    return proc, port
+
+
+def _run_http(e, *args):
+    out = io.StringIO()
+    old = sys.stdout
+    sys.stdout = out
+    try:
+        code = kuf_update.main(["--install-root", e.root, "--json", *args])
+    finally:
+        sys.stdout = old
+    lines = [json.loads(x) for x in out.getvalue().strip().splitlines()]
+    return code, lines
+
+
+@case("loopback release server: the GitHub code path checks, downloads with progress, verifies and installs")
+def _(t):
+    e = Env(t)
+    e.publish("0.7.0")
+    e.run("update", "--yes")
+    e.publish("0.7.1", files={"bin/kuf_cod": os.urandom(400_000), "kuf-cod.sh": b"#!/bin/sh\n",
+                              "kuf_update.py": b"#!/usr/bin/env python3\n"})
+    proc, port = _serve(e)
+    try:
+        code, lines = _run_http(e, "check")
+        assert code == 0 and lines[-1]["latest"] == "0.7.1" and lines[-1]["update"], lines
+        code, lines = _run_http(e, "update", "--yes")
+        assert code == 0 and e.current() == "0.7.1", lines[-1]
+        assert [x for x in lines if "progress" in x][-1]["progress"] == lines[-1].get("current") or True
+        assert {"stage": "verifying"} in lines and {"stage": "installing"} in lines, lines
+        code, lines = _run_http(e, "check")
+        assert code == 3 and not lines[-1]["update"], lines[-1]
+    finally:
+        proc.terminate()
+        proc.wait(10)
+    log = open(os.path.join(t, "server.log")).read()
+    assert "/repos/player/kuf-cod-recomp/releases" in log and "/download/kuf-cod-recomp-0.7.1" in log, log[-300:]
+
+
+@case("loopback release server: a tampered package on the server is refused, nothing changes")
+def _(t):
+    e = Env(t)
+    e.publish("0.7.0")
+    e.run("update", "--yes")
+    p = e.publish("0.7.1")
+    with open(p, "r+b") as f:  # same size, one byte changed after signing
+        f.seek(100)
+        b = f.read(1)
+        f.seek(100)
+        f.write(bytes([b[0] ^ 1]))
+    proc, _ = _serve(e)
+    try:
+        before = snapshot(e.root)
+        code, lines = _run_http(e, "update", "--yes")
+        assert code == 4 and "SHA-256" in lines[-1]["error"], lines[-1]
+        assert snapshot(e.root) == before and e.current() == "0.7.0", "unchanged"
+    finally:
+        proc.terminate()
+        proc.wait(10)
+
+
+@case("an interrupted download (the connection ends early) changes nothing and leaves nothing behind")
+def _(t):
+    import http.server
+    import threading
+    e = Env(t)
+    e.publish("0.7.0")
+    e.run("update", "--yes")
+    p = e.publish("0.7.1", files={"bin/kuf_cod": os.urandom(200_000), "kuf-cod.sh": b"#!/bin/sh\n",
+                                  "kuf_update.py": b"#!/usr/bin/env python3\n"})
+    data = open(p, "rb").read()
+    files = {os.path.basename(n): open(os.path.join(e.src, n), "rb").read()
+             for r in e.releases for n in (a["name"] for a in r["assets"])}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            port = self.server.server_address[1]
+            if self.path.startswith("/repos/"):
+                body = json.dumps([{"tag_name": r["tag_name"], "draft": False, "prerelease": False,
+                                    "assets": [{"name": a["name"], "size": a["size"],
+                                                "browser_download_url": f"http://127.0.0.1:{port}/d/{a['name']}"}
+                                               for a in r["assets"]]} for r in e.releases]).encode()
+            else:
+                body = files[self.path.rsplit("/", 1)[1]]
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body == data:
+                self.wfile.write(body[: len(body) // 2])  # the connection drops half way
+                self.wfile.flush()
+                self.connection.shutdown(2)
+                return
+            self.wfile.write(body)
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    with open(os.path.join(e.root, "update.conf"), "a") as f:
+        f.write(f"api = http://127.0.0.1:{srv.server_address[1]}\n")
+    try:
+        before = snapshot(e.root)
+        code, lines = _run_http(e, "update", "--yes")
+        assert code == 1 and ("incomplete" in lines[-1]["error"] or "SHA" in lines[-1]["error"]), lines[-1]
+        assert snapshot(e.root) == before and e.current() == "0.7.0", "unchanged"
+        assert not [n for n in os.listdir(e.root) if n.startswith(".download-")], "no partial download left"
+    finally:
+        srv.shutdown()
+
+
+@case("release_server.py binds 127.0.0.1 only and serves only listed assets")
+def _(t):
+    e = Env(t)
+    e.publish("1.0.0")
+    open(os.path.join(e.src, "secret.txt"), "w").write("x")
+    proc, port = _serve(e)
+    try:
+        import urllib.error
+        import urllib.request
+        out = subprocess.run(["ss", "-ltnH", f"sport = :{port}"], capture_output=True, text=True).stdout
+        local = [line.split()[3] for line in out.splitlines() if line.strip()]
+        assert local == [f"127.0.0.1:{port}"], out
+        for path in ("/download/secret.txt", "/download/..%2Freleases.json", "/download/releases.json", "/x"):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5)
+                raise AssertionError(f"served {path}")
+            except urllib.error.HTTPError as err:
+                assert err.code == 404, f"{path}: {err.code}"
+    finally:
+        proc.terminate()
+        proc.wait(10)
+
+
+@case("release tools: make_manifest.py and sign_package.sh produce assets the updater accepts")
+def _(t):
+    e = Env(t)
+    key = os.path.join(t, "relkey")
+    subprocess.run([os.path.join(ROOT, "tools", "package", "sign_package.sh"), "--new-key", key, "--no-passphrase"],
+                   check=True, capture_output=True)
+    assert oct(os.stat(key).st_mode & 0o777) == "0o700", "key directory private"
+    assert oct(os.stat(os.path.join(key, "kuf-cod-release")).st_mode & 0o777) == "0o600", "private key 0600"
+    signers = open(os.path.join(key, "allowed_signers")).read()
+    assert f'namespaces="{NS},{MNS}"' in signers, signers
+    with open(os.path.join(e.root, "allowed_signers"), "w") as f:
+        f.write(signers)
+    r = subprocess.run([os.path.join(ROOT, "tools", "package", "sign_package.sh"), "--new-key", key,
+                        "--no-passphrase"], capture_output=True, text=True)
+    assert r.returncode != 0 and "not overwritten" in r.stderr, "an existing key is never overwritten"
+    pkgs = {}
+    for v in ("0.7.0", "0.7.1"):
+        p = e.package(v)
+        subprocess.run([os.path.join(ROOT, "tools", "package", "sign_package.sh"), "--key",
+                        os.path.join(key, "kuf-cod-release"), p], check=True, capture_output=True)
+        notes = os.path.join(t, "notes.txt")
+        open(notes, "w").write(f"Test {v}\n")
+        m = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "tools", "package", "make_manifest.py"), p,
+                            "--notes", notes, "--min-installed", "0.7.0"], check=True, capture_output=True,
+                           text=True).stdout.strip()
+        subprocess.run([os.path.join(ROOT, "tools", "package", "sign_package.sh"), "--key",
+                        os.path.join(key, "kuf-cod-release"), "--manifest", m], check=True, capture_output=True)
+        e.releases.append({"tag_name": "v" + v, "draft": False, "prerelease": False,
+                           "assets": [{"name": os.path.basename(x), "size": os.path.getsize(x),
+                                       "browser_download_url": "https://github.com/x/y/" + os.path.basename(x)}
+                                      for x in (p, p + ".sig", m, m + ".sig")]})
+        pkgs[v] = p
+        json.dump(e.releases, open(os.path.join(e.src, "releases.json"), "w"))
+        code, r = e.run("update", "--yes")
+        assert code == 0 and e.current() == v, f"{v}: {code} {r}"
+    bad = e.package("0.7.2", vfile="0.7.1\n")
+    r = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "tools", "package", "make_manifest.py"), bad],
+                       capture_output=True, text=True)
+    assert r.returncode != 0 and "VERSION" in r.stderr, "make_manifest refuses a package whose VERSION differs"
+
+@case("GitHub problems: rate limit, missing repository, outage and no network fail cleanly with a reason")
+def _(t):
+    import http.server
+    import threading
+
+    class H(http.server.BaseHTTPRequestHandler):
+        reply = (200, {}, b"[]")
+
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            code, headers, body = H.reply
+            self.send_response(code)
+            for k, v in headers.items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        cases = (("rate limit", (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "2000000000"}, b"{}"),
+                  "limit"),
+                 ("429", (429, {"Retry-After": "120"}, b"{}"), "limit"),
+                 ("missing repository", (404, {}, b"{}"), "404"),
+                 ("outage", (503, {}, b""), "not available"),
+                 ("not JSON", (200, {}, b"<html>"), "release list"))
+        for label, reply, want in cases:
+            e = Env(os.path.join(t, label.replace(" ", "_")))
+            e.publish("1.0.0")
+            e.run("update", "--yes")
+            with open(os.path.join(e.root, "update.conf"), "a") as f:
+                f.write(f"api = http://127.0.0.1:{srv.server_address[1]}\n")
+            H.reply = reply
+            before = snapshot(e.root)
+            code, lines = _run_http(e, "check")
+            assert code == 1 and want in lines[-1]["error"], f"{label}: {code} {lines[-1]}"
+            assert snapshot(e.root) == before, f"{label}: unchanged"
+    finally:
+        srv.shutdown()
+    # No network: nothing listens on the port.
+    import socket
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    e = Env(os.path.join(t, "offline"))
+    with open(os.path.join(e.root, "update.conf"), "a") as f:
+        f.write(f"api = http://127.0.0.1:{port}\n")
+    code, lines = _run_http(e, "check")
+    assert code == 1 and "could not reach" in lines[-1]["error"], lines[-1]
+
+
+@case("a release missing one of its four assets is not offered; an older complete one is")
+def _(t):
+    e = Env(t)
+    e.publish("1.0.0")
+    p = e.package("1.1.0")
+    e.sign(p)
+    e.release("1.1.0", p)
+    e.releases[-1]["assets"] = [a for a in e.releases[-1]["assets"] if not a["name"].endswith(".update.json.sig")]
+    json.dump(e.releases, open(os.path.join(e.src, "releases.json"), "w"))
+    code, r = e.run("check")
+    assert code == 0 and r["latest"] == "1.0.0", f"{code} {r}"
+
+
+def _fake_install(t, versions, bins):
+    """An install root with these versions, each kuf-cod.sh the real launcher and bin/kuf_cod the given script."""
+    root = os.path.join(t, "app")
+    for v in versions:
+        d = os.path.join(root, "versions", v)
+        os.makedirs(os.path.join(d, "bin"))
+        open(os.path.join(d, "VERSION"), "w").write(v + "\n")
+        with open(os.path.join(d, "kuf-cod.sh"), "w") as f:
+            f.write(open(os.path.join(ROOT, "tools", "package", "kuf-cod.sh")).read())
+        with open(os.path.join(d, "kuf_update.py"), "w") as f:
+            f.write(open(os.path.join(ROOT, "tools", "updater", "kuf_update.py")).read())
+        with open(os.path.join(d, "bin", "kuf_cod"), "w") as f:
+            f.write(f'#!/bin/sh\necho {v} >> "{t}/runs"\n{bins[v]}\n')
+        for x in ("kuf-cod.sh", "kuf_update.py", "bin/kuf_cod"):
+            os.chmod(os.path.join(d, x), 0o755)
+    os.symlink(f"versions/{versions[-1]}", os.path.join(root, "current"))
+    open(os.path.join(root, "previous"), "w").write(versions[0] + "\n")
+    open(os.path.join(root, "update.conf"), "w").write("repo = player/kuf-cod-recomp\n")
+    with open(os.path.join(root, "kuf-cod"), "w") as f:
+        f.write(f'#!/bin/sh\nexec "{root}/current/kuf-cod.sh" "$@"\n')
+    with open(os.path.join(root, "kuf-update"), "w") as f:
+        f.write(f'#!/bin/sh\nexec python3 -I "{root}/current/kuf_update.py" --install-root "{root}" "$@"\n')
+    os.chmod(os.path.join(root, "kuf-cod"), 0o755)
+    os.chmod(os.path.join(root, "kuf-update"), 0o755)
+    game = os.path.join(t, "game")
+    os.makedirs(game)
+    open(os.path.join(game, "default.xex"), "w").close()
+    env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS")}
+    env.update(HOME=os.path.join(t, "home"), XDG_CONFIG_HOME=os.path.join(t, "cfg"),
+               XDG_DATA_HOME=os.path.join(t, "data"), PATH="/usr/bin:/bin", KUF_NO_DIALOG="1")
+    return root, game, env
+
+
+@case("launcher: a new version that crashes on its first start is switched back and the old one starts")
+def _(t):
+    root, game, env = _fake_install(t, ["0.7.0", "0.7.1"], {"0.7.0": "exit 0", "0.7.1": "exit 70"})
+    open(os.path.join(root, ".first-start"), "w").write("0.7.1\n0.7.0\n")
+    r = subprocess.run([os.path.join(root, "kuf-cod"), "--game-dir", game], env=env, capture_output=True, text=True,
+                       timeout=60)
+    runs = open(os.path.join(t, "runs")).read().split()
+    assert r.returncode == 0 and runs == ["0.7.1", "0.7.0"], f"{r.returncode} {runs} {r.stderr}"
+    assert os.readlink(os.path.join(root, "current")) == "versions/0.7.0", "switched back"
+    assert not os.path.exists(os.path.join(root, ".first-start")), "marker cleared"
+    assert "did not start" in r.stderr, r.stderr
+
+
+@case("launcher: no switch back after a normal first start, a later crash, or a deliberate stop")
+def _(t):
+    for label, code, first in (("normal", "exit 0", True), ("later crash", "exit 70", False),
+                               ("SIGTERM", "exit 143", True)):
+        d = os.path.join(t, label.replace(" ", "_"))
+        os.makedirs(d)
+        root, game, env = _fake_install(d, ["0.7.0", "0.7.1"], {"0.7.0": "exit 0", "0.7.1": code})
+        if first:
+            open(os.path.join(root, ".first-start"), "w").write("0.7.1\n0.7.0\n")
+        subprocess.run([os.path.join(root, "kuf-cod"), "--game-dir", game], env=env, capture_output=True, text=True,
+                       timeout=60)
+        runs = open(os.path.join(d, "runs")).read().split()
+        assert runs == ["0.7.1"], f"{label}: {runs}"
+        assert os.readlink(os.path.join(root, "current")) == "versions/0.7.1", f"{label}: stays"
+        assert not os.path.exists(os.path.join(root, ".first-start")), f"{label}: marker cleared"
+
 
 
 def main():

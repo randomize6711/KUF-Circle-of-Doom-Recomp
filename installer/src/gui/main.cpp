@@ -4,6 +4,7 @@
 // again over an installation (or with --uninstall FOLDER) it offers repair and removal.
 //
 //   kuf-setup [--payload DIR] [--assets DIR] [--uninstall FOLDER] [--screenshot DIR]
+//   kuf-setup --install-to FOLDER --game-dir FOLDER ... | --remove FOLDER ...   (no window: unattended.cpp)
 //
 // --payload: the game package to install (default: ../share/kuf-setup/payload next to the program, as in the
 // AppImage); --assets: theme, font, images, the game-file list; --screenshot: draws each page into DIR/*.png and
@@ -28,6 +29,7 @@
 #include "core/install.h"
 #include "core/steam.h"
 #include "core/util.h"
+#include "gui/unattended.h"
 
 namespace setup = kuf::setup;
 namespace fs = std::filesystem;
@@ -921,6 +923,8 @@ void Screenshots(App* a, const fs::path& dir) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Unattended (no window): --install-to / --remove (unattended.cpp).
+  if (setup::IsUnattended(argc, argv)) return setup::RunUnattended(argc, argv, SelfExe());
   fs::path assets_arg, payload_arg, uninstall_arg, shot_dir;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];

@@ -4,6 +4,9 @@
 cmake_minimum_required(VERSION 3.25)
 project(kuf_setup CXX)
 
+# Published binaries carry no build-machine paths (__FILE__ relative to the source tree).
+add_compile_options("-fmacro-prefix-map=${CMAKE_SOURCE_DIR}/=")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -23,7 +26,7 @@ target_include_directories(kuf_setup_core PUBLIC src)
 target_link_libraries(kuf_setup_core PUBLIC PkgConfig::GLIB)
 target_compile_options(kuf_setup_core PRIVATE -Wall -Wextra)
 
-add_executable(kuf-setup src/gui/main.cpp)
+add_executable(kuf-setup src/gui/main.cpp src/gui/unattended.cpp)
 target_link_libraries(kuf-setup PRIVATE kuf_setup_core PkgConfig::GTK3 PkgConfig::FONTCONFIG)
 target_compile_options(kuf-setup PRIVATE -Wall -Wextra -Wno-deprecated-declarations)
 

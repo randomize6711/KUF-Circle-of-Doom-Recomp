@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Builds the setup and its AppImage (installer/README.md):
-#   installer/appimage/build_appimage.sh [--skip-package]
+#   installer/appimage/build_appimage.sh [--skip-package | --package TARBALL] [--out DIR]
 # 1. the setup (cmake -S installer -B build/installer), its unit tests;
 # 2. its assets in build/installer/assets: theme, game-file list, the artwork rendered to PNG (rsvg-convert), the
 #    X360 font (by Redge, "100% Free" at dafont.com; fetched once, SHA-256 checked, cached in build/tools);
-# 3. the game package of the current build (tools/package/package_linux.sh --strip), unpacked into the AppDir;
+# 3. the game package of the current build (tools/package/package_linux.sh --strip), or --package (a release's own
+#    package: tools/package/make_release.sh --appimage), unpacked into the AppDir;
 # 4. build/installer/AppDir and, with appimagetool (pinned, cached in build/tools; SHA-256 checked),
 #    build/installer/KingdomUnderFire-CircleOfDoom-Setup-<version>-x86_64.AppImage.
 # The AppImage contains the game package (code recompiled from the player's own executable: personal use, see
@@ -14,7 +15,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$ROOT/build/installer"
 TOOLS="$ROOT/build/tools"
 SKIP_PACKAGE=0
-[[ "${1:-}" == "--skip-package" ]] && SKIP_PACKAGE=1
+PACKAGE=""
+APPIMAGE_OUT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-package) SKIP_PACKAGE=1; shift ;;
+    --package) PACKAGE="$(realpath "$2")"; shift 2 ;;
+    --out) APPIMAGE_OUT="$(realpath -m "$2")"; shift 2 ;;
+    *) echo "unknown option $1" >&2; exit 2 ;;
+  esac
+done
 
 APPIMAGETOOL_VERSION=1.9.1
 APPIMAGETOOL_SHA256=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
@@ -53,7 +63,10 @@ printf '%s\n' "X360 font by Redge, from https://www.dafont.com/x360.font (licenc
 
 echo "== game package"
 PKG_OUT="$OUT/package"
-if [[ $SKIP_PACKAGE -eq 0 || ! -d "$PKG_OUT" ]]; then
+if [[ -n "$PACKAGE" ]]; then
+  rm -rf "$PKG_OUT" && mkdir -p "$PKG_OUT"
+  tar -xzf "$PACKAGE" -C "$PKG_OUT"
+elif [[ $SKIP_PACKAGE -eq 0 || ! -d "$PKG_OUT" ]]; then
   rm -rf "$PKG_OUT" && mkdir -p "$PKG_OUT"
   TARBALL="$("$ROOT/tools/package/package_linux.sh" --out "$PKG_OUT" --strip | tail -1)"
   tar -xzf "$TARBALL" -C "$PKG_OUT"
@@ -71,7 +84,8 @@ install -m 0755 "$OUT/kuf-setup" "$APPDIR/usr/bin/kuf-setup"
 strip --strip-debug "$APPDIR/usr/bin/kuf-setup"
 cp -a "$A" "$APPDIR/usr/share/kuf-setup/assets"
 cp -a "$PKG_DIR" "$APPDIR/usr/share/kuf-setup/payload/package"
-[[ -f "$ROOT/tools/package/allowed_signers" ]] && cp "$ROOT/tools/package/allowed_signers" "$APPDIR/usr/share/kuf-setup/payload/"
+# The release public key: the one the package carries (installs verify updates against it).
+[[ -f "$PKG_DIR/allowed_signers" ]] && cp "$PKG_DIR/allowed_signers" "$APPDIR/usr/share/kuf-setup/payload/"
 # The game's system requirements, from its binaries (the newest glibc and libstdc++ versions they need): the setup
 # refuses to install on an older system (the game would not start).
 GLIBC_NEED="$(objdump -T "$PKG_DIR"/bin/* 2>/dev/null | grep -o 'GLIBC_2\.[0-9]*' | sed 's/GLIBC_//' | sort -uV | tail -1)"
@@ -90,7 +104,9 @@ fetch "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_
   "$TOOL" "$APPIMAGETOOL_SHA256"
 chmod +x "$TOOL"
 NAME="KingdomUnderFire-CircleOfDoom-Setup-$VERSION-x86_64.AppImage"
-rm -f "$OUT/$NAME"
-ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream "$APPDIR" "$OUT/$NAME" >"$OUT/appimagetool.log" 2>&1 ||
+DEST="${APPIMAGE_OUT:-$OUT}"
+mkdir -p "$DEST"
+rm -f "$DEST/$NAME"
+ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream "$APPDIR" "$DEST/$NAME" >"$OUT/appimagetool.log" 2>&1 ||
   { tail -20 "$OUT/appimagetool.log" >&2; exit 1; }
-echo "$OUT/$NAME"
+echo "$DEST/$NAME"

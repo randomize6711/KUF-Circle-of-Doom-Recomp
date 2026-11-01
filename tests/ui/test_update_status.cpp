@@ -29,6 +29,9 @@ TEST_CASE("updater lines: progress, stage, up to date with null, errors; garbage
   const auto v = ParseLine(R"({"stage": "verifying"})");
   REQUIRE(v);
   CHECK(ProgressLabel(*v) == "VERIFYING THE UPDATE...");
+  const auto i = ParseLine(R"({"stage": "installing"})");
+  REQUIRE(i);
+  CHECK(ProgressLabel(*i) == "INSTALLING THE UPDATE...");
   const auto u = ParseLine(R"({"current": "0.7.0", "latest": null, "message": "no signed release found", "exit": 3})");
   REQUIRE(u);
   CHECK(u->exit == 3);

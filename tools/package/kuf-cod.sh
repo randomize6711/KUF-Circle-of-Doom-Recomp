@@ -81,8 +81,29 @@ fi
 # install's stable launcher then starts the version now current (the update switched it), with the same options.
 export KUF_RESTART_FILE="$DATA/user/.restart-requested"
 rm -f "$KUF_RESTART_FILE"
+# The first start after an update (the updater wrote .first-start naming this version): if the game cannot run or
+# crashes within FIRST_START_SECONDS, switch back to the version before and start that one instead.
+FIRST="$KUF_INSTALL_ROOT/.first-start"
+THIS_VERSION="$(cat "$HERE/VERSION" 2>/dev/null || true)"
+FIRST_START=0
+[[ -f "$FIRST" && "$(head -n1 "$FIRST")" == "$THIS_VERSION" ]] && FIRST_START=1
+started=$SECONDS
 status=0
 "${GAME[@]}" || status=$?
+if [[ $FIRST_START -eq 1 ]]; then
+  # 70: the game's crash report; 126 / 127: it could not be run; above 128: a signal (not INT / TERM: a deliberate
+  # stop by the player is not a failed start).
+  if [[ ! -f "$KUF_RESTART_FILE" && ( $status -eq 70 || ( $status -ge 126 && $status -ne 130 && $status -ne 143 ) ) \
+        && $((SECONDS - started)) -lt ${FIRST_START_SECONDS:-60} ]]; then
+    message "Version $THIS_VERSION did not start (exit $status); switching back to the version before."
+    rm -f "$FIRST"
+    if "$KUF_INSTALL_ROOT/kuf-update" rollback >&2; then
+      exec "$KUF_INSTALL_ROOT/kuf-cod" "${ARGS[@]}"
+    fi
+    exit "$status"
+  fi
+  rm -f "$FIRST"
+fi
 if [[ -f "$KUF_RESTART_FILE" ]]; then
   rm -f "$KUF_RESTART_FILE"
   exec "$KUF_INSTALL_ROOT/kuf-cod" "${ARGS[@]}"
