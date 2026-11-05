@@ -22,6 +22,10 @@ kuf::input::PromptDevice Current();
 // The text lookup sub_826CDBF0 returned `text` (a guest string): the guest address of the same text with keyboard
 // prompts, or 0 to keep it (controller prompts, no icon, or not a string).
 uint32_t OnTextLookup(PPCContext& ctx, uint8_t* base, uint32_t text);
+// The game's message box shows its own answer line ("@(A) Yes @(B) No"): while set, looked-up texts with that line
+// get these labels instead (the updater's boxes: "Install Update" / "Cancel"). Clear when the box is answered.
+void SetAnswerLabels(std::string a, std::string b);
+void ClearAnswerLabels();
 // A text the port sets itself (PC Settings' help), for the device in use.
 std::string ForCurrentDevice(std::string_view text);
 

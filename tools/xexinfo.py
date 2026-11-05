@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Read-only XEX2 header inspector. Usage: xexinfo.py <default.xex> [out_dir]
 Prints optional headers, security info, import libraries. With out_dir, writes the
-decrypted (still possibly compressed) payload to out_dir/payload.bin."""
+(still possibly compressed) payload of an unencrypted XEX to out_dir/payload.bin."""
 import struct, sys, os
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-RETAIL_KEY = bytes.fromhex("")  # removed
 NAMES = {
     0x000002FF: "RESOURCE_INFO", 0x000003FF: "FILE_FORMAT_INFO", 0x000005FF: "DELTA_PATCH",
     0x00010001: "ORIGINAL_BASE_ADDRESS", 0x00010100: "ENTRY_POINT", 0x00010201: "IMAGE_BASE_ADDRESS",
@@ -60,7 +58,6 @@ def main():
     img_size = u32(data, s + 4); flags_img = u32(data, s + 0x10C); load = u32(data, s + 0x110)
     page_cnt = u32(data, s + 0x180)
     print(f"security: image_size={img_size:#x} image_flags={flags_img:#x} load_address={load:#x} page_descriptors={page_cnt}")
-    enc_key = data[s + 0x150:s + 0x160]
     region = u32(data, s + 0x178); media = u32(data, s + 0x17C)
     print(f"region={region:#x} allowed_media={media:#x}")
     # sections from page descriptors
@@ -96,10 +93,10 @@ def main():
             libs.append((names[ni], recs))
             o += lsz
         globals()["LIBS"] = libs
-    file_key = Cipher(algorithms.AES(RETAIL_KEY), modes.ECB()).decryptor().update(enc_key)
     payload = data[pe_off:]
-    if enc == 1:
-        payload = Cipher(algorithms.AES(file_key), modes.CBC(b"\0" * 16)).decryptor().update(payload[:len(payload) & ~15])
+    if enc != 0:
+        print("this XEX is encrypted: its payload cannot be read (docs/LOCAL_BUILD.md)")
+        sys.exit(0 if len(sys.argv) <= 2 else 1)
     if len(sys.argv) > 2:
         os.makedirs(sys.argv[2], exist_ok=True)
         open(os.path.join(sys.argv[2], "payload.bin"), "wb").write(payload)

@@ -4,19 +4,28 @@
 //
 //   kuf-setup --install-to FOLDER --game-dir FOLDER [--no-menu] [--desktop]   install, or repair an installation
 //   kuf-setup --remove FOLDER [--keep-shortcuts] [--remove-user-data]         uninstall
-// Exit: 0 done, 1 failed or refused (the reason on stderr), 2 usage.
+//   (an install takes --jobs N: the local build's parallel jobs; default: from this machine)
+//   kuf-setup --check-system                                                  what the window's first page checks
+// An install also checks the graphics driver (core/system_check.h) and refuses one that cannot run the game;
+// --ignore-graphics-check installs anyway, saying so (tests in sandboxes without a graphics card).
+// Exit: 0 done (--check-system: compatible), 1 failed, refused or incompatible (the reason on stderr), 2 usage.
 #include "gui/unattended.h"
 
 #include <atomic>
+#include <csignal>
 #include <cstdio>
 #include <string>
 
 #include "core/game_data.h"
 #include "core/install.h"
+#include "core/system_check.h"
 #include "core/util.h"
 
 namespace kuf::setup {
 namespace {
+
+std::atomic<bool> g_cancel{false};
+void OnCancelSignal(int) { g_cancel = true; }
 
 int Fail(const std::string& why) {
   std::fprintf(stderr, "kuf-setup: %s\n", why.c_str());
@@ -43,14 +52,16 @@ void Progress(Stage s, double f, const std::string& detail) {
 bool IsUnattended(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
-    if (a == "--install-to" || a == "--remove") return true;
+    if (a == "--install-to" || a == "--remove" || a == "--check-system") return true;
   }
   return false;
 }
 
 int RunUnattended(int argc, char** argv, const fs::path& exe) {
   fs::path install_to, remove, game, assets_arg, payload_arg;
-  bool menu = true, desktop = false, keep_shortcuts = false, remove_data = false;
+  int jobs = 0;
+  bool menu = true, desktop = false, keep_shortcuts = false, remove_data = false, check_only = false,
+       ignore_graphics = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto value = [&]() -> std::string { return i + 1 < argc ? argv[++i] : std::string(); };
@@ -63,6 +74,9 @@ int RunUnattended(int argc, char** argv, const fs::path& exe) {
     else if (a == "--desktop") desktop = true;
     else if (a == "--keep-shortcuts") keep_shortcuts = true;
     else if (a == "--remove-user-data") remove_data = true;
+    else if (a == "--check-system") check_only = true;
+    else if (a == "--ignore-graphics-check") ignore_graphics = true;
+    else if (a == "--jobs") jobs = std::atoi(value().c_str());
     else {
       std::fprintf(stderr, "kuf-setup: unknown option %s\n", a.c_str());
       return 2;
@@ -102,10 +116,36 @@ int RunUnattended(int argc, char** argv, const fs::path& exe) {
   if (!ReadFile(assets / "game_v1.tsv", &list)) return Fail("the setup's game-file list is missing");
   Plan plan;
   plan.manifest = ParseGameManifest(list, "Xbox 360, base version");
+  // The system, as the window's first page: the libraries the game needs (requires.txt, from its binaries) and the
+  // graphics driver.
+  std::vector<std::string> problems;
   if (ReadFile(payload.parent_path() / "requires.txt", &requires_text)) {
-    const auto problems = CompatibilityProblems(ParseRequirements(requires_text), HostGlibc(), HostGlibcxx());
-    for (const auto& p : problems) std::fprintf(stderr, "kuf-setup: %s\n", p.c_str());
-    if (!problems.empty()) return Fail("this system is too old for the game");
+    problems = CompatibilityProblems(ParseRequirements(requires_text), HostGlibc(), HostGlibcxx());
+  }
+  const VulkanReport vulkan = CheckVulkan();
+  const auto graphics = VulkanProblems(vulkan);
+  std::printf("system: %s; glibc %s, libstdc++ GLIBCXX %s\n", PlatformSummary(DetectPlatform()).c_str(),
+              HostGlibc().c_str(), HostGlibcxx().empty() ? "unknown" : HostGlibcxx().c_str());
+  if (!vulkan.error.empty()) std::printf("vulkan: %s\n", vulkan.error.c_str());
+  for (const auto& d : vulkan.devices) {
+    std::printf("vulkan: %s (%s), Vulkan %s: %s\n", d.name.c_str(), d.type.c_str(),
+                VulkanVersionString(d.api_version).c_str(),
+                d.type == "CPU (software)" ? "a software renderer (not counted: far too slow for the game)"
+                : d.missing.empty()        ? "has everything the game needs"
+                                           : "lacks what the game needs");
+    for (const auto& m : d.missing) std::printf("vulkan:   missing %s\n", m.c_str());
+  }
+  for (const auto& p : problems) std::fprintf(stderr, "kuf-setup: %s\n", p.c_str());
+  for (const auto& p : graphics) std::fprintf(stderr, "kuf-setup: %s\n", p.c_str());
+  if (check_only) {
+    const bool ok = problems.empty() && graphics.empty();
+    std::printf("%s\n", ok ? "compatible: the game can be installed and run" : "NOT compatible (see above)");
+    return ok ? 0 : 1;
+  }
+  if (!problems.empty()) return Fail("this system is too old for the game");
+  if (!graphics.empty()) {
+    if (!ignore_graphics) return Fail("the graphics driver cannot run the game (--ignore-graphics-check to install anyway)");
+    std::fprintf(stderr, "kuf-setup: installing anyway (--ignore-graphics-check)\n");
   }
 
   if (game.empty()) return Fail("--game-dir: the folder with your game files (default.xex) is needed");
@@ -113,6 +153,10 @@ int RunUnattended(int argc, char** argv, const fs::path& exe) {
   const GameCheck c = CheckGameFolder(plan.game_source, plan.manifest);
   if (!c.folder_ok) return Fail("the game folder cannot be read: " + plan.game_source.string());
   if (!c.executable_found) return Fail("no default.xex in " + plan.game_source.string());
+  if (c.executable_encrypted) {
+    return Fail("this default.xex is encrypted: this setup contains no console decryption keys and cannot decrypt it; "
+                "it can only use an unencrypted default.xex (docs/INSTALL_GUIDE.md)");
+  }
   if (!c.executable_known) return Fail("unsupported game version (only the original Xbox 360 base version)");
   if (!c.missing.empty() || !c.wrong_size.empty()) {
     return Fail(std::to_string(c.missing.size()) + " game files missing, " + std::to_string(c.wrong_size.size()) +
@@ -129,6 +173,7 @@ int RunUnattended(int argc, char** argv, const fs::path& exe) {
   plan.setup_binary = exe;
   plan.setup_assets = assets;
   plan.icon = assets / "icon-256.png";
+  plan.build_jobs = jobs;
   plan.menu = menu;
   plan.desktop = desktop;
   if (target == Target::kNew && FreeBytes(plan.root) < SpaceNeeded(plan)) {
@@ -140,8 +185,10 @@ int RunUnattended(int argc, char** argv, const fs::path& exe) {
   std::printf("%s %s into %s (game files from %s)%s\n", target == Target::kExisting ? "repairing" : "installing",
               v.c_str(), plan.root.c_str(), plan.game_source.c_str(),
               plan.signers.empty() ? "; no release key in this setup: updates will be refused" : "");
-  std::atomic<bool> cancel{false};
-  const Result r = Install(plan, Progress, cancel);
+  // SIGINT or SIGTERM cancels, as the window's Cancel does: the setup's own temporary folders are removed.
+  std::signal(SIGINT, OnCancelSignal);
+  std::signal(SIGTERM, OnCancelSignal);
+  const Result r = Install(plan, Progress, g_cancel);
   for (const auto& n : r.notes) std::printf("%s\n", n.c_str());
   if (!r.ok) return Fail(r.error);
   std::printf("done: start with %s\n", (plan.root / "kuf-cod").c_str());

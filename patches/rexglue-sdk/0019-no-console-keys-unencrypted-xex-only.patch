@@ -1,0 +1,97 @@
+KUF port: the runtime and the code generator carry no console keys. Only an executable that is already unencrypted is
+loaded; an encrypted one is refused with a message, and title-update patches (whose keys derive from the console keys)
+are not supported. Basic and uncompressed executables load as before (docs/LOCAL_BUILD.md).
+diff --git a/src/system/xex_module.cpp b/src/system/xex_module.cpp
+--- a/src/system/xex_module.cpp
++++ b/src/system/xex_module.cpp
+@@ -32,7 +32,6 @@
+ #include <rex/system/xmodule.h>
+ #include <rex/types.h>
+ 
+-
+ void aes_decrypt_buffer(const uint8_t* session_key, const uint8_t* input_buffer,
+                         const size_t input_size, uint8_t* output_buffer, const size_t output_size) {
+   uint32_t rk[4 * (MAXNR + 1)];
+@@ -183,6 +182,9 @@
+ }
+ 
+ int XexModule::ApplyPatch(XexModule* module) {
++  // This build carries no console keys: title-update patches, whose keys derive from them, are not supported.
++  REXLOG_ERROR("XEX patches are not supported (this build has no decryption keys).");
++  return 1;
+   if (!is_patch()) {
+     // This isn't a XEX2 patch.
+     return 1;
+@@ -307,11 +309,6 @@
+   uint8_t orig_session_key[0x10];
+   memcpy(orig_session_key, module->session_key_, 0x10);
+ 
+-  // Header patch updated the base XEX key, need to redecrypt it
+-  aes_decrypt_buffer(module->is_dev_kit_ ? xe_xex2_devkit_key : xe_xex2_retail_key,
+-                     reinterpret_cast<const uint8_t*>(module->xex_security_info()->aes_key), 16,
+-                     module->session_key_, 16);
+-
+   // Decrypt the patch XEX's key using base XEX key
+   aes_decrypt_buffer(module->session_key_,
+                      reinterpret_cast<const uint8_t*>(xex_security_info()->aes_key), 16,
+@@ -456,11 +453,14 @@
+     return 0;
+   }
+ 
+-  memory()->LookupHeap(base_address_)->Reset();
++  // This build carries no console keys: only an executable that is already unencrypted is loaded.
++  if (opt_file_format_info()->encryption_type != XEX_ENCRYPTION_NONE) {
++    REXLOG_ERROR("This XEX is encrypted; only an unencrypted XEX can be loaded (this build has no decryption keys).");
++    return 9;
++  }
++  std::memset(session_key_, 0, sizeof(session_key_));
+ 
+-  aes_decrypt_buffer(use_dev_key ? xe_xex2_devkit_key : xe_xex2_retail_key,
+-                     reinterpret_cast<const uint8_t*>(xex_security_info()->aes_key), 16,
+-                     session_key_, 16);
++  memory()->LookupHeap(base_address_)->Reset();
+ 
+   int result_code = 0;
+   switch (opt_file_format_info()->compression_type) {
+@@ -897,16 +897,10 @@
+   uint8_t* data = memory()->TranslateVirtual(base_address_);
+ 
+   // Load in the XEX basefile
+-  // We'll try using both XEX2 keys to see if any give a valid PE
+   int result_code = ReadImage(xex_addr, xex_length, false);
+   if (result_code) {
+-    REXLOG_WARN("XEX load failed with code {}, trying with devkit encryption key...", result_code);
+-
+-    result_code = ReadImage(xex_addr, xex_length, true);
+-    if (result_code) {
+-      REXLOG_ERROR("XEX load failed with code {}, tried both encryption keys", result_code);
+-      return false;
+-    }
++    REXLOG_ERROR("XEX load failed with code {}", result_code);
++    return false;
+   }
+ 
+   // Note: caller will have to call LoadContinue once it's determined whether a
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_crypt.cpp b/src/kernel/xboxkrnl/xboxkrnl_crypt.cpp
+--- a/src/kernel/xboxkrnl/xboxkrnl_crypt.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_crypt.cpp
+@@ -566,18 +566,7 @@
+ u32 XeKeysHmacSha_entry(u32 key_num, mapped_void inp_1, u32 inp_1_size, mapped_void inp_2,
+                         u32 inp_2_size, mapped_void inp_3, u32 inp_3_size, mapped_void out,
+                         u32 out_size) {
+-  const uint8_t* key = nullptr;
+-  if (key_num == 0x19) {
+-    key = key19;
+-  }
+-
+-  if (key) {
+-    XeCryptHmacSha_entry(mapped_void::from_host((void*)key), 0x10, inp_1, inp_1_size, inp_2,
+-                         inp_2_size, inp_3, inp_3_size, out, out_size);
+-
+-    return X_STATUS_SUCCESS;
+-  }
+-
++  // This build carries no console keys; this game does not import this function.
+   return X_STATUS_UNSUCCESSFUL;
+ }
+ 

@@ -1,5 +1,6 @@
 #include "runtime/profiler.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -29,6 +30,9 @@ REXCVAR_DEFINE_BOOL(kuf_profile, false, "KUF/Debug",
 REXCVAR_DEFINE_BOOL(kuf_profile_samples, false, "KUF/Debug",
                     "With kuf_profile: also sample where CPU time goes (perf events; tools/profile_report.py)");
 REXCVAR_DEFINE_INT32(kuf_profile_sample_hz, 1000, "KUF/Debug", "Samples per second of CPU time, per thread");
+REXCVAR_DEFINE_INT32(kuf_profile_stack_words, 0, "KUF/Debug",
+                     "M12: with --kuf_profile_samples, also record this many 8-byte words from the top of the sampled "
+                     "thread's stack (samples_stack.bin), for finding callers by stack scanning (0: off, at most 64)");
 
 namespace kuf::profile {
 namespace {
@@ -56,6 +60,8 @@ std::atomic<size_t> g_frame_count{0};
 
 bool g_sampling = false;
 std::vector<Sample> g_samples;  // filled by the worker thread only
+size_t g_stack_words = 0;        // --kuf_profile_stack_words (fixed while sampling)
+std::vector<uint64_t> g_stacks;  // g_stack_words per sample, in g_samples' order (zero where none was recorded)
 size_t g_lost = 0;              // samples the kernel dropped because a ring buffer was full
 
 std::mutex g_mutex;
@@ -108,6 +114,10 @@ Ring OpenRing(int tid) {
   attr.config = PERF_COUNT_SW_TASK_CLOCK;
   attr.sample_period = 1000000000ull / static_cast<uint64_t>(std::max(1, REXCVAR_GET(kuf_profile_sample_hz)));
   attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID;
+  if (g_stack_words) {
+    attr.sample_type |= PERF_SAMPLE_STACK_USER;
+    attr.sample_stack_user = static_cast<uint32_t>(g_stack_words * 8);
+  }
   attr.exclude_kernel = 1;
   attr.exclude_hv = 1;
   Ring ring;
@@ -150,6 +160,18 @@ void DrainRing(Ring& ring, uint32_t frame) {
       copy(tail + sizeof(header), &body, sizeof(body));
       if (g_samples.size() < kMaxSamples) {
         g_samples.push_back({body.ip, body.tid, frame});
+        if (g_stack_words) {
+          // PERF_SAMPLE_STACK_USER: u64 size, size bytes of stack from the sampled stack pointer, u64 dyn_size.
+          const uint64_t at = tail + sizeof(header) + sizeof(body);
+          uint64_t size = 0;
+          if (header.size >= sizeof(header) + sizeof(body) + 8) copy(at, &size, 8);
+          uint64_t dyn = 0;
+          if (size && header.size >= sizeof(header) + sizeof(body) + 16 + size) copy(at + 8 + size, &dyn, 8);
+          const size_t first = g_stacks.size();
+          g_stacks.resize(first + g_stack_words, 0);
+          const uint64_t n = std::min<uint64_t>({size, dyn, g_stack_words * 8});
+          if (n) copy(at + 8, g_stacks.data() + first, static_cast<size_t>(n));
+        }
       }
     } else if (header.type == PERF_RECORD_LOST) {
       uint64_t lost[2];
@@ -272,6 +294,7 @@ void Start(const std::filesystem::path& user_data_root) {
   g_enabled = true;
   if (REXCVAR_GET(kuf_profile_samples)) {
     g_samples.reserve(1 << 20);
+    g_stack_words = static_cast<size_t>(std::clamp(REXCVAR_GET(kuf_profile_stack_words), 0, 64));
     g_sampling = true;  // the worker opens an event on each thread within 100 ms of it appearing
   }
   g_thread = std::thread(Worker);
@@ -319,6 +342,13 @@ void Stop() {
     std::ofstream out(g_dir / "samples.bin", std::ios::binary);
     out.write(reinterpret_cast<const char*>(g_samples.data()),
               static_cast<std::streamsize>(g_samples.size() * sizeof(Sample)));
+    if (g_stack_words) {
+      std::ofstream stacks(g_dir / "samples_stack.bin", std::ios::binary);
+      const uint64_t words = g_stack_words;
+      stacks.write(reinterpret_cast<const char*>(&words), sizeof(words));
+      stacks.write(reinterpret_cast<const char*>(g_stacks.data()),
+                   static_cast<std::streamsize>(g_stacks.size() * sizeof(uint64_t)));
+    }
     std::ofstream maps(g_dir / "maps.txt");
     maps << ReadSmallFile("/proc/self/maps");
     std::ofstream names(g_dir / "thread_names.csv");

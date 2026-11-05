@@ -1,0 +1,1 @@
+Installs by building the game on your computer from your own files; this download contains no game code. Faster and smoother: lower CPU use, less redundant Vulkan work and shorter stutters the first time a new effect is drawn. Your saves and settings are kept.

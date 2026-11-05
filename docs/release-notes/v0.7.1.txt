@@ -1,0 +1,13 @@
+Kingdom Under Fire: Circle of Doom Recomp 0.7.1
+
+Install: download the Setup AppImage below, run it and choose your own Xbox 360 game folder (base version; you must own the game - no game files are included). The setup copies and verifies them and installs the game for your user.
+
+Already installed 0.7.0? Use CHECK FOR UPDATES in the title menu: the update is downloaded, verified and installed from inside the game.
+
+Installed 0.7.0-dev.169 (before updates existed)? Run this Setup AppImage once and choose Repair: it keeps your saves, settings and game files and adds update support.
+
+Changes since 0.7.0:
+- A new update dialog in the game's own style: Installed Version, New Version, Install Update, Open GitHub Page, Cancel (keyboard, mouse and controller)
+- Release checks: the setup and the update package are always the same version, built from the same source and signed with the release key
+
+Requires a current Linux distribution (glibc 2.44 or newer) with Vulkan.

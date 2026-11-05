@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Build the in-memory PE image from a basic-compressed, retail-encrypted XEX2 and resolve import ordinals.
+"""Build the in-memory PE image from a basic-compressed or uncompressed, unencrypted XEX2 and resolve import ordinals.
 Usage: xeximage.py <default.xex> <out_dir>"""
 import struct, sys, os
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-RETAIL_KEY = bytes.fromhex("")  # removed
 u32 = lambda b, o: struct.unpack_from(">I", b, o)[0]
 d = open(sys.argv[1], "rb").read(); out = sys.argv[2]
 _, pe_off, _, sec, n = struct.unpack_from(">5I", d, 4)
 h = dict(struct.unpack_from(">II", d, 24 + i*8) for i in range(n))
 ff = h[0x3FF]; ffsz = u32(d, ff)
-key = Cipher(algorithms.AES(RETAIL_KEY), modes.ECB()).decryptor().update(d[sec+0x150:sec+0x160])
-raw = Cipher(algorithms.AES(key), modes.CBC(b"\0"*16)).decryptor().update(d[pe_off:pe_off + ((len(d)-pe_off) & ~15)])
+enc, comp = struct.unpack_from(">HH", d, ff + 4)
+if enc != 0: sys.exit("this XEX is encrypted; only an unencrypted XEX is supported (docs/LOCAL_BUILD.md)")
+if comp not in (0, 1): sys.exit("unsupported XEX compression %d" % comp)
+raw = d[pe_off:]
 img = bytearray(); src = 0
-for o in range(ff + 8, ff + ffsz, 8):
+if comp == 0: img += raw
+else:
+  for o in range(ff + 8, ff + ffsz, 8):
     ds, zs = struct.unpack_from(">II", d, o)
     img += raw[src:src+ds] + b"\0"*zs; src += ds
 size = u32(d, sec + 4); img = img[:size] + b"\0"*max(0, size-len(img))

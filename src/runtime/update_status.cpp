@@ -1,5 +1,6 @@
 #include "runtime/update_status.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 
@@ -133,6 +134,8 @@ std::optional<Reply> ParseLine(std::string_view line) {
     else if (k == "latest") out.latest = text;
     else if (k == "published") out.published = text;
     else if (k == "notes") out.notes = text;
+    else if (k == "summary") out.summary = text;
+    else if (k == "page") out.page = text;
     else if (k == "error") out.error = text;
     else if (k == "stage") out.stage = text;
     else if (k == "progress") out.progress = std::atoll(scalar.c_str());
@@ -142,54 +145,82 @@ std::optional<Reply> ParseLine(std::string_view line) {
   return out;
 }
 
-std::string DialogText(Dialog dialog, const Reply& reply, std::string_view installed, size_t max_notes) {
+std::pair<std::string, std::string> AnswerLabels(Dialog dialog) {
+  switch (dialog) {
+    case Dialog::kOffer: return {"Select", "Cancel"};
+    case Dialog::kRestart: return {"Restart Now", "Later"};
+    case Dialog::kCancelAsk: return {"Cancel Download", "Keep Downloading"};
+    default: return {"OK", "Close"};
+  }
+}
+
+std::string ReleasePage(std::string_view reported) {
+  const std::string prefix = std::string(kReleasesPage) + "/tag/v";
+  if (reported.size() > prefix.size() && reported.size() <= prefix.size() + 64 &&
+      reported.substr(0, prefix.size()) == prefix) {
+    const std::string_view version = reported.substr(prefix.size());
+    const bool ok = std::all_of(version.begin(), version.end(), [](char c) {
+      return std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-';
+    });
+    if (ok && std::isdigit(static_cast<unsigned char>(version.front()))) return std::string(reported);
+  }
+  return kReleasesPage;
+}
+
+std::string DialogText(Dialog dialog, const Reply& reply, std::string_view installed) {
   const std::string current = BoxText(reply.current.empty() ? installed : std::string_view(reply.current));
   const std::string latest = BoxText(reply.latest);
   std::string t;
   switch (dialog) {
-    case Dialog::kOffer: {
-      t = "Update available\\nInstalled: " + current + "\\nAvailable: " + latest;
-      if (!reply.published.empty()) t += " (released " + BoxText(reply.published) + ")";
-      std::string notes = BoxText(reply.notes);
-      if (notes.size() > max_notes) {
-        notes.resize(max_notes);
-        while (!notes.empty() && notes.back() == '\\') notes.pop_back();  // never half a "\n"
-        notes += "...";
-      }
-      if (!notes.empty()) t += "\\n\\n" + notes;
-      t += "\\n\\nDownload and install it now? @(A)Install  @(B)Close";
+    case Dialog::kOffer:
+      t = "UPDATE AVAILABLE\\n\\nInstalled Version: " + current + "\\nNew Version: " + latest +
+          "\\n\\nDownload and install the update now?";
+      for (int i = 0; i < kOfferButtonLines; ++i) t += "\\n ";
       break;
-    }
     case Dialog::kUpToDate:
-      t = "No update available\\nInstalled: " + current + (latest.empty() ? "" : "\\nLatest release: " + latest) +
-          "\\n\\nThis is the newest version.";
+      t = "NO UPDATE AVAILABLE\\n\\nInstalled Version: " + current + "\\nThis is the newest version.";
       break;
     case Dialog::kFailed:
-      t = "The update did not complete\\nInstalled: " + current + "\\n\\n" +
+      t = "UPDATE FAILED\\n\\nInstalled Version: " + current + "\\n" +
           (reply.error.empty() ? std::string("The updater gave no reason.") : BoxText(reply.error)) +
-          "\\n\\nNothing was changed. Check the network and try again.";
+          "\\nNothing was changed.";
       break;
     case Dialog::kNotSetUp:
-      t = "Updates are not set up\\nInstalled: " + current +
-          "\\n\\nThis copy was not installed from a release package (or no release source is configured), so it "
-          "cannot update itself.";
+      t = "UPDATES NOT AVAILABLE\\n\\nInstalled Version: " + current +
+          "\\nThis copy was not installed with the setup, so it cannot update itself.";
       break;
     case Dialog::kCancelAsk:
-      t = "Cancel the download of " + latest + "?\\nNothing is changed until the download is complete and verified."
-          " @(A)Cancel download  @(B)Continue";
+      t = "CANCEL THE DOWNLOAD?\\n\\nNothing is changed until the update is verified.";
       break;
     case Dialog::kCancelled:
-      t = "Download cancelled\\nInstalled: " + current + "\\n\\nNothing was changed.";
+      t = "DOWNLOAD CANCELLED\\n\\nNothing was changed.";
       break;
     case Dialog::kRestart:
-      t = "Version " + latest + " is installed\\nIt is used from the next start. Restart now? (the game closes and "
-          "starts again; save first if needed) @(A)Restart  @(B)Later";
+      t = "RESTART REQUIRED\\n\\nVersion " + latest + " is installed. Restart now to use it?";
       break;
     case Dialog::kInstalledNoRestart:
-      t = "Version " + latest + " is installed\\nIt is used from the next start of the game.";
+      t = "UPDATE INSTALLED\\n\\nVersion " + latest + " is used from the next start of the game.";
       break;
   }
   return t;
+}
+
+std::string RelabelAnswers(std::string_view text, std::string_view a, std::string_view b) {
+  std::string out(text);
+  auto rename = [&](std::string_view icon, std::string_view word, std::string_view label) {
+    size_t at = out.find(icon);
+    if (at == std::string::npos) return false;
+    at += icon.size();
+    while (at < out.size() && out[at] == ' ') ++at;
+    const size_t end = at + word.size();
+    if (out.compare(at, word.size(), word) != 0 || (end < out.size() && std::isalpha(static_cast<unsigned char>(out[end])))) {
+      return false;
+    }
+    out.replace(at, word.size(), label);
+    return true;
+  };
+  if (!rename("@(A)", "Yes", a) || !rename("@(B)", "No", b)) return std::string(text);
+  return out;
 }
 
 std::string ProgressLabel(const Reply& p) {

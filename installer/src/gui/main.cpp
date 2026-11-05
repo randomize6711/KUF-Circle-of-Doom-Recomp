@@ -1,9 +1,9 @@
 // The graphical setup of Kingdom Under Fire: Circle of Doom (installer/README.md): a wizard in GTK 3 with the
-// project's own theme (assets/theme.css, the X360 font, original artwork; no animations). Steps: welcome, the player's game files,
+// project's own theme (assets/theme.css, the Cinzel font, original artwork; no animations). Steps: welcome, the player's game files,
 // the installation folder, the shortcut options, the installation (a worker thread; core/install.cpp), the end. Run
 // again over an installation (or with --uninstall FOLDER) it offers repair and removal.
 //
-//   kuf-setup [--payload DIR] [--assets DIR] [--uninstall FOLDER] [--screenshot DIR]
+//   kuf-setup [--payload DIR] [--assets DIR] [--uninstall FOLDER] [--screenshot DIR] [--walkthrough DIR]
 //   kuf-setup --install-to FOLDER --game-dir FOLDER ... | --remove FOLDER ...   (no window: unattended.cpp)
 //
 // --payload: the game package to install (default: ../share/kuf-setup/payload next to the program, as in the
@@ -28,6 +28,7 @@
 #include "core/game_data.h"
 #include "core/install.h"
 #include "core/steam.h"
+#include "core/system_check.h"
 #include "core/util.h"
 #include "gui/unattended.h"
 
@@ -45,7 +46,10 @@ struct App {
   fs::path exe, assets, payload, signers;
   setup::GameManifest manifest;
   std::string package_version;
-  std::vector<std::string> compat;  // what this system lacks for the game (empty: compatible)
+  std::vector<std::string> compat;  // what this system's libraries lack for the game (empty: compatible)
+  setup::VulkanReport vulkan;       // the graphics driver (asked before GTK starts: core/system_check.h)
+  std::vector<std::string> vulkan_problems;
+  setup::Platform platform;
   GtkWidget* welcome_warning = nullptr;
   // Widgets
   GtkWidget* window = nullptr;
@@ -197,7 +201,7 @@ void UpdateButtons(App* a) {
   bool enabled = true;
   const char* text = "Continue";
   switch (p) {
-    case kWelcome: enabled = a->compat.empty(); break;
+    case kWelcome: enabled = a->compat.empty() && a->vulkan_problems.empty(); break;
     case kGame: enabled = a->game_ok; break;
     case kLocation: enabled = a->target == setup::Target::kNew || a->target == setup::Target::kExisting; break;
     case kOptions: {
@@ -236,6 +240,10 @@ void CheckGame(App* a) {
     status = "<span foreground='#ff8a6a'>✗ This folder cannot be read.</span>";
   } else if (!c.executable_found) {
     status = "<span foreground='#ff8a6a'>✗ No game here:</span> default.xex was not found in this folder.";
+  } else if (c.executable_encrypted) {
+    status = "<span foreground='#ff8a6a'>✗ This default.xex is encrypted.</span> This setup contains no console "
+             "decryption keys and cannot decrypt it. It can only use an unencrypted default.xex; the installation "
+             "guide explains why.";
   } else if (!c.executable_known) {
     status = "<span foreground='#ff8a6a'>✗ Unsupported game version.</span> This default.xex is not the supported "
              "release (the original Xbox 360 game, base version). Title updates and other versions are not supported.";
@@ -579,15 +587,35 @@ GtkWidget* BuildWelcome(App* a) {
     a->welcome_warning = Label(w, "body");
     gtk_box_pack_start(GTK_BOX(box), Panel(a->welcome_warning), FALSE, FALSE, 2);
   }
+  if (!a->vulkan_problems.empty()) {  // the renderer's needs (the same list the game checks when it starts)
+    std::string w = "<span foreground='#ff8a6a'><b>The graphics driver cannot run the game:</b></span>";
+    for (const auto& p : a->vulkan_problems) w += "\n• " + Esc(p);
+    w += "\nThe game draws with Vulkan: install or update your graphics card's Vulkan driver (for example Mesa, or "
+         "the graphics card maker's driver), then start this setup again. Nothing was installed.";
+    GtkWidget* warning = Label(w, "body");
+    gtk_box_pack_start(GTK_BOX(box), Panel(warning), FALSE, FALSE, 2);
+  }
   GtkWidget* text = Label(
       "This setup installs the native Linux version of Kingdom Under Fire: Circle of Doom, rebuilt from the original "
-      "Xbox 360 game. You need your own copy of the original game files (the folder with <b>default.xex</b>): they are "
-      "checked, then copied into the installation; your original folder is never changed.",
+      "Xbox 360 game. You need your own copy of the original game files (the folder with an unencrypted "
+      "<b>default.xex</b>): they are checked and copied into the installation, then the native program is generated and "
+      "compiled here from them (a few minutes, no extra tools needed). Your original folder is never changed and "
+      "nothing is uploaded.",
       "body", true, 0.5);
   gtk_label_set_justify(GTK_LABEL(text), GTK_JUSTIFY_CENTER);
   gtk_box_pack_start(GTK_BOX(box), text, FALSE, FALSE, 2);
+  std::string system = setup::PlatformSummary(a->platform);
+  for (const auto& d : a->vulkan.devices) {
+    if (d.missing.empty() && d.type != "CPU (software)") {
+      system += " · " + d.name + ", Vulkan " + setup::VulkanVersionString(d.api_version);
+      break;
+    }
+  }
   GtkWidget* fine = Label("An unofficial fan project, not affiliated with or endorsed by the game's publishers.  "
-                          "Version " + Esc(a->package_version) + ".",
+                          "Version " + Esc(a->package_version) + ".\n" +
+                          "This software uses FFmpeg and libmspack, under the GNU LGPL, and GPL code in its code "
+                          "generator. Licences and notices: current/licenses/ in the installation, or "
+                          "kuf-cod --licenses.\n" + Esc(system),
                           "muted", true, 0.5);
   gtk_label_set_justify(GTK_LABEL(fine), GTK_JUSTIFY_CENTER);
   gtk_box_pack_start(GTK_BOX(box), fine, FALSE, FALSE, 0);
@@ -597,8 +625,8 @@ GtkWidget* BuildWelcome(App* a) {
 GtkWidget* BuildGame(App* a) {
   GtkWidget* box = PageBox("Your Original Game Files");
   gtk_box_pack_start(GTK_BOX(box),
-                     Label("Select the folder with your legally obtained game files: the folder that contains "
-                           "<b>default.xex</b> (for example a copy of your game disc's files).",
+                     Label("Select the folder with your legally obtained game files: the folder that contains an unencrypted "
+                           "<b>default.xex</b>. Ordinary retail copies are encrypted and cannot be used.",
                            "body"),
                      FALSE, FALSE, 0);
   GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
@@ -679,6 +707,15 @@ GtkWidget* BuildOptions(App* a) {
                            "muted"),
                      FALSE, FALSE, 0);
   g_signal_connect(a->opt_steam, "toggled", G_CALLBACK(SteamToggled), a);
+  // SteamOS (the Steam Deck): Game Mode starts only what is in the Steam library, so the shortcut is offered ticked
+  // when Steam has a profile here (the player can untick it).
+  if (a->platform.steamos || a->platform.steam_deck) {
+    bool has_profile = false;
+    for (const auto& install : setup::steam::FindInstalls(setup::HomeDir())) {
+      has_profile |= !setup::steam::FindProfiles(install).empty();
+    }
+    if (has_profile) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(a->opt_steam), TRUE);
+  }
   g_signal_connect_swapped(a->steam_profile, "changed", G_CALLBACK(+[](App* app) { UpdateButtons(app); }), a);
   return box;
 }
@@ -698,8 +735,9 @@ GtkWidget* BuildInstalling(App* a) {
   gtk_box_pack_start(GTK_BOX(inner), a->detail_label, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(box), Panel(inner), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(box),
-                     Label("Copying and checking about 4 GB of game files takes a few minutes. If anything fails, "
-                           "what was copied is removed again.",
+                     Label("Your game files are copied and checked (about 4 GB), then the native game is generated and compiled on this "
+      "computer. This takes a few minutes or more, depending on your computer. If anything fails, what was copied is "
+      "removed again.",
                            "muted"),
                      FALSE, FALSE, 0);
   return box;
@@ -768,6 +806,16 @@ void BuildWindow(App* a) {
   gtk_window_set_titlebar(GTK_WINDOW(a->window), header);
   gtk_window_set_default_size(GTK_WINDOW(a->window), 1040, 720);
   gtk_widget_set_size_request(a->window, 860, 640);
+  // Small screens (the Steam Deck's 1280 x 800, with the desktop's panel): the window fills the work area instead of
+  // reaching past it (the pages scroll when they need more).
+  GdkDisplay* display = gdk_display_get_default();
+  GdkMonitor* m = gdk_display_get_primary_monitor(display);  // X11; Wayland has no primary monitor
+  if (!m && gdk_display_get_n_monitors(display) > 0) m = gdk_display_get_monitor(display, 0);
+  if (m) {
+    GdkRectangle area;
+    gdk_monitor_get_workarea(m, &area);
+    if (area.width < 1040 + 64 || area.height < 720 + 96) gtk_window_maximize(GTK_WINDOW(a->window));
+  }
   gtk_window_set_icon_from_file(GTK_WINDOW(a->window), (a->assets / "icon-256.png").c_str(), nullptr);
   g_signal_connect(a->window, "delete-event", G_CALLBACK(OnClose), a);
   g_signal_connect(a->window, "destroy", G_CALLBACK(gtk_main_quit), nullptr);
@@ -861,8 +909,8 @@ bool LoadAssets(App* a, const fs::path& assets_arg, const fs::path& payload_arg)
   if (!setup::ReadFile(a->assets / "game_v1.tsv", &list)) return false;
   a->manifest = setup::ParseGameManifest(list, "Xbox 360, base version");
   if (a->manifest.files.empty()) return false;
-  // The bundled font (X360 by Redge, "100% Free" at dafont.com) for this program only.
-  FcConfigAppFontAddFile(FcConfigGetCurrent(), reinterpret_cast<const FcChar8*>((a->assets / "fonts/X360.ttf").c_str()));
+  // The bundled font (Cinzel, SIL Open Font License) for this program only.
+  FcConfigAppFontAddFile(FcConfigGetCurrent(), reinterpret_cast<const FcChar8*>((a->assets / "fonts/Cinzel.ttf").c_str()));
   GtkCssProvider* css = gtk_css_provider_new();
   GError* err = nullptr;
   if (!gtk_css_provider_load_from_path(css, (a->assets / "theme.css").c_str(), &err)) {
@@ -884,8 +932,31 @@ void Screenshots(App* a, const fs::path& dir) {
       g_usleep(10000);
     }
   };
+  // KUF_SETUP_SHOT_SIZE=WxH (M11: the Steam Deck's 1280 x 800 less the desktop's panel): the window at that size;
+  // layout.txt says per page whether its content fits the width (no clipping: required) and how far it scrolls.
+  std::string layout;
+  int want_w = 0, want_h = 0;
+  if (std::sscanf(setup::Env("KUF_SETUP_SHOT_SIZE").c_str(), "%dx%d", &want_w, &want_h) == 2) {
+    gtk_window_unmaximize(GTK_WINDOW(a->window));
+    gtk_window_resize(GTK_WINDOW(a->window), want_w, want_h);
+  }
   auto shot = [&](const char* name) {
     pump();
+    if (want_w > 0) {
+      GtkWidget* page = gtk_stack_get_visible_child(GTK_STACK(a->stack));
+      GtkWidget* content = gtk_bin_get_child(GTK_BIN(page));
+      if (GTK_IS_VIEWPORT(content)) content = gtk_bin_get_child(GTK_BIN(content));
+      int min_w = 0, nat_w = 0, min_h = 0, nat_h = 0;
+      gtk_widget_get_preferred_width(content, &min_w, &nat_w);
+      gtk_widget_get_preferred_height_for_width(content, gtk_widget_get_allocated_width(page), &min_h, &nat_h);
+      const int win_w = gtk_widget_get_allocated_width(a->window), win_h = gtk_widget_get_allocated_height(a->window);
+      char line[256];
+      std::snprintf(line, sizeof(line), "%s window %dx%d page %dx%d content min width %d %s; height %d (%s)\n", name,
+                    win_w, win_h, gtk_widget_get_allocated_width(page), gtk_widget_get_allocated_height(page), min_w,
+                    min_w <= gtk_widget_get_allocated_width(page) ? "fits" : "CLIPPED", min_h,
+                    min_h <= gtk_widget_get_allocated_height(page) ? "no scrolling" : "scrolls");
+      layout += line;
+    }
     const int w = gtk_widget_get_allocated_width(a->window), h = gtk_widget_get_allocated_height(a->window);
     cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
     cairo_t* cr = cairo_create(s);
@@ -918,6 +989,143 @@ void Screenshots(App* a, const fs::path& dir) {
                                                 a->existing.string() + ".").c_str());
   ShowPage(a, kMaintenance);
   shot("7-maintenance");
+  if (want_w > 0) {
+    // The visible window: its content and the header bar (the allocation also has the shadows of client-side
+    // decorations, which take no screen space when the window is maximized).
+    GtkWidget* content = gtk_bin_get_child(GTK_BIN(a->window));
+    GtkWidget* header = gtk_window_get_titlebar(GTK_WINDOW(a->window));
+    const int win_w = gtk_widget_get_allocated_width(content);
+    const int win_h = gtk_widget_get_allocated_height(content) + (header ? gtk_widget_get_allocated_height(header) : 0);
+    int limit_w = want_w, limit_h = want_h;
+    std::sscanf(setup::Env("KUF_SETUP_SHOT_SCREEN").c_str(), "%dx%d", &limit_w, &limit_h);
+    layout += "visible window " + std::to_string(win_w) + "x" + std::to_string(win_h) + ": " +
+              (win_w <= limit_w && win_h <= limit_h ? "within" : "LARGER THAN") + " the screen's " +
+              std::to_string(limit_w) + "x" + std::to_string(limit_h) + "\n";
+    setup::AtomicWrite(dir / "layout.txt", layout);
+  }
+}
+
+// The window's real flow, driven through its own buttons (installer/README.md "Testing"): a release test without a
+// person at the screen. Each step needs the button to be enabled, as it would for a player. Writes DIR/*.png and
+// DIR/walkthrough.txt; exit 0 when it ended as expected. KUF_SETUP_SHOT_GAME: the game folder;
+// KUF_SETUP_WALK_REFUSED: a folder the page must refuse (optional); KUF_SETUP_WALK_ROOT: the installation folder;
+// KUF_SETUP_WALK_CANCEL=1: press Cancel while compiling and expect no installation.
+struct Walk {
+  App* a;
+  fs::path dir;
+  std::string log;
+  int step = 0;
+  int shots = 0;
+  std::string last_stage;
+  int code = 1;
+  bool cancelled = false;
+};
+
+void WalkShot(Walk* w, const std::string& name) {
+  App* a = w->a;
+  const int width = gtk_widget_get_allocated_width(a->window), height = gtk_widget_get_allocated_height(a->window);
+  cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+  cairo_t* cr = cairo_create(s);
+  gtk_widget_draw(a->window, cr);
+  char n[16];
+  std::snprintf(n, sizeof(n), "%02d-", ++w->shots);
+  cairo_surface_write_to_png(s, (w->dir / (n + name + ".png")).c_str());
+  cairo_destroy(cr);
+  cairo_surface_destroy(s);
+}
+
+void WalkFinish(Walk* w, int code, const std::string& why) {
+  w->log += why + "\n";
+  w->code = code;
+  setup::AtomicWrite(w->dir / "walkthrough.txt", w->log);
+  gtk_main_quit();
+}
+
+gboolean WalkStep(gpointer data) {
+  Walk* w = static_cast<Walk*>(data);
+  App* a = w->a;
+  const auto press_next = [&](const char* what) {
+    if (!gtk_widget_get_sensitive(a->next)) {
+      WalkFinish(w, 1, std::string("FAIL: the button is disabled at: ") + what);
+      return false;
+    }
+    w->log += std::string("pressed: ") + gtk_button_get_label(GTK_BUTTON(a->next)) + " (" + what + ")\n";
+    gtk_button_clicked(GTK_BUTTON(a->next));
+    return true;
+  };
+  switch (w->step) {
+    case 0:
+      WalkShot(w, "welcome");
+      if (!press_next("welcome")) return G_SOURCE_REMOVE;
+      break;
+    case 1: {
+      const std::string refused = setup::Env("KUF_SETUP_WALK_REFUSED");
+      if (!refused.empty()) {
+        gtk_entry_set_text(GTK_ENTRY(a->game_entry), refused.c_str());
+        break;
+      }
+      w->step = 2;
+      [[fallthrough]];
+    }
+    case 2:
+      if (!setup::Env("KUF_SETUP_WALK_REFUSED").empty()) {
+        WalkShot(w, "game-refused");
+        if (gtk_widget_get_sensitive(a->next)) {
+          WalkFinish(w, 1, "FAIL: Continue is enabled for a refused game folder");
+          return G_SOURCE_REMOVE;
+        }
+        w->log += std::string("refused: ") + gtk_label_get_text(GTK_LABEL(a->game_status)) + "\n";
+      }
+      gtk_entry_set_text(GTK_ENTRY(a->game_entry), setup::Env("KUF_SETUP_SHOT_GAME").c_str());
+      break;
+    case 3:
+      w->log += std::string("accepted: ") + gtk_label_get_text(GTK_LABEL(a->game_status)) + "\n";
+      WalkShot(w, "game-accepted");
+      if (!press_next("game files")) return G_SOURCE_REMOVE;
+      break;
+    case 4:
+      gtk_entry_set_text(GTK_ENTRY(a->root_entry), setup::Env("KUF_SETUP_WALK_ROOT").c_str());
+      break;
+    case 5:
+      WalkShot(w, "location");
+      if (!press_next("location")) return G_SOURCE_REMOVE;
+      break;
+    case 6:
+      gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(a->opt_desktop), TRUE);
+      WalkShot(w, "options");
+      if (!press_next("options: install")) return G_SOURCE_REMOVE;
+      break;
+    default:
+      if (a->page == kInstalling) {
+        const std::string stage = gtk_label_get_text(GTK_LABEL(a->stage_label));
+        if (stage != w->last_stage) {
+          w->last_stage = stage;
+          w->log += "stage: " + stage + "\n";
+          WalkShot(w, "installing");
+        }
+        if (!setup::Env("KUF_SETUP_WALK_CANCEL").empty() && stage == setup::StageName(setup::kCompile) && !w->cancelled &&
+            gtk_progress_bar_get_fraction(GTK_PROGRESS_BAR(a->progress)) > 0) {
+          w->cancelled = true;
+          w->log += "pressed: Cancel\n";
+          gtk_button_clicked(GTK_BUTTON(a->next));
+        }
+        return G_SOURCE_CONTINUE;
+      }
+      if (a->page == kFinish) {
+        WalkShot(w, "finish");
+        const std::string title = gtk_label_get_text(GTK_LABEL(a->finish_title));
+        w->log += "finish: " + title + "\n" + gtk_label_get_text(GTK_LABEL(a->finish_text)) + "\n";
+        const bool want_ok = setup::Env("KUF_SETUP_WALK_CANCEL").empty();
+        const bool launch_offered = gtk_widget_get_visible(a->launch);
+        WalkFinish(w, a->installed_ok == want_ok && launch_offered == want_ok ? 0 : 1,
+                   a->installed_ok == want_ok ? "as expected; Launch Game offered: " + std::string(launch_offered ? "yes" : "no")
+                                              : "FAIL: not the expected outcome");
+        return G_SOURCE_REMOVE;
+      }
+      return G_SOURCE_CONTINUE;
+  }
+  ++w->step;
+  return G_SOURCE_CONTINUE;
 }
 
 }  // namespace
@@ -925,16 +1133,23 @@ void Screenshots(App* a, const fs::path& dir) {
 int main(int argc, char** argv) {
   // Unattended (no window): --install-to / --remove (unattended.cpp).
   if (setup::IsUnattended(argc, argv)) return setup::RunUnattended(argc, argv, SelfExe());
-  fs::path assets_arg, payload_arg, uninstall_arg, shot_dir;
+  fs::path assets_arg, payload_arg, uninstall_arg, shot_dir, walk_dir;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--assets" && i + 1 < argc) assets_arg = argv[++i];
     else if (a == "--payload" && i + 1 < argc) payload_arg = argv[++i];
     else if (a == "--uninstall" && i + 1 < argc) uninstall_arg = argv[++i];
     else if (a == "--screenshot" && i + 1 < argc) shot_dir = argv[++i];
+    else if (a == "--walkthrough" && i + 1 < argc) walk_dir = argv[++i];
   }
-  gtk_init(&argc, &argv);
   App app;
+  // Before GTK starts any thread: the Vulkan check forks (core/system_check.cpp).
+  app.vulkan = setup::CheckVulkan();
+  app.vulkan_problems = setup::VulkanProblems(app.vulkan);
+  app.platform = setup::DetectPlatform();
+  g_printerr("kuf-setup: %s; Vulkan: %s\n", setup::PlatformSummary(app.platform).c_str(),
+             app.vulkan_problems.empty() ? "usable" : app.vulkan_problems.front().c_str());
+  gtk_init(&argc, &argv);
   g_app = &app;
   app.exe = SelfExe();
   if (!LoadAssets(&app, assets_arg, payload_arg)) {
@@ -973,6 +1188,13 @@ int main(int argc, char** argv) {
   if (!shot_dir.empty()) {
     Screenshots(&app, shot_dir);
     return 0;
+  }
+  if (!walk_dir.empty()) {
+    fs::create_directories(walk_dir);
+    Walk walk{&app, walk_dir};
+    g_timeout_add(700, WalkStep, &walk);
+    gtk_main();
+    return walk.code;
   }
   gtk_main();
   return 0;

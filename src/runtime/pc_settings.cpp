@@ -322,6 +322,14 @@ std::string Serialize(const Settings& settings, std::string_view previous) {
   return out.str();
 }
 
+void ApplyFirstStartDefaults(Settings* settings, bool steam_deck) {
+  if (!steam_deck) {
+    return;
+  }
+  settings->display.render_scale = 1;
+  settings->display.vsync = true;
+}
+
 bool ApplyOverrides(std::string_view spec, Settings* settings, std::string* error) {
   Settings result = *settings;
   std::string_view rest = spec;

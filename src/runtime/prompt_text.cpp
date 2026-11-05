@@ -3,6 +3,9 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <utility>
 #include <unordered_map>
 
 #include <rex/cvar.h>
@@ -12,6 +15,7 @@
 #include "input/game_input_hooks.h"
 #include "input/kuf_input_driver.h"
 #include "runtime/pc_settings.h"
+#include "runtime/update_status.h"
 
 REXCVAR_DEFINE_STRING(kuf_button_prompts, "auto", "KUF/Input",
                       "Button prompts: auto (the device used last), controller, keyboard (M7)");
@@ -33,6 +37,7 @@ std::mutex g_mutex;
 std::unordered_map<std::string, uint32_t> g_copies;  // rewritten text -> its guest copy (kept: texts are reused)
 constexpr size_t kMaxText = 4096;
 constexpr size_t kMaxCopies = 4096;  // a bound on the copies (each distinct text once; ~2,000 texts per language)
+std::optional<std::pair<std::string, std::string>> g_labels;  // the message box's answers renamed (g_mutex)
 
 std::string Rewrite(std::string_view text, const uint8_t* base) {
   auto* keyboard = kuf::input::KufInputDriver::Instance();
@@ -72,13 +77,30 @@ PromptDevice Current() {
   return last != kNone ? PromptDevice(last) : PromptDevice::kKeyboard;
 }
 
+void SetAnswerLabels(std::string a, std::string b) {
+  std::lock_guard lock(g_mutex);
+  g_labels.emplace(std::move(a), std::move(b));
+}
+
+void ClearAnswerLabels() {
+  std::lock_guard lock(g_mutex);
+  g_labels.reset();
+}
+
 uint32_t OnTextLookup(PPCContext& ctx, uint8_t* base, uint32_t text) {
-  if (Current() != PromptDevice::kKeyboard || text < 0x10000 || text >= 0xF0000000) return 0;
+  if (text < 0x10000 || text >= 0xF0000000) return 0;
   const char* s = reinterpret_cast<const char*>(base + text);
   const size_t n = strnlen(s, kMaxText);
   if (n == kMaxText || !std::memchr(s, '@', n)) return 0;
   const std::string_view original(s, n);
-  std::string rewritten = Rewrite(kuf::input::ConciseHelpBar(original), base);
+  std::string relabeled(original);
+  {
+    std::lock_guard lock(g_mutex);
+    if (g_labels) relabeled = kuf::updates::RelabelAnswers(original, g_labels->first, g_labels->second);
+  }
+  const bool keyboard = Current() == PromptDevice::kKeyboard;
+  if (!keyboard && relabeled == original) return 0;
+  std::string rewritten = keyboard ? Rewrite(kuf::input::ConciseHelpBar(relabeled), base) : relabeled;
   if (rewritten == original) return 0;
   std::lock_guard lock(g_mutex);
   if (const auto it = g_copies.find(rewritten); it != g_copies.end()) return it->second;

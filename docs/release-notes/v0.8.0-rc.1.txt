@@ -1,0 +1,14 @@
+Kingdom Under Fire: Circle of Doom Recomp 0.8.0-rc.1 (release candidate: Steam Deck test build)
+
+This is a pre-release for testing on the Steam Deck and older Linux distributions.
+
+Install: download the Setup AppImage below, make it executable, run it and choose your own Xbox 360 game folder (base version; you must own the game - no game files are included). On a Steam Deck: in Desktop Mode; tick "Add to Steam" to start the game from Game Mode.
+
+Changes since 0.7.0:
+- Runs on the Steam Deck (SteamOS) and on any Linux with glibc 2.31 or newer (Debian 11, Ubuntu 20.04 and later, current desktop distributions): built against the Steam Runtime 3 libraries, with its own C++ library for older systems
+- The setup checks the graphics driver for what the game needs (Vulkan features, not graphics card names) and explains anything missing; it fits the Steam Deck's 1280 x 800 screen
+- Steam Deck first start: render scale 1x and VSync on (changeable in PC Settings)
+- Updates are refused on systems that cannot run them
+- The update dialog of 0.7.1: Installed Version, New Version, Install Update, Open GitHub Page, Cancel
+
+Requires Linux x86-64 with glibc 2.31 or newer and a Vulkan driver (Mesa RADV / ANV / NVK or the NVIDIA driver).

@@ -1,5 +1,6 @@
 # Kingdom Under Fire: Circle of Doom (Xbox 360), base version: default.xex v1 (media 7092B5EC).
 # Each file the game reads: SHA-256, size, path in the game folder (no game content; $SystemUpdate not needed).
+# default.xex: the SHA-256 and size of its decompressed memory image; it must be unencrypted (src/core/game_data.h).
 1ef5705b438a05c841dc4f0659153e9b4e373f84a2ba1d02eee0fa044ce357e8	3145728	Data/Material/CodShaders.ccz
 f746f73e28f7d8c27a0bbb46ed611447cddcaf6316d13317cfe3f5696524aa4b	9872	Data/Sound/SoundRes/64_Voice_Kendal_ENG.xsb
 f808f8c067f6d796eb6dbdc668a5ec0db03af65a0693fde0f3723c4c5a7f5096	24557568	Data/Sound/SoundRes/64_Voice_Kendal_ENG.xwb
@@ -127,7 +128,7 @@ cad961022c8f34b965387ceb20e0b03afbd1d8c8ed46998e46bbcdb463bcbcfb	100785	bg_en.so
 a5588103fe2dae5ab0ba499b0d84f139dbadd9e1735bd8ea68dd64713ab943e1	109748	bg_lh.sox
 a5ae9512eac57124a81f703339d0b5538d2e5534b835be2ff75fb2e7e8ce00c5	348456960	bg_rg.pak
 1b73cd142c0b5dd80bfe57f5a867c62a15d04f4630e1953577c19c9c6bac0d79	111233	bg_rg.sox
-3ec406ccec65729acd61a2f891833704a28fbfe486746bf500d4aeaa872529ff	11808768	default.xex
+c502f6617bf1ef1112474d6eb1de5bb6752625f0b7688691c1f8ce0c50c90627	12058624	default.xex
 0d47925d7dc0453801aea8d20648e13be2098292e30eb11531c97cfbd63c4e83	942925	dependency.bin
 00c17b947b10061e948347119c075e906a8d11650ef1cc894eed2523110b6daf	18661376	initres.pak
 d861d8e2449e6618de720db5a429853baa861434e9c0c6a332d865cd7a8c4c7d	28389	initres.sox

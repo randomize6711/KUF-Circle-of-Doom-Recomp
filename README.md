@@ -4,8 +4,11 @@ A native PC port of **Kingdom Under Fire: Circle of Doom** (Xbox 360, 2007), bui
 game's PowerPC executable to C++ with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and replacing the
 console's services with a native runtime. Linux x86-64 today; Windows is a goal, not yet built.
 
-**You need your own copy of the game.** This repository contains **no game files and no code derived from them**:
-the recompiled C++ is generated locally from your own `default.xex` and is never committed or published here.
+**You need your own copy of the game**, with an unencrypted `default.xex` (retail copies are encrypted, and this project
+contains no console decryption keys and no way to decrypt one). This repository and its current releases contain **no
+game files and no translated game code**: the setup generates and compiles the native program on your machine, from
+your own files (docs/LOCAL_BUILD.md). Nothing is uploaded. **Ordinary retail copies therefore do not work with it**:
+docs/RETAIL_FILES.md explains why.
 
 ## Status
 
@@ -25,11 +28,11 @@ the recompiled C++ is generated locally from your own `default.xex` and is never
 - **Updater**: installed copies check this repository's GitHub releases for signed updates (below).
 
 Not yet: Windows builds (docs/WINDOWS.md), the title update (base executable only), online co-op, translations of
-the PC texts. An installer is planned.
+the PC texts.
 
 ## Building (Linux)
 
-Requirements: Clang >= 20, CMake >= 3.25, Ninja, Python 3 with `numpy` and `cryptography`, LLVM tools
+Requirements: Clang >= 20, CMake >= 3.25, Ninja, Python 3 with `numpy`, LLVM tools
 (`llvm-objcopy`, `llvm-objdump`), `bubblewrap`, GTK3 headers, a Vulkan loader and driver, git. About 1.5 GB of disk per
 build tree plus about 550 MB for the SDK sources. The generated code needs a lot of memory to compile: cap the build
 (the last line below) on machines with less than 32 GB of RAM.
@@ -37,7 +40,7 @@ build tree plus about 550 MB for the SDK sources. The generated code needs a lot
 On Arch Linux, for example:
 
 ```sh
-sudo pacman -S --needed clang llvm lld cmake ninja python-numpy python-cryptography bubblewrap gtk3 vulkan-icd-loader git
+sudo pacman -S --needed clang llvm lld cmake ninja python-numpy bubblewrap gtk3 vulkan-icd-loader git
 ```
 
 Then:
@@ -63,12 +66,11 @@ come from git (cmake/kuf_version.cmake) and are shown in the title screen's SETT
 **The graphical setup** (installer/README.md): `installer/appimage/build_appimage.sh` builds
 `build/installer/KingdomUnderFire-CircleOfDoom-Setup-<version>-x86_64.AppImage`, a themed installer that checks and
 copies your game files, installs the game for your user, adds menu / desktop / Steam shortcuts if you want them, and
-repairs or uninstalls it (players' guide: docs/INSTALL_GUIDE.md). Without it, from a terminal:
+repairs or uninstalls it (players' guide: docs/INSTALL_GUIDE.md; Steam Deck: docs/STEAM_DECK.md section 3). Without it, from a terminal:
 
 ```sh
-tools/package/package_linux.sh --version 0.7.0       # build/packages/kuf-cod-recomp-0.7.0-linux-x86_64.tar.gz
-tar -xzf build/packages/kuf-cod-recomp-0.7.0-linux-x86_64.tar.gz -C /tmp
-/tmp/kuf-cod-recomp-0.7.0-linux-x86_64/install.sh    # into ~/.local/share/kuf-cod-recomp/app
+tar -xzf kuf-cod-recomp-<version>-linux-x86_64.tar.gz -C /tmp     # a release's package
+/tmp/kuf-cod-recomp-<version>-linux-x86_64/install.sh --game-dir /path/to/your/game   # into ~/.local/share/kuf-cod-recomp/app
 ~/.local/share/kuf-cod-recomp/app/kuf-cod --game-dir /path/to/your/game   # first start; later just kuf-cod
 ```
 
@@ -78,8 +80,8 @@ shows its version, date and notes, downloads it with progress (cancellable), ver
 (`ssh-keygen -Y verify` against the release key shipped with the install) and every file, installs it beside the
 running version, and offers a restart; `kuf-update rollback` returns to the previous version. Nothing is downloaded
 except over HTTPS from GitHub, and nothing from a release is executed before it is verified (docs/STEAM_DECK.md).
-Release packages contain code recompiled from the game's executable; whether they are published is the project
-owner's decision, so updates only work once releases exist.
+Release packages contain no game code: an update makes the program again on your computer, from your files
+(docs/LOCAL_BUILD.md). A pre-release is only offered with `channel = prerelease` in the installation's `update.conf`.
 
 ## Running
 
@@ -137,7 +139,14 @@ input and check captures, logs and saves; they need the staged game and a GPU, a
 | [docs/TECHNICAL_RISKS.md](docs/TECHNICAL_RISKS.md) | Risk register |
 | [AGENTS.md](AGENTS.md) | Rules for coding agents |
 
+## Licence
+
+The project's own work is under the MIT licence (LICENSE); NOTICE says what that does not cover: the game and
+anything derived from it, and third-party software under its own licences.
+
 ## Legal
 
 Not affiliated with Blueside, Phantagram or Microsoft. All trademarks belong to their owners. The project uses only
-independent reverse engineering and permissively licensed open-source software.
+independent reverse engineering and open-source software; its licences, including the LGPL and GPL components, and their
+source are listed in each release (tools/package/THIRD-PARTY-NOTICES.txt). Older releases, which contained translated game
+code and a console key, are no longer offered.

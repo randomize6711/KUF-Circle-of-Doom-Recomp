@@ -6,6 +6,7 @@
 #include <string>
 
 #include "core/install.h"
+#include "core/localbuild.h"
 #include "sandbox.h"
 
 using namespace kuf::setup;
@@ -22,23 +23,34 @@ struct Fixture {
     steam::SetRunningCheckForTests(NotRunning);
     // The package: as package_linux.sh makes it (VERSION, MANIFEST.sha256 of every other file).
     const fs::path pkg = s.dir / "pkg";
-    Sandbox::Write(pkg / "bin/kuf_cod", "#!/bin/sh\necho game\n");
+    // Its local build: a code generator and a compiler that only write small files (the real one: localbuild_e2e).
+    Sandbox::Write(pkg / "bin/rexgluerd", "#!/bin/sh\nmkdir -p generated/default\necho > generated/default/kuf_cod_pch.h\n"
+                                          "echo 'int a;' > generated/default/a.cpp\n");
+    Sandbox::Write(pkg / "builder/toolchain/llvm",
+                   "#!/bin/sh\n[ -n \"$KUF_TEST_BUILD_FAILS\" ] && { echo 'compiler stops here'; exit 1; }\n"
+                   "while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=\"$2\"; shift; done\nprintf '#!/bin/sh\\necho game\\n' > \"$out\"\n");
+    Sandbox::Write(pkg / "builder/recipe.txt", "generation_id " + std::string(64, 'a') +
+                                                   "\nsources 1\ncompile -c\nlink -pthread\nlink_libraries -lm\n");
+    Sandbox::Write(pkg / "builder/kuf_cod_manifest.toml", "[project]\n");
+    Sandbox::Write(pkg / "builder/config/v1/codegen.toml", "\n");
     Sandbox::Write(pkg / "kuf-cod.sh", "#!/bin/sh\n");
     Sandbox::Write(pkg / "kuf_update.py", "print()\n");
     Sandbox::Write(pkg / "VERSION", "0.7.0\n");
-    fs::permissions(pkg / "bin/kuf_cod", fs::perms(0755));
+    fs::permissions(pkg / "bin/rexgluerd", fs::perms(0755));
+    fs::permissions(pkg / "builder/toolchain/llvm", fs::perms(0755));
     std::string manifest;
-    for (const char* f : {"VERSION", "bin/kuf_cod", "kuf-cod.sh", "kuf_update.py"}) {
+    for (const char* f : {"VERSION", "bin/rexgluerd", "builder/config/v1/codegen.toml", "builder/kuf_cod_manifest.toml",
+                          "builder/recipe.txt", "builder/toolchain/llvm", "kuf-cod.sh", "kuf_update.py"}) {
       manifest += Sha256File(pkg / f) + "  " + f + "\n";
     }
     Sandbox::Write(pkg / "MANIFEST.sha256", manifest);
     // The player's game files (read only).
     const fs::path game = s.dir / "my game";
-    Sandbox::Write(game / "default.xex", "XEX-V1");
+    Sandbox::Write(game / "default.xex", Sandbox::Xex("XEX-V1"));
     Sandbox::Write(game / "Data/Sound/a.xwb", std::string(3 << 20, 's'));
     Sandbox::Write(game / "$SystemUpdate/su.bin", "not needed");
     fs::permissions(game / "default.xex", fs::perms(0444));
-    plan.manifest = ParseGameManifest(Sha256File(game / "default.xex") + "\t6\tdefault.xex\n" +
+    plan.manifest = ParseGameManifest(InspectXex(game / "default.xex").image_sha256 + "\t6\tdefault.xex\n" +
                                           Sha256File(game / "Data/Sound/a.xwb") + "\t" + std::to_string(3 << 20) +
                                           "\tData/Sound/a.xwb\n",
                                       "test");
@@ -86,7 +98,16 @@ TEST_CASE("a new installation: the updater's layout, the game data, the menu ent
   REQUIRE(record);
   CHECK(record->version == "0.7.0");
   CHECK(record->shortcuts.size() == 2);  // the game and its uninstall entry
-  CHECK(stages == std::vector<Stage>{kValidate, kPrepare, kRuntime, kGameData, kShortcuts, kFinalize});
+  CHECK(stages == std::vector<Stage>{kValidate, kPrepare, kRuntime, kGameData, kGenerate, kCompile, kLink, kShortcuts,
+                                     kFinalize});
+  // The objects stay for later updates; the generated C++ does not.
+  CHECK(fs::exists(root / "build-cache"));
+  for (const auto& e : fs::recursive_directory_iterator(root / "build-cache")) {
+    CHECK(e.path().extension() != ".cpp");
+  }
+  for (const auto& e : fs::directory_iterator(root.parent_path())) {
+    CHECK(e.path().filename().string().find(".kuf-buildcache") == std::string::npos);
+  }
   // No staging folder is left next to it.
   for (const auto& e : fs::directory_iterator(root.parent_path())) {
     CHECK(e.path().filename().string().find(".kuf-staging-") == std::string::npos);
@@ -206,4 +227,74 @@ TEST_CASE("an installation path with spaces, quotes and $ works end to end", "[i
     pclose(p);
   }
   CHECK(out == (f.plan.root / "game").string());
+}
+
+TEST_CASE("an encrypted default.xex is refused before anything is written", "[install]") {
+  Fixture f;
+  fs::permissions(f.plan.game_source / "default.xex", fs::perms(0644));
+  Sandbox::Write(f.plan.game_source / "default.xex", Sandbox::Xex("XEX-V1", 1));
+  const Result r = Install(f.plan, nullptr, g_no_cancel);
+  CHECK_FALSE(r.ok);
+  CHECK(r.error.find("encrypted") != std::string::npos);
+  CHECK_FALSE(fs::exists(f.plan.root));
+}
+
+TEST_CASE("a failed local build: nothing installed; a retry works and keeps what was finished", "[install]") {
+  Fixture f;
+  setenv("KUF_TEST_BUILD_FAILS", "1", 1);
+  Result r = Install(f.plan, nullptr, g_no_cancel);
+  unsetenv("KUF_TEST_BUILD_FAILS");
+  CHECK_FALSE(r.ok);
+  CHECK(r.error.find("compiler stops here") != std::string::npos);  // the reason reaches the player
+  CHECK_FALSE(fs::exists(f.plan.root));
+  // The cache of the interrupted build stays next to the target, for the next attempt.
+  bool cache = false;
+  for (const auto& e : fs::directory_iterator(f.plan.root.parent_path())) {
+    if (e.path().filename().string().find(".kuf-buildcache") != std::string::npos) cache = true;
+    CHECK(e.path().filename().string().find(".kuf-staging-") == std::string::npos);
+  }
+  CHECK(cache);
+  r = Install(f.plan, nullptr, g_no_cancel);
+  REQUIRE(r.ok);
+  CHECK(fs::exists(f.plan.root / "current/bin/kuf_cod"));
+}
+
+TEST_CASE("a crash's staging folder is removed by the next attempt; other folders are not", "[install]") {
+  Fixture f;
+  const fs::path parent = f.plan.root.parent_path();
+  const std::string name = f.plan.root.filename().string();
+  Sandbox::Write(parent / ("." + name + ".kuf-staging-abc123") / "game/big", "leftover");
+  Sandbox::Write(parent / "somebody else's" / "file", "kept");
+  REQUIRE(Install(f.plan, nullptr, g_no_cancel).ok);
+  CHECK_FALSE(fs::exists(parent / ("." + name + ".kuf-staging-abc123")));
+  CHECK(fs::exists(parent / "somebody else's" / "file"));
+}
+
+TEST_CASE("cancelling while compiling leaves nothing behind", "[install]") {
+  Fixture f;
+  std::atomic<bool> cancel{false};
+  const Result r = Install(f.plan, [&](Stage s, double, const std::string&) {
+    if (s == kCompile) cancel = true;
+  }, cancel);
+  CHECK_FALSE(r.ok);
+  CHECK(r.error.find("cancelled") != std::string::npos);
+  CHECK_FALSE(fs::exists(f.plan.root));
+  for (const auto& e : fs::directory_iterator(f.plan.root.parent_path())) {
+    CHECK(e.path().filename().string().find(".kuf-") == std::string::npos);
+  }
+}
+
+TEST_CASE("a repair whose build fails leaves the working installation as it was", "[install]") {
+  Fixture f;
+  REQUIRE(Install(f.plan, nullptr, g_no_cancel).ok);
+  Sandbox::Write(f.plan.root / "versions/0.7.0/bin/kuf_cod", "the working program");
+  fs::remove_all(f.plan.root / "build-cache");  // so the repair has to compile
+  setenv("KUF_TEST_BUILD_FAILS", "1", 1);
+  const Result r = Install(f.plan, nullptr, g_no_cancel);
+  unsetenv("KUF_TEST_BUILD_FAILS");
+  CHECK_FALSE(r.ok);
+  std::string program;
+  REQUIRE(ReadFile(f.plan.root / "current/bin/kuf_cod", &program));
+  CHECK(program == "the working program");
+  CHECK_FALSE(fs::exists(f.plan.root / "versions/.staging-0.7.0"));
 }

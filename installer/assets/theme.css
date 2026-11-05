@@ -1,5 +1,5 @@
 /* The setup's look (GTK 3 CSS): dark charcoal, bronze and aged gold, ember red. Original theme for this project.
-   Font: X360 by Redge (bundled; "100% Free" at dafont.com) throughout. No animations. */
+   Fonts: Cinzel (bundled, SIL Open Font License) for titles and buttons; the system's sans-serif for text. No animations. */
 
 @define-color kuf_night #0b0807;
 @define-color kuf_char #17110e;
@@ -19,7 +19,7 @@ window.kuf {
     radial-gradient(ellipse at 50% 0%, rgba(184, 134, 59, 0.10), rgba(0, 0, 0, 0) 60%),
     linear-gradient(to bottom, #120c0a, #0b0807 55%, #150b07);
   color: @kuf_text;
-  font-family: "X360 by Redge", sans-serif;
+  font-family: sans-serif;
   font-size: 15px;
 }
 
@@ -31,13 +31,13 @@ window.kuf {
 }
 
 .title-small {
-  font-family: "X360 by Redge", sans-serif;
+  font-family: "Cinzel", sans-serif;
   font-size: 15px;
   letter-spacing: 6px;
   color: @kuf_gold;
 }
 .title-big {
-  font-family: "X360 by Redge", sans-serif;
+  font-family: "Cinzel", sans-serif;
   font-weight: 700;
   font-size: 40px;
   letter-spacing: 4px;
@@ -45,13 +45,13 @@ window.kuf {
   text-shadow: 0 0 18px rgba(232, 100, 26, 0.45), 0 2px 2px #000000;
 }
 .edition {
-  font-family: "X360 by Redge", sans-serif;
+  font-family: "Cinzel", sans-serif;
   font-size: 16px;
   letter-spacing: 3px;
   color: @kuf_muted;
 }
 .page-title {
-  font-family: "X360 by Redge", sans-serif;
+  font-family: "Cinzel", sans-serif;
   font-weight: 700;
   font-size: 24px;
   letter-spacing: 2px;
@@ -69,12 +69,12 @@ window.kuf {
   border-radius: 4px;
 }
 
-.step { font-family: "X360 by Redge", sans-serif; font-size: 13px; letter-spacing: 1px; color: #6f5c40; padding: 2px 8px; }
+.step { font-family: "Cinzel", sans-serif; font-size: 13px; letter-spacing: 1px; color: #6f5c40; padding: 2px 8px; }
 .step.current { color: @kuf_gold; border-bottom: 2px solid @kuf_ember; }
 .step.done { color: @kuf_dim_gold; }
 
 .frame button, dialog button, messagedialog button {
-  font-family: "X360 by Redge", sans-serif;
+  font-family: "Cinzel", sans-serif;
   font-weight: 700;
   font-size: 16px;
   letter-spacing: 1px;
@@ -136,7 +136,7 @@ checkbutton check:checked { background-color: @kuf_blood; border-color: @kuf_gol
 checkbutton:focus check { box-shadow: 0 0 0 2px @kuf_ember; }
 checkbutton:disabled label { color: #6a5d4c; }
 
-combobox button { min-width: 260px; min-height: 40px; font-family: "X360 by Redge", sans-serif; font-weight: 400; font-size: 15px; }
+combobox button { min-width: 260px; min-height: 40px; font-family: "Cinzel", sans-serif; font-weight: 400; font-size: 15px; }
 
 progressbar trough {
   min-height: 22px;
@@ -169,7 +169,7 @@ headerbar, .titlebar {
   box-shadow: none;
   color: @kuf_gold;
 }
-headerbar .title, .titlebar .title { font-family: "X360 by Redge", sans-serif; font-size: 14px; color: @kuf_gold; }
+headerbar .title, .titlebar .title { font-family: "Cinzel", sans-serif; font-size: 14px; color: @kuf_gold; }
 headerbar button, .titlebar button {
   min-height: 24px; min-width: 24px; padding: 2px; border: none; background-image: none; background-color: transparent;
   color: @kuf_muted; box-shadow: none;

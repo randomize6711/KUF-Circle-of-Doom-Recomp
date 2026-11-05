@@ -7,13 +7,16 @@
 
 #include <unistd.h>
 
+#include "core/localbuild.h"
+
 namespace kuf::setup {
 
 namespace {
 
 // The entries the setup creates inside an installation folder (and the updater's lock): only these are removed.
 constexpr const char* kOwned[] = {"versions", "current", "previous", "kuf-cod", "kuf-update", "update.conf",
-                                  "allowed_signers", "game", "share", ".update.lock", ".first-start", kRecordFile};
+                                  "allowed_signers", "game", "share", "build-cache", ".update.lock", ".first-start",
+                                  kRecordFile};
 
 std::string NowUtc() {
   const std::time_t t = std::time(nullptr);
@@ -105,6 +108,9 @@ const char* StageName(Stage s) {
     case kPrepare: return "Preparing installation";
     case kRuntime: return "Installing native runtime";
     case kGameData: return "Installing game data";
+    case kGenerate: return "Generating native code";
+    case kCompile: return "Compiling the executable";
+    case kLink: return "Linking the executable";
     case kShortcuts: return "Creating shortcuts";
     case kFinalize: return "Finalizing installation";
     default: return "";
@@ -217,7 +223,7 @@ uint64_t SpaceNeeded(const Plan& plan) {
   for (const auto& e : fs::recursive_directory_iterator(plan.package, ec)) {
     if (e.is_regular_file(ec)) package += e.file_size(ec);
   }
-  return package + plan.manifest.total + (uint64_t(64) << 20);
+  return package + plan.manifest.total + kBuildSpace + (uint64_t(64) << 20);
 }
 
 Result Install(const Plan& plan, const ProgressFn& progress, const std::atomic<bool>& cancel) {
@@ -244,6 +250,9 @@ Result Install(const Plan& plan, const ProgressFn& progress, const std::atomic<b
   const GameCheck check = CheckGameFolder(plan.game_source, plan.manifest);
   if (!check.Ok()) {
     return fail(!check.folder_ok          ? "The game folder cannot be read."
+                : check.executable_encrypted
+                    ? "This default.xex is encrypted. This setup contains no console decryption keys and cannot decrypt "
+                      "it; it can only use an unencrypted default.xex."
                 : !check.executable_known ? "The game folder does not hold the supported game version (default.xex)."
                                           : "Game files are missing or have the wrong size (" +
                                                 std::to_string(check.missing.size() + check.wrong_size.size()) +
@@ -268,6 +277,11 @@ Result Install(const Plan& plan, const ProgressFn& progress, const std::atomic<b
   fs::path work = plan.root;
   if (!repair) {
     fs::create_directories(plan.root.parent_path(), ec);
+    // A crash or power cut leaves the setup's own staging folder behind (several GB): it is never used again.
+    const std::string leftover = "." + plan.root.filename().string() + ".kuf-staging-";
+    for (const auto& e : fs::directory_iterator(plan.root.parent_path(), ec)) {
+      if (e.path().filename().string().rfind(leftover, 0) == 0) fs::remove_all(e.path(), ec);
+    }
     std::string tmpl = (plan.root.parent_path() / ("." + plan.root.filename().string() + ".kuf-staging-XXXXXX")).string();
     std::vector<char> buf(tmpl.begin(), tmpl.end());
     buf.push_back('\0');
@@ -305,6 +319,59 @@ Result Install(const Plan& plan, const ProgressFn& progress, const std::atomic<b
   fs::copy_file(plan.package / "MANIFEST.sha256", stage_dir / "MANIFEST.sha256", fs::copy_options::overwrite_existing,
                 ec);
   if (ec) return abort("Could not copy the package's manifest.");
+  // 4. The game data: each file copied and checked against the supported version's SHA-256 (a repair checks the
+  // installed copy and copies only what differs).
+  const fs::path game = work / "game";
+  uint64_t done = 0;
+  for (const GameFile& f : plan.manifest.files) {
+    if (cancel) return abort("Installation cancelled.");
+    const fs::path to = game / f.path;
+    const bool is_xex = f.path == "default.xex";  // compared by its memory image (core/game_data.h)
+    if (repair && (is_xex ? InspectXex(to).image_sha256 == f.sha256
+                          : fs::file_size(to, ec) == f.size && !ec && Sha256File(to) == f.sha256)) {
+      done += f.size;
+      report(kGameData, double(done) / double(plan.manifest.total), f.path);
+      continue;
+    }
+    std::string error;
+    if (!CopyChecked(plan.game_source / f.path, to, is_xex ? Sha256File(plan.game_source / f.path) : f.sha256,
+                     [&](uint64_t n) {
+                       done += n;
+                       report(kGameData, double(done) / double(plan.manifest.total), f.path);
+                     },
+                     cancel, &error)) {
+      return abort(error);
+    }
+    fs::permissions(to, fs::perms(0644), ec);  // the copy is the installation's, not read-only like a disc
+  }
+
+  // 5. The native game: generated and compiled here from the game's default.xex. A cancelled new installation removes
+  // its cache with it; after a failure or a crash the finished objects are kept for the next attempt. The cache of a
+  // new installation lives next to the staging folder until the installation is complete.
+  const fs::path cache = repair ? work / "build-cache"
+                                : plan.root.parent_path() / ("." + plan.root.filename().string() + ".kuf-buildcache");
+  {
+    BuildRequest build;
+    build.package = stage_dir;
+    build.xex = game / "default.xex";
+    build.cache = cache;
+    build.output = stage_dir / "bin" / "kuf_cod";
+    build.jobs = plan.build_jobs;
+    std::string why;
+    const bool built = LocalBuild(
+        build,
+        [&](BuildPhase p, double f, const std::string& d) {
+          report(p == BuildPhase::kGenerate ? kGenerate : p == BuildPhase::kCompile ? kCompile : kLink, f, d);
+        },
+        cancel, &why);
+    if (!built) {
+      if (repair) fs::remove_all(stage_dir, ec);
+      if (cancel && !repair) fs::remove_all(cache, ec);
+      return abort(why);
+    }
+    if (!fs::exists(stage_dir / "bin" / "kuf_cod", ec)) return abort("The build wrote no program.");
+  }
+
   if (repair) {
     const std::string old = [&] {
       std::error_code e;
@@ -322,31 +389,8 @@ Result Install(const Plan& plan, const ProgressFn& progress, const std::atomic<b
     }
     if (ec) return abort("Could not put the new program files in place.");
   }
-  if (!Relink(work / "current", "versions/" + version)) return abort("Could not switch to the new version.");
 
-  // 4. The game data: each file copied and checked against the supported version's SHA-256 (a repair checks the
-  // installed copy and copies only what differs).
-  const fs::path game = work / "game";
-  uint64_t done = 0;
-  for (const GameFile& f : plan.manifest.files) {
-    if (cancel) return abort("Installation cancelled.");
-    const fs::path to = game / f.path;
-    if (repair && fs::file_size(to, ec) == f.size && !ec && Sha256File(to) == f.sha256) {
-      done += f.size;
-      report(kGameData, double(done) / double(plan.manifest.total), f.path);
-      continue;
-    }
-    std::string error;
-    if (!CopyChecked(plan.game_source / f.path, to, f.sha256,
-                     [&](uint64_t n) {
-                       done += n;
-                       report(kGameData, double(done) / double(plan.manifest.total), f.path);
-                     },
-                     cancel, &error)) {
-      return abort(error);
-    }
-    fs::permissions(to, fs::perms(0644), ec);  // the copy is the installation's, not read-only like a disc
-  }
+  if (!Relink(work / "current", "versions/" + version)) return abort("Could not switch to the new version.");
 
   // The launchers, the updater's configuration (kept when present: it may be the player's), the icon, the setup.
   std::string error;
@@ -385,12 +429,14 @@ Result Install(const Plan& plan, const ProgressFn& progress, const std::atomic<b
 
   // Commit: the staging folder becomes the installation (an empty target folder is replaced).
   if (!repair) {
+    fs::rename(cache, work / "build-cache", ec);
+    if (ec) return abort("Could not move the build's objects into the installation.");
     if (fs::exists(plan.root, ec)) fs::remove(plan.root, ec);  // empty (CheckTarget)
     fs::rename(work, plan.root, ec);
     if (ec) return abort("Could not move the installation into " + plan.root.string() + ".");
   }
 
-  // 5. Shortcuts (optional: a failure here is reported, the installation stays).
+  // 6. Shortcuts (optional: a failure here is reported, the installation stays).
   report(kShortcuts, 0, "");
   auto add_entry = [&](const fs::path& file, const std::string& text, bool executable, const char* what) {
     if (fs::exists(file, ec) && !OurEntry(file, plan.root)) {
@@ -450,7 +496,7 @@ Result Install(const Plan& plan, const ProgressFn& progress, const std::atomic<b
   WriteText(plan.root / kRecordFile, FormatRecord(record), fs::perms(0644), &error);
   report(kShortcuts, 1, "");
 
-  // 6. Finalize: the layout the launcher and the updater expect.
+  // 7. Finalize: the layout the launcher and the updater expect.
   report(kFinalize, 0, "Checking the installation");
   for (const char* must : {"kuf-cod", "kuf-update", "current/kuf-cod.sh", "current/bin/kuf_cod", "game/default.xex",
                            kRecordFile}) {

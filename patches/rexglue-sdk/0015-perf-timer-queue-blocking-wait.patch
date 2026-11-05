@@ -1,0 +1,104 @@
+KUF port (M12): the timer queue waits on a condition variable instead of spinning
+
+The timer queue's dispatch thread waited for the next due time (or a newly queued timer) with disruptorplus's
+spin_wait_strategy: short pause loops, then sched_yield, a 1 ms sleep every 20th round. That kept it at 10-15 %
+of a core all the time. It now blocks on a condition variable until the next due time, and queuing a timer
+wakes it (publish signals under the mutex the wait checks under, so no wake-up is lost). The strategy is a
+local copy of disruptorplus's blocking_wait_strategy, whose timed wait passes the predicate before the time to
+condition_variable::wait_until and does not compile. With no timer queued the wait is bounded by an hour
+instead of time_point::max().
+
+diff --git a/src/core/timer_queue.cpp b/src/core/timer_queue.cpp
+index 5cfea05..4c142e2 100644
+--- a/src/core/timer_queue.cpp
++++ b/src/core/timer_queue.cpp
+@@ -10,12 +10,14 @@
+  */
+ 
+ #include <algorithm>
++#include <condition_variable>
+ #include <forward_list>
++#include <mutex>
+ 
+ #include <disruptorplus/multi_threaded_claim_strategy.hpp>
+ #include <disruptorplus/ring_buffer.hpp>
+ #include <disruptorplus/sequence_barrier.hpp>
+-#include <disruptorplus/spin_wait_strategy.hpp>
++#include <disruptorplus/sequence.hpp>
+ 
+ #include <rex/assert.h>
+ #include <rex/thread.h>
+@@ -23,6 +25,49 @@
+ 
+ namespace dp = disruptorplus;
+ 
++namespace {
++
++// KUF port (M12): disruptorplus's blocking_wait_strategy, with the timed wait it gets wrong (it passes the predicate
++// before the time to condition_variable::wait_until). Waiting blocks on a condition variable until a sequence is
++// published (publish signals under the same mutex, so no wake-up is lost) or the time is reached.
++class BlockingWaitStrategy {
++ public:
++  dp::sequence_t wait_until_published(dp::sequence_t sequence, size_t count,
++                                      const std::atomic<dp::sequence_t>* const sequences[]) {
++    dp::sequence_t result;
++    std::unique_lock<std::mutex> lock(mutex_);
++    cv_.wait(lock, [&] {
++      result = dp::minimum_sequence_after(sequence, count, sequences);
++      return dp::difference(result, sequence) >= 0;
++    });
++    return result;
++  }
++
++  template <typename Clock, typename Duration>
++  dp::sequence_t wait_until_published(dp::sequence_t sequence, size_t count,
++                                      const std::atomic<dp::sequence_t>* const sequences[],
++                                      const std::chrono::time_point<Clock, Duration>& timeout_time) {
++    dp::sequence_t result;
++    std::unique_lock<std::mutex> lock(mutex_);
++    cv_.wait_until(lock, timeout_time, [&] {
++      result = dp::minimum_sequence_after(sequence, count, sequences);
++      return dp::difference(result, sequence) >= 0;
++    });
++    return result;
++  }
++
++  void signal_all_when_blocking() {
++    std::unique_lock<std::mutex> lock(mutex_);
++    cv_.notify_all();
++  }
++
++ private:
++  std::mutex mutex_;
++  std::condition_variable cv_;
++};
++
++}  // namespace
++
+ namespace rex::thread {
+ 
+ using WaitItem = TimerQueueWaitItem;
+@@ -69,7 +114,7 @@ class TimerQueue {
+         // Consume new wait items and add them to sorted wait queue
+         dp::sequence_t available = claim_strategy_.wait_until_published(
+             next_sequence, next_sequence - 1,
+-            wait_queue_.empty() ? clock::time_point::max() : wait_queue_.front()->due_);
++            wait_queue_.empty() ? clock::now() + std::chrono::hours(1) : wait_queue_.front()->due_);
+ 
+         // Check for timeout
+         if (available != next_sequence - 1) {
+@@ -142,9 +187,11 @@ class TimerQueue {
+   // This ring buffer will be used to introduce timers queued by the public API
+   static constexpr size_t kWaitCount = 512;
+   dp::ring_buffer<std::shared_ptr<WaitItem>> buffer_;
+-  dp::spin_wait_strategy wait_strategy_;
+-  dp::multi_threaded_claim_strategy<dp::spin_wait_strategy> claim_strategy_;
+-  dp::sequence_barrier<dp::spin_wait_strategy> consumed_;
++  // KUF port (M12): a blocking wait (condition variable, timed by the next due time) instead of the spin wait,
++  // whose sched_yield loop kept the dispatch thread at 10-15 % of a core while waiting.
++  BlockingWaitStrategy wait_strategy_;
++  dp::multi_threaded_claim_strategy<BlockingWaitStrategy> claim_strategy_;
++  dp::sequence_barrier<BlockingWaitStrategy> consumed_;
+ 
+   // This is a _sorted_ (ascending due_) list of active timers managed by a
+   // dedicated thread

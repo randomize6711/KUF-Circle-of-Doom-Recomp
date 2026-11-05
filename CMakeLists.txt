@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.25)
 project(kuf_cod LANGUAGES C CXX)
 
 # The port's version (src/runtime/version.h): the base here, the commit added at build time.
-set(KUFCOD_BASE_VERSION "0.7.0")
+set(KUFCOD_BASE_VERSION "0.7.1")
 
 # Published binaries carry no build-machine paths: __FILE__ (asserts, log locations) relative to the source tree,
 # for this project and the SDK alike (debug information is unchanged, and stripped from packages).
@@ -24,6 +24,13 @@ if(NOT _kufcod_patch_state EQUAL 0)
 endif()
 
 include(generated/rexglue.cmake)
+
+# Only the runtime library, from the source archive and without the game (tools/package/rebuild_runtime.sh).
+option(KUFCOD_RUNTIME_ONLY "Configure only the SDK's libraries: no generated code is needed" OFF)
+if(KUFCOD_RUNTIME_ONLY)
+    set_target_properties(rexruntime PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    return()
+endif()
 
 # generated/rexglue.cmake only adds the recompiled sources if they exist at configure time. In a fresh
 # tree, the first build runs codegen, and CMake must be re-run before the game can link.
@@ -46,6 +53,7 @@ set(KUFCOD_SOURCES
     src/runtime/save_groups.cpp
     src/runtime/loot_test.cpp
     src/runtime/texture_free_trace.cpp
+    src/runtime/gpu_wait_trace.cpp
     src/runtime/profiler.cpp
     src/runtime/frame_pacing.cpp
     src/runtime/render_frames.cpp
@@ -67,6 +75,7 @@ set(KUFCOD_SOURCES
     src/runtime/camera_math.cpp
     src/runtime/modern_camera.cpp
     src/runtime/pc_settings.cpp
+    src/runtime/platform_info.cpp
     src/runtime/pc_settings_runtime.cpp
     src/runtime/display.cpp
     src/runtime/display_window.cpp
@@ -150,14 +159,29 @@ endif()
 rexglue_setup_target(kuf_cod GPU_PLUGINS xenos)
 
 # The SDK writes its binaries into its own source tree (thirdparty/rexglue-sdk/out/<platform>), shared by
-# every build configuration. Keep all binaries of this build tree together in <build>/bin instead, so the
-# executable finds librexruntime via its $ORIGIN rpath and presets do not overwrite each other.
+# every build configuration: a host build there replaced the static libraries a portable (Steam Runtime) build
+# links, and the other way round. Every SDK target writes into this build tree instead: executables and shared
+# libraries into <build>/bin (the executable finds librexruntime via its $ORIGIN rpath), static libraries into
+# <build>/sdk-lib. Presets therefore never share or overwrite each other's binaries, in any build order.
 set(KUFCOD_BIN_DIR "${CMAKE_BINARY_DIR}/bin")
-foreach(_kufcod_target kuf_cod rexruntime rexglue rexgpu-xenos TracyClient)
-    if(TARGET ${_kufcod_target})
+set(KUFCOD_SDK_LIB_DIR "${CMAKE_BINARY_DIR}/sdk-lib")
+function(kufcod_collect_targets dir out)
+    get_property(_targets DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+    get_property(_subdirs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+    foreach(_sub IN LISTS _subdirs)
+        kufcod_collect_targets("${_sub}" _sub_targets)
+        list(APPEND _targets ${_sub_targets})
+    endforeach()
+    set(${out} ${_targets} PARENT_SCOPE)
+endfunction()
+kufcod_collect_targets("${REXSDK_DIR}" _kufcod_sdk_targets)
+foreach(_kufcod_target kuf_cod ${_kufcod_sdk_targets})
+    get_target_property(_kufcod_type ${_kufcod_target} TYPE)
+    if(_kufcod_type MATCHES "^(EXECUTABLE|STATIC_LIBRARY|SHARED_LIBRARY|MODULE_LIBRARY)$")
         set_target_properties(${_kufcod_target} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${KUFCOD_BIN_DIR}"
-            LIBRARY_OUTPUT_DIRECTORY "${KUFCOD_BIN_DIR}")
+            LIBRARY_OUTPUT_DIRECTORY "${KUFCOD_BIN_DIR}"
+            ARCHIVE_OUTPUT_DIRECTORY "${KUFCOD_SDK_LIB_DIR}")
     endif()
 endforeach()
 

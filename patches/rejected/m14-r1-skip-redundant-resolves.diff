@@ -1,0 +1,303 @@
+Rejected in M14 (docs/PERFORMANCE.md 11.3, R1): skip a resolve whose source EDRAM data and destination are
+unchanged since the same resolve last copied them. Render targets carry a contents generation, bumped by every draw
+that writes them (colour always, depth when z or stencil writes are on) and by ownership transfers; a resolve
+records its registers and its sources' generations, and is skipped when both match and no CPU or GPU write touched
+its destination since (a global shared memory watch, plus memory export draws). Correct (identical captures at 1440p
+and 4K, no new validation messages) and about 10 % of 4K resolves were skipped, but GPU time and frame rate did not
+move measurably (4K GPU 7.0 vs 6.9 ms per frame, 3 reps each), so it was not kept. Applies on top of SDK patches
+0001-0017 as of M14 (not maintained).
+--- a/include/rex/graphics/pipeline/render_target/cache.h
++++ b/include/rex/graphics/pipeline/render_target/cache.h
+@@ -293,12 +293,18 @@
+     RenderTarget(RenderTarget&& render_target) = delete;
+     RenderTarget& operator=(RenderTarget&& render_target) = delete;
+     RenderTargetKey key() const { return key_; }
++    // SDK patch 0018: changes whenever the contents may change (a draw writing to it, an ownership transfer or a
++    // resolve clear into it). Unique across all render targets ever created (command processor thread only).
++    uint64_t contents_generation() const { return contents_generation_; }
++    void MarkContentsModified() { contents_generation_ = ++next_contents_generation_; }
+ 
+    protected:
+-    RenderTarget(RenderTargetKey key) : key_(key) {}
++    RenderTarget(RenderTargetKey key) : key_(key), contents_generation_(++next_contents_generation_) {}
+ 
+    private:
+     RenderTargetKey key_;
++    uint64_t contents_generation_;
++    static uint64_t next_contents_generation_;
+   };
+ 
+   struct Transfer {
+@@ -595,6 +601,11 @@
+   void GetResolveCopyRectanglesToDump(uint32_t base, uint32_t row_length, uint32_t rows,
+                                       uint32_t pitch,
+                                       std::vector<ResolveCopyDumpRectangle>& rectangles_out) const;
++  // SDK patch 0018: the render targets owning the EDRAM tiles a resolve reads, [base, base + (rows - 1) * pitch +
++  // row_length), with their contents generations. False if a tile there is owned by no render target.
++  bool GetResolveSourceGenerations(
++      uint32_t base, uint32_t row_length, uint32_t rows, uint32_t pitch,
++      std::vector<std::pair<const RenderTarget*, uint64_t>>& sources_out) const;
+   void GetResolveCopyDispatchesToDump(uint32_t base, uint32_t row_length, uint32_t rows,
+                                       uint32_t pitch,
+                                       std::vector<ResolveCopyDumpRectangle>& rectangles_out,
+--- a/include/rex/graphics/vulkan/render_target_cache.h
++++ b/include/rex/graphics/vulkan/render_target_cache.h
+@@ -102,6 +102,10 @@
+ 
+   VkBuffer edram_buffer() const { return edram_buffer_; }
+ 
++  // SDK patch 0018: guest memory written by the GPU outside resolves (memory export): no later resolve into it is
++  // skipped as redundant before it is copied again.
++  void InvalidateResolveDestinations(uint32_t start, uint32_t length);
++
+   // Performs the resolve to a shared memory area according to the current
+   // register values, and also clears the render targets if needed. Must be in a
+   // frame for calling.
+@@ -874,6 +878,27 @@
+   uint64_t direct_resolve_success_count_ = 0;
+   uint64_t direct_resolve_fallback_count_ = 0;
+ 
++  // SDK patch 0018 (--vulkan_skip_redundant_resolves): the last copy into each destination, to skip a resolve that
++  // would copy the same render target contents to the same place again (and invalidate the textures there). Every
++  // resolve, every GPU write reported to the shared memory and every CPU write to a destination drops the records
++  // it overlaps. Guarded by the global critical region (the shared memory watch runs on any thread).
++  struct ResolveRecord {
++    std::array<uint32_t, 10> info;  // The ResolveInfo fields the copy depends on.
++    uint32_t page_first;
++    uint32_t page_last;
++    std::vector<std::pair<const RenderTarget*, uint64_t>> sources;
++  };
++  static void ResolveDestinationWatchCallback(const std::unique_lock<std::recursive_mutex>& global_lock,
++                                              void* context, uint32_t address_first,
++                                              uint32_t address_last, bool invalidated_by_gpu);
++  void DropResolveRecords(uint32_t page_first, uint32_t page_last);
++  std::vector<ResolveRecord> resolve_records_;
++  std::vector<std::pair<const RenderTarget*, uint64_t>> resolve_sources_;
++  VulkanSharedMemory* resolve_watch_shared_memory_ = nullptr;
++  SharedMemory::GlobalWatchHandle resolve_watch_handle_ = nullptr;
++  uint64_t resolves_copied_ = 0;
++  uint64_t resolves_skipped_ = 0;
++
+   // For pixel (fragment) shader interlock.
+ 
+   VkRenderPass fsi_render_pass_ = VK_NULL_HANDLE;
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -695,6 +695,16 @@
+     return true;
+   }
+ 
++  // SDK patch 0018: the render targets this draw may write, and those receiving ownership transfers, get new
++  // contents (a bound depth / stencil buffer is unchanged when the draw writes neither).
++  for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
++    if ((depth_and_color_rts_used_bits & (uint32_t(1) << i)) &&
++        (i || normalized_depth_control.z_write_enable || normalized_depth_control.stencil_enable ||
++         !last_update_transfers_[i].empty())) {
++      rts[i]->MarkContentsModified();
++    }
++  }
++
+   // If everything succeeded, update the used render targets.
+   for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
+     last_update_used_render_targets_[i] =
+@@ -1365,4 +1375,48 @@
+   }
+ }
+ 
++uint64_t RenderTargetCache::RenderTarget::next_contents_generation_ = 0;
++
++bool RenderTargetCache::GetResolveSourceGenerations(
++    uint32_t base, uint32_t row_length, uint32_t rows, uint32_t pitch,
++    std::vector<std::pair<const RenderTarget*, uint64_t>>& sources_out) const {
++  sources_out.clear();
++  if (!row_length || !rows || row_length > pitch) {
++    return false;
++  }
++  auto add_extent = [&](uint32_t extent_start, uint32_t extent_end) {
++    auto it = ownership_ranges_.upper_bound(extent_start);
++    if (it == ownership_ranges_.cbegin()) {
++      return false;
++    }
++    --it;
++    uint32_t covered = extent_start;
++    for (; covered < extent_end; ++it) {
++      if (it == ownership_ranges_.cend() || it->first > covered || it->second.render_target.IsEmpty()) {
++        return false;
++      }
++      auto it_rt = render_targets_.find(it->second.render_target);
++      if (it_rt == render_targets_.cend() || !it_rt->second) {
++        return false;
++      }
++      const RenderTarget* rt = it_rt->second;
++      if (std::find_if(sources_out.cbegin(), sources_out.cend(),
++                       [rt](const auto& source) { return source.first == rt; }) == sources_out.cend()) {
++        sources_out.emplace_back(rt, rt->contents_generation());
++      }
++      covered = std::max(covered, it->second.end_tiles);
++    }
++    return true;
++  };
++  uint32_t area_end = base + (rows - 1) * pitch + row_length;
++  if (!add_extent(base, std::min(area_end, xenos::kEdramTileCount))) {
++    return false;
++  }
++  if (area_end > xenos::kEdramTileCount &&
++      !add_extent(0, std::min(area_end & (xenos::kEdramTileCount - 1), base))) {
++    return false;
++  }
++  return true;
++}
++
+ }  // namespace rex::graphics
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -4169,7 +4169,11 @@
+     shared_memory_->Use(
+         VulkanSharedMemory::Usage::kGuestDrawReadWrite,
+         std::make_pair(memexport_extent_start, memexport_extent_end - memexport_extent_start));
++    // SDK patch 0018: no resolve into memory written by memory export is skipped as redundant.
++    render_target_cache_->InvalidateResolveDestinations(
++        memexport_extent_start, memexport_extent_end - memexport_extent_start);
+   } else if (memexport_writes_possible) {
++    render_target_cache_->InvalidateResolveDestinations(0, SharedMemory::kBufferSize);
+     // Stream constants can be invalid or dynamic, making the exact destination
+     // unknown. Keep synchronization conservative similarly to D3D12 UAV
+     // handling for memexport-capable draws.
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -34,12 +34,19 @@
+ #include <rex/graphics/vulkan/render_target_cache.h>
+ #include <rex/graphics/xenos.h>
+ #include <rex/logging.h>
++#include <rex/thread/mutex.h>
+ #include <rex/math.h>
+ #include <rex/ui/vulkan/util.h>
+ 
+ REXCVAR_DEFINE_STRING(render_target_path_vulkan, "", "GPU/Vulkan",
+                       "Vulkan render target implementation path")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++REXCVAR_DEFINE_BOOL(vulkan_skip_redundant_resolves, true, "GPU/Vulkan",
++                    "Skip a resolve copy when the destination already holds the same render target contents from "
++                    "the same copy (SDK patch 0018)");
++REXCVAR_DECLARE(bool, vulkan_readback_resolve);
++REXCVAR_DECLARE(std::string, readback_resolve);
++REXCVAR_DECLARE(bool, gpu_timestamp_stats);
+ 
+ // DEFINE_string(
+ //     render_target_path_vulkan, "",
+@@ -974,6 +981,12 @@
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+   const VkDevice device = vulkan_device->device();
+ 
++  if (resolve_watch_handle_) {
++    resolve_watch_shared_memory_->UnregisterGlobalWatch(resolve_watch_handle_);
++    resolve_watch_handle_ = nullptr;
++  }
++  resolve_records_.clear();
++
+   // Destroy all render targets before the descriptor set pool is destroyed -
+   // may happen if shutting down the VulkanRenderTargetCache by destroying it,
+   // so ShutdownCommon is called by the RenderTargetCache destructor, when it's
+@@ -1152,6 +1165,43 @@
+     return true;
+   }
+ 
++  // SDK patch 0018: a plain copy (no clear) on the host render target path, without readback, with the same
++  // parameters as the last copy into the same destination, from render targets whose contents have not changed
++  // since, writes what the destination already holds (nothing else wrote it: every write drops the record).
++  // Skipping it also keeps the textures there valid, so they are not loaded again.
++  std::array<uint32_t, 10> resolve_record_info = {
++      resolve_info.rb_copy_control.value,       resolve_info.depth_edram_info.packed,
++      resolve_info.color_edram_info.packed,     resolve_info.coordinate_info.packed,
++      resolve_info.height_div_8,                resolve_info.copy_dest_info.value,
++      resolve_info.copy_dest_coordinate_info.packed, resolve_info.copy_dest_base,
++      resolve_info.copy_dest_extent_start,      resolve_info.copy_dest_extent_length};
++  bool resolve_recordable = false;
++  if (resolve_info.copy_dest_extent_length && !resolve_info.IsClearingDepth() &&
++      !resolve_info.IsClearingColor() && GetPath() == Path::kHostRenderTargets &&
++      REXCVAR_GET(vulkan_skip_redundant_resolves) && !REXCVAR_GET(vulkan_readback_resolve) &&
++      REXCVAR_GET(readback_resolve) != "fast" &&
++      REXCVAR_GET(readback_resolve) != "some" && REXCVAR_GET(readback_resolve) != "full") {
++    if (!resolve_watch_handle_) {
++      resolve_watch_shared_memory_ = &shared_memory;
++      resolve_watch_handle_ =
++          shared_memory.RegisterGlobalWatch(ResolveDestinationWatchCallback, this);
++    }
++    uint32_t span_base, span_row_length, span_rows, span_pitch;
++    resolve_info.GetCopyEdramTileSpan(span_base, span_row_length, span_rows, span_pitch);
++    resolve_recordable = resolve_watch_handle_ &&
++                         GetResolveSourceGenerations(span_base, span_row_length, span_rows,
++                                                     span_pitch, resolve_sources_);
++    if (resolve_recordable) {
++      auto global_lock = rex::thread::global_critical_region::AcquireDirect();
++      for (const ResolveRecord& record : resolve_records_) {
++        if (record.info == resolve_record_info && record.sources == resolve_sources_) {
++          ++resolves_skipped_;
++          return true;
++        }
++      }
++    }
++  }
++
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+   const VkDevice device = vulkan_device->device();
+@@ -1295,6 +1345,24 @@
+           // Invalidate textures and mark the range as scaled if needed.
+           texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
+                                             resolve_info.copy_dest_extent_length);
++          // SDK patch 0018: MarkRangeAsResolved has dropped the records of what this copy overwrote.
++          ++resolves_copied_;
++          if (resolve_recordable) {
++            auto global_lock = rex::thread::global_critical_region::AcquireDirect();
++            if (resolve_records_.size() >= 64) {
++              resolve_records_.erase(resolve_records_.begin());
++            }
++            ResolveRecord& record = resolve_records_.emplace_back();
++            record.info = resolve_record_info;
++            record.page_first = resolve_info.copy_dest_extent_start >> 12;
++            record.page_last =
++                (resolve_info.copy_dest_extent_start + resolve_info.copy_dest_extent_length - 1) >> 12;
++            record.sources = resolve_sources_;
++          }
++          if (REXCVAR_GET(gpu_timestamp_stats) && !(resolves_copied_ & 4095)) {
++            REXGPU_INFO("[gpu-time] resolves: {} copied, {} skipped as redundant", resolves_copied_,
++                        resolves_skipped_);
++          }
+           written_address_out = resolve_info.copy_dest_extent_start;
+           written_length_out = resolve_info.copy_dest_extent_length;
+           copied = true;
+@@ -1384,6 +1452,33 @@
+   return copied && cleared;
+ }
+ 
++void VulkanRenderTargetCache::ResolveDestinationWatchCallback(
++    const std::unique_lock<std::recursive_mutex>& global_lock, void* context, uint32_t address_first,
++    uint32_t address_last, bool invalidated_by_gpu) {
++  static_cast<VulkanRenderTargetCache*>(context)->DropResolveRecords(address_first >> 12,
++                                                                     address_last >> 12);
++}
++
++void VulkanRenderTargetCache::DropResolveRecords(uint32_t page_first, uint32_t page_last) {
++  // With the global critical region held.
++  resolve_records_.erase(
++      std::remove_if(resolve_records_.begin(), resolve_records_.end(),
++                     [&](const ResolveRecord& record) {
++                       return record.page_first <= page_last && record.page_last >= page_first;
++                     }),
++      resolve_records_.end());
++}
++
++void VulkanRenderTargetCache::InvalidateResolveDestinations(uint32_t start, uint32_t length) {
++  if (!length) {
++    return;
++  }
++  auto global_lock = rex::thread::global_critical_region::AcquireDirect();
++  if (!resolve_records_.empty()) {
++    DropResolveRecords(start >> 12, uint32_t((uint64_t(start) + length - 1) >> 12));
++  }
++}
++
+ bool VulkanRenderTargetCache::Update(bool is_rasterization_done,
+                                      reg::RB_DEPTHCONTROL normalized_depth_control,
+                                      uint32_t normalized_color_mask, const Shader& vertex_shader) {

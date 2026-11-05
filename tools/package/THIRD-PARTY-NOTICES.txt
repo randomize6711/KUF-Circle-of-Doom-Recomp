@@ -1,0 +1,82 @@
+Kingdom Under Fire: Circle of Doom Recomp - third-party software in this package
+
+This project's own work is under the MIT licence: licenses/PROJECT-LICENSE.txt, and what that covers:
+licenses/PROJECT-NOTICE.txt. This package contains no code or data of the game; bin/kuf_cod is made on the player's machine (docs/LOCAL_BUILD.md).
+The programs in bin/ and builder/ are built with the ReXGlue SDK (https://github.com/rexglue/rexglue-sdk, BSD-3-Clause,
+portions derived from the Xenia project; licenses/rexglue-sdk-LICENSE) and the open-source software below, compiled
+into bin/librexruntimerd.so, bin/librexgpu-xenosrd.so and builder/lib unless noted. Each licence text is in licenses/
+under the file name given.
+
+Source: the release assets kuf-cod-recomp-<version>-source.tar.xz (this project and the SDK with its submodules, exactly
+as built: the project's patches applied, console keys removed) and kuf-cod-recomp-<version>-toolchain-sources.tar. They
+are published with each release, next to the binaries.
+
+LGPL components
+  FFmpeg (libavcodec, libavutil: the WMA Pro / XMA audio decoder), LGPL version 2.1 or later,
+      Copyright (c) the FFmpeg developers; each source file carries its authors' notices,
+      built without GPL or non-free parts, from https://github.com/wmarti/FFmpeg (commit 0604b464c7cb)
+      licenses/FFmpeg-LICENSE.md, licenses/FFmpeg-COPYING.LGPLv2.1
+      This code differs from FFmpeg n4.4: licenses/FFmpeg-changes-from-n4.4.diff
+  libmspack (lzxd.c: LZX decompression), (C) 2003-2023 Stuart Caie, LGPL version 2.1, from https://github.com/kyz/libmspack (commit 305907723a4e)
+      licenses/libmspack-COPYING.LIB
+  Both are linked into bin/librexruntimerd.so. To use a modified version, rebuild that library from the source archive
+  (docs/LOCAL_BUILD.md "Replacing the LGPL libraries") and replace the file: the game's program, made on your machine,
+  links it dynamically and finds it by name.
+
+GPL components
+  GNU binutils' PowerPC disassembler (thirdparty/disasm), GPL version 2 or later, is linked into bin/rexgluerd, the code
+      generator, which is therefore distributed as a whole under the GPL (version 3 or later, so that its Apache-2.0
+      parts are compatible): licenses/libstdc++-COPYING3. Its complete source is the source archive above. It is not
+      in the runtime libraries or the game's program.
+
+The local build (builder/)
+  LLVM, Clang, LLD (builder/toolchain/)        Apache-2.0 with LLVM exceptions   licenses/llvm-LICENSE.TXT
+  GNU C Library: headers, start files and link inputs (builder/sysroot/)
+                                               LGPL 2.1 or later, others   licenses/glibc-copyright
+  GCC runtime parts from Steam Runtime 3 (crtbegin, crtend, libgcc)
+                                               GPL-3.0 with the GCC Runtime Library Exception
+                                               licenses/gcc-runtime-copyright, licenses/libstdc++-COPYING.RUNTIME
+  libstdc++ headers and link inputs (builder/libstdcxx/)  as libstdc++ below
+  Linux kernel headers (builder/sysroot/)      GPL-2.0 with the syscall note   licenses/linux-headers-copyright
+  Intel TBB header (builder/sysroot/)          Apache-2.0      licenses/tbb-copyright
+
+This software is based in part on the work of the Independent JPEG Group (FFmpeg's jfdctfst.c, jfdctint_template.c
+and jrevdct.c, not changed).
+
+Other components
+  libstdc++ (GCC runtime library, bin/compat)  GPL-3.0 with the GCC Runtime Library Exception
+                                                licenses/libstdc++-COPYING3, licenses/libstdc++-COPYING.RUNTIME
+  SDL 3                                        zlib            licenses/SDL3-LICENSE.txt
+  HIDAPI (in SDL 3)                            BSD (chosen)    licenses/SDL3-hidapi-LICENSE-bsd.txt
+  {fmt}                                        MIT             licenses/fmt-LICENSE
+  spdlog                                       MIT             licenses/spdlog-LICENSE
+  Dear ImGui                                   MIT             licenses/imgui-LICENSE.txt
+  Tracy (bin/libTracyClientrd.so)              BSD-3-Clause    licenses/tracy-LICENSE
+  glslang                                      BSD-3-Clause and others   licenses/glslang-LICENSE.txt
+  SPIRV-Tools (interface only)                 Apache-2.0      licenses/spirv-tools-LICENSE
+  SPIRV-Headers                                MIT             licenses/spirv-headers-LICENSE
+  Vulkan-Headers                               Apache-2.0 / MIT   licenses/vulkan-headers-LICENSE.md,
+                                                licenses/vulkan-headers-Apache-2.0.txt, licenses/vulkan-headers-MIT.txt
+  Vulkan Memory Allocator                      MIT             licenses/vulkan-memory-allocator-LICENSE.txt
+  xxHash                                       BSD-2-Clause    licenses/xxHash-LICENSE
+  o1heap                                       MIT             licenses/o1heap-LICENSE
+  SIMDe                                        MIT             licenses/simde-COPYING
+  toml++                                       MIT             licenses/tomlplusplus-LICENSE
+  CLI11                                        BSD-3-Clause    licenses/cli11-LICENSE
+  UTF8-CPP                                     BSL-1.0         licenses/utfcpp-LICENSE
+  disruptorplus                                MIT             licenses/disruptorplus-LICENSE.txt
+  aes_128 (LuoPeng)                            MIT             licenses/aes_128-LICENSE
+  DES (Faraz Fallahi)                          MIT             licenses/crypto-des-LICENSE
+  TinySHA1                                     see notice      licenses/crypto-TinySHA1-NOTICE.txt
+  SHA-256 (Stephan Brumme)                     zlib            licenses/crypto-sha256-NOTICE.txt
+  Rijndael reference code                      public domain   licenses/crypto-rijndael-NOTICE.txt
+  stb_image                                    MIT / public domain   licenses/stb_image-NOTICE.txt
+  RenderDoc in-application API header          MIT             licenses/renderdoc_app-NOTICE.txt
+
+The setup AppImage additionally contains the setup program (this project; GTK and GLib are used from your system,
+not bundled; its C++ library is linked in under the GCC Runtime Library Exception), the Cinzel font (Copyright 2020 The
+Cinzel Project Authors, SIL Open Font License 1.1: assets/fonts/Cinzel-OFL.txt) and the AppImage runtime, release 20251108
+(https://github.com/AppImage/type2-runtime, MIT). That runtime statically links libfuse 3.15.0 (LGPL 2.1, text in
+licenses/FFmpeg-COPYING.LGPLv2.1), squashfuse 0.5.2 (BSD-style), and permissively licensed zstd, zlib, mimalloc and musl.
+The sources of the runtime, libfuse and squashfuse are in the toolchain-sources asset. To use a modified libfuse, rebuild
+the runtime from them and replace the runtime at the start of the AppImage (the setup's files are appended to it).

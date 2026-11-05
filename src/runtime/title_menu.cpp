@@ -39,6 +39,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <fcntl.h>
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -77,6 +78,9 @@ REX_EXTERN(sub_8218F410);         // the game's allocation
 REX_EXTERN(sub_82625AC8);         // a button's SetRect (button, x, y, width, height)
 REX_EXTERN(sub_82622400);         // the toolkit's SetFocus (control)
 REX_EXTERN(sub_825D5560);         // the game's message post (message, data, 0, 0, 0)
+REX_EXTERN(__imp__sub_826259C8);  // the buttons' input handler (control, event; hooked below: the update box)
+
+extern char** environ;
 
 namespace {
 
@@ -314,6 +318,41 @@ void CancelInstall() {
   }
 }
 
+// ---- The update offer's buttons (M10) ----
+// The offer is the game's message box (scene 0x025) with three more buttons, copies of its own answer button added to
+// its layout (kuf::ui::AddButtonClones, src/runtime/menu_mouse.cpp): Open GitHub Page centred, Install Update and
+// Cancel below it, all drawn, highlighted and flashed by the game as its buttons (the focus on the selected one). The
+// box's own answer line stays below them as the prompt line ([A] Select [B] Cancel [Y] GitHub Page). The buttons'
+// input arrives in the buttons' handler (sub_826259C8, hooked below; the pointer steps through it too): arrows move the
+// selection, A acts on the selected button, B and Cancel answer the box No, Install Update answers it Yes (both through
+// the box's own button, as its A and B), Y and Open GitHub Page open the release page (xdg-open) and leave the box
+// open. In every other message box the three are hidden (UpdateBoxUiUpdate).
+enum UbButton { kUbInstall, kUbGitHub, kUbCancel, kUbCount };
+constexpr const char* kUbLabels[kUbCount] = {"Install Update", "Open GitHub Page", "Cancel"};
+constexpr uint32_t kCodeLeft = 8, kCodeRight = 9, kCodeY = 3;
+constexpr int32_t kUbRowStep = 46, kUbHeight = 40, kUbWidth = 300, kUbGitHubWidth = 380, kUbGap = 36;
+constexpr int32_t kUbPromptWidth = 760;
+bool g_ub_open = false;        // the offer is on screen (game thread)
+bool g_ub_placed = false;      // its buttons placed and shown
+int g_ub_selected = kUbInstall;
+int g_ub_bottom = kUbInstall;  // the bottom-row button Down returns to
+std::string g_ub_page;         // the release page (validated)
+std::atomic<int> g_ub_browser{0};  // 0 idle, 1 opening, 2 opened, 3 failed (set by the opener thread)
+int g_ub_browser_shown = 0;
+kuf::input::PromptDevice g_ub_device{};
+uint32_t g_ub_event = 0;       // guest event for the box's own button
+
+void UpdateBoxOpen(std::string page) {
+  g_ub_open = true;
+  g_ub_placed = false;
+  g_ub_selected = g_ub_bottom = kUbInstall;
+  g_ub_page = std::move(page);
+  g_ub_browser = 0;
+  g_ub_browser_shown = 0;
+}
+
+void UpdateBoxClose() { g_ub_open = false; }
+
 // The update box: the game's own message box (as Quit Game), its text from update_status.cpp with the prompts of
 // the device in use; Yes / No come back as kUpdateYes / kUpdateNo (BeforePost).
 void AskUpdate(PPCContext& ctx, uint8_t* base, uint32_t menu, kuf::updates::Dialog dialog) {
@@ -322,8 +361,10 @@ void AskUpdate(PPCContext& ctx, uint8_t* base, uint32_t menu, kuf::updates::Dial
     std::lock_guard lock(g_mutex);
     reply = g_reply;
   }
-  const std::string text =
-      kuf::prompts::ForCurrentDevice(kuf::updates::DialogText(dialog, reply, kuf::version::String()));
+  const std::string text = kuf::prompts::ForCurrentDevice(kuf::updates::DialogText(dialog, reply, kuf::version::String()));
+  // The box's own answer line names the actions (not Yes / No); the offer gets its three buttons (UpdateBoxOpen).
+  auto [a, b] = kuf::updates::AnswerLabels(dialog);
+  kuf::prompts::SetAnswerLabels(std::move(a), std::move(b));
   if (!g_box) g_box = GuestString(ctx, base, "", kBoxSize);
   if (!g_box) return;
   std::memset(base + g_box, 0, kBoxSize);
@@ -333,6 +374,7 @@ void AskUpdate(PPCContext& ctx, uint8_t* base, uint32_t menu, kuf::updates::Dial
   Store32(base, g_box + 1032, kUpdateYes);
   Store32(base, g_box + 1036, kUpdateNo);
   g_dialog_open = dialog;
+  if (dialog == kuf::updates::Dialog::kOffer) UpdateBoxOpen(kuf::updates::ReleasePage(reply.page));
   Call(ctx, base, sub_825D5560, kMessageBox, g_box);
   REXLOG_INFO("[kuf-title] update dialog {}", int(dialog));
 }
@@ -455,6 +497,185 @@ uint32_t FocusedSceneId(const uint8_t* base) {
   const uint32_t record = Load32(base, focus + 48);
   return record >= 0x10000 && record < 0xF0000000 ? Load32(base, record) : 0;
 }
+// The message box's scene root while it has the focus (0 otherwise).
+uint32_t BoxRoot(const uint8_t* base) {
+  if (FocusedSceneId(base) != kMessageBoxScene) return 0;
+  const uint32_t focus = Load32(base, kFocusedControl);
+  const uint32_t record = Load32(base, focus + 48);
+  const uint32_t root = record >= 0x10000 && record < 0xF0000000 ? Load32(base, record + 8) : 0;
+  return root >= 0x10000 && root < 0xF0000000 ? root : 0;
+}
+
+void SetText(PPCContext& ctx, uint8_t* base, uint32_t control, const std::string& text) {
+  if (!g_scratch) g_scratch = GuestString(ctx, base, "", kTextSize);
+  if (!g_scratch || !control) return;
+  const size_t n = std::min<size_t>(text.size(), kTextSize - 1);
+  std::memcpy(base + g_scratch, text.data(), n);
+  base[g_scratch + n] = 0;
+  Call(ctx, base, sub_82624CB8, control, g_scratch, 0);
+}
+
+std::string UbPrompt() {
+  std::string p = "@(align=1)@(A) Select   @(B) Cancel   @(Y) GitHub Page";
+  const int b = g_ub_browser.load();
+  if (b == 3) p = "@(align=1)No browser could be opened: " + g_ub_page;
+  return kuf::prompts::ForCurrentDevice(p);
+}
+
+void UbFocus(PPCContext& ctx, uint8_t* base, uint32_t root, int button, bool cue) {
+  const uint32_t c = Call(ctx, base, sub_82624570, root, kuf::ui::kUpdateBoxButtons[button]);
+  if (!c) return;
+  g_ub_selected = button;
+  if (button != kUbGitHub) g_ub_bottom = button;
+  Call(ctx, base, sub_82622400, c);
+  if (cue && g_menu) Call(ctx, base, sub_8261B488, g_menu, kCueMove);
+}
+
+// The UI update before each frame is drawn: in the offer, the buttons placed (from the box's own button, which the
+// box moves with its text) and the prompt line kept; in any other box, the three hidden.
+void UpdateBoxUiUpdate(PPCContext& ctx, uint8_t* base) {
+  const uint32_t root = BoxRoot(base);
+  if (!root) return;
+  uint32_t buttons[kUbCount];
+  for (int i = 0; i < kUbCount; ++i) {
+    buttons[i] = Call(ctx, base, sub_82624570, root, kuf::ui::kUpdateBoxButtons[i]);
+    if (!buttons[i]) return;  // a layout without them (the extension refused): the plain box
+  }
+  if (!g_ub_open) {
+    for (uint32_t b : buttons) {
+      if (Load32(base, b + 56) & 1) Call(ctx, base, sub_82623850, b, 1, 0);
+    }
+    return;
+  }
+  const uint32_t own = Call(ctx, base, sub_82624570, root, kuf::ui::kMessageBoxButton);
+  if (!own) return;
+  const int32_t oy = int32_t(Load32(base, own + 20));
+  const int32_t bottom = oy - kUbRowStep, top = oy - 2 * kUbRowStep;
+  const int32_t place[kUbCount][3] = {{640 - kUbGap / 2 - kUbWidth, bottom, kUbWidth},
+                                      {640 - kUbGitHubWidth / 2, top, kUbGitHubWidth},
+                                      {640 + kUbGap / 2, bottom, kUbWidth}};
+  for (int i = 0; i < kUbCount; ++i) {
+    if (int32_t(Load32(base, buttons[i] + 16)) != place[i][0] || int32_t(Load32(base, buttons[i] + 20)) != place[i][1] ||
+        int32_t(Load32(base, buttons[i] + 24)) != place[i][2]) {
+      Call(ctx, base, sub_82625AC8, buttons[i], uint32_t(place[i][0]), uint32_t(place[i][1]), uint32_t(place[i][2]),
+           uint32_t(kUbHeight));
+    }
+  }
+  if (int32_t(Load32(base, own + 24)) != kUbPromptWidth) {  // the prompt line on one line, centred
+    Call(ctx, base, sub_82625AC8, own, uint32_t(640 - kUbPromptWidth / 2), uint32_t(oy), uint32_t(kUbPromptWidth),
+         Load32(base, own + 28));
+  }
+  const auto device = kuf::prompts::Current();
+  const int browser = g_ub_browser.load();
+  if (!g_ub_placed || device != g_ub_device || browser != g_ub_browser_shown) {
+    if (!g_ub_placed) {
+      // The title list's own button look (its rows' fonts per state: selected, normal, none; the renderer colours
+      // and animates the selected one) and the toolkit's selection arrow beside the focused button (state bit 0x80
+      // off, as the title list's rows have it).
+      const uint32_t row = g_menu ? AddedButton(ctx, base, g_menu, kUpdates) : 0;
+      for (int i = 0; i < kUbCount; ++i) {
+        if (row) {
+          for (uint32_t f = 0; f < 3; ++f) Store32(base, buttons[i] + 288 + 4 * f, Load32(base, row + 288 + 4 * f));
+        }
+        SetText(ctx, base, buttons[i], std::string("@(align=1)") + kUbLabels[i]);
+        Call(ctx, base, sub_82623850, buttons[i], 1, 1);
+        Call(ctx, base, sub_82623850, buttons[i], 0x80, 0);
+      }
+      UbFocus(ctx, base, root, g_ub_selected, false);
+      REXLOG_INFO("[kuf-title] update box: buttons shown (page {})", g_ub_page);
+    }
+    SetText(ctx, base, own, UbPrompt());
+    g_ub_device = device;
+    g_ub_browser_shown = browser;
+    g_ub_placed = true;
+  }
+}
+
+// Opens the release page with the desktop's handler (xdg-open), without a shell, on its own thread; the game stays.
+void OpenReleasePage() {
+  int expected = g_ub_browser.load();
+  if (expected == 1) return;  // still starting
+  g_ub_browser = 1;
+  const std::string url = g_ub_page;
+  REXLOG_INFO("[kuf-title] update box: opening {}", url);
+  std::thread([url] {
+    pid_t pid = 0;
+    const char* argv[] = {"xdg-open", url.c_str(), nullptr};
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
+    const int err = posix_spawnp(&pid, "xdg-open", &actions, nullptr, const_cast<char* const*>(argv), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    int status = 0;
+    const bool ok = err == 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    g_ub_browser = ok ? 2 : 3;
+    REXLOG_INFO("[kuf-title] update box: xdg-open {} ({})", ok ? "done" : "failed", err ? std::strerror(err) : "exit");
+  }).detach();
+}
+
+// The box's own button given A or B (its answer: Yes / No through the box, as the player's press would).
+void AnswerBox(PPCContext& ctx, uint8_t* base, uint32_t root, uint32_t code) {
+  const uint32_t own = Call(ctx, base, sub_82624570, root, kuf::ui::kMessageBoxButton);
+  if (!own) return;
+  if (!g_ub_event) g_ub_event = GuestString(ctx, base, "", 16);
+  if (!g_ub_event) return;
+  Store32(base, g_ub_event, 0);
+  Store32(base, g_ub_event + 4, 0x44C);
+  Store32(base, g_ub_event + 8, 0);
+  Store32(base, g_ub_event + 12, code);
+  REXLOG_INFO("[kuf-title] update box: {}", code == kCodeSelect ? "Install Update" : "Cancel");
+  Call(ctx, base, __imp__sub_826259C8, own, g_ub_event);
+}
+
+// An input event to a button while the offer is open: true if it was the offer's (handled here).
+bool UpdateBoxButtonEvent(PPCContext& ctx, uint8_t* base) {
+  if (!g_ub_open || !g_ub_placed) return false;
+  const uint32_t control = ctx.r3.u32, event = ctx.r4.u32;
+  if (control < 0x10000 || event < 0x10000 || Load32(base, event + 4) != 0x44C) return false;
+  const uint32_t root = BoxRoot(base);
+  if (!root) return false;
+  const uint32_t id = Load32(base, control + 8);
+  const bool ours = std::find(std::begin(kuf::ui::kUpdateBoxButtons), std::end(kuf::ui::kUpdateBoxButtons), id) !=
+                    std::end(kuf::ui::kUpdateBoxButtons);
+  if (!ours && id != kuf::ui::kMessageBoxButton) return false;
+  const uint32_t code = Load32(base, event + kEventCode);
+  switch (code) {
+    case kCodeUp:
+      if (g_ub_selected != kUbGitHub) UbFocus(ctx, base, root, kUbGitHub, true);
+      break;
+    case kCodeDown:
+      if (g_ub_selected == kUbGitHub) UbFocus(ctx, base, root, g_ub_bottom, true);
+      break;
+    case kCodeLeft:
+      if (g_ub_selected == kUbCancel) UbFocus(ctx, base, root, kUbInstall, true);
+      break;
+    case kCodeRight:
+      if (g_ub_selected == kUbInstall) UbFocus(ctx, base, root, kUbCancel, true);
+      break;
+    case kCodeY:
+      OpenReleasePage();
+      if (g_menu) Call(ctx, base, sub_8261B488, g_menu, kCueSelect);
+      break;
+    case kCodeSelect:
+      if (g_ub_selected == kUbGitHub) {
+        OpenReleasePage();
+        if (g_menu) Call(ctx, base, sub_8261B488, g_menu, kCueSelect);
+      } else {
+        AnswerBox(ctx, base, root, g_ub_selected == kUbInstall ? kCodeSelect : kCodeBack);
+      }
+      break;
+    case kCodeBack:
+      AnswerBox(ctx, base, root, kCodeBack);
+      break;
+    default:
+      if (REXCVAR_GET(kuf_trace_title_events)) REXLOG_INFO("[kuf-title] update box: input code {} ignored", code);
+      break;
+  }
+  return true;
+}
+
 }  // namespace
 
 bool BeforeMenuEvent(PPCContext& ctx, uint8_t* base) {
@@ -493,8 +714,10 @@ bool BeforePost(PPCContext& ctx, uint8_t* base) {
       using kuf::updates::Dialog;
       const Dialog dialog = *g_dialog_open;
       g_dialog_open.reset();
+      kuf::prompts::ClearAnswerLabels();
       const bool yes = answer == kUpdateYes;
       REXLOG_INFO("[kuf-title] update dialog {}: {}", int(dialog), yes ? "Yes" : "No");
+      UpdateBoxClose();
       if (yes && dialog == Dialog::kOffer) StartInstall();
       if (yes && dialog == Dialog::kCancelAsk) CancelInstall();
       if (yes && dialog == Dialog::kRestart) RestartGame();
@@ -523,6 +746,7 @@ bool BeforePost(PPCContext& ctx, uint8_t* base) {
 }
 
 void OnUiUpdate(PPCContext& ctx, uint8_t* base) {
+  UpdateBoxUiUpdate(ctx, base);  // the update offer's buttons placed, or hidden in other boxes
   // The storage question (posted by the game: its Yes selects the save device, which the title and the saves need):
   // answered in the UI update of the tick its box took the focus, before that tick is drawn, with the box hidden, so
   // it is never seen (M7 UI follow-up: answered at the next tick's start it was drawn for a tick).
@@ -697,4 +921,14 @@ REX_HOOK_RAW(sub_82669770) {  // the co-op gate (no arguments; returns 1 if co-o
     REXLOG_INFO("[kuf-title] co-op: not available in the PC port (the Xbox LIVE check and its message skipped)");
   }
   ctx.r3.u64 = 0;
+}
+
+namespace kuf::title_menu {
+bool ButtonEvent(PPCContext& ctx, uint8_t* base) { return UpdateBoxButtonEvent(ctx, base); }
+}  // namespace kuf::title_menu
+
+// The buttons' input handler (control, event): the update offer's buttons take theirs first (M10).
+REX_HOOK_RAW(sub_826259C8) {
+  if (kuf::title_menu::ButtonEvent(ctx, base)) return;
+  __imp__sub_826259C8(ctx, base);
 }

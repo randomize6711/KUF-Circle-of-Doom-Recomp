@@ -65,7 +65,7 @@ prepare)
       "$v" > "$DIR/notes-$v.txt"
     echo "== release $v (build, package, sign, manifest)"
     "$REPO/tools/package/make_release.sh" --version "$v" --key "$KEYDIR/kuf-cod-release" \
-      --signers "$DIR/key/allowed_signers" --notes "$DIR/notes-$v.txt" --min-installed "$OLD" --strip \
+      --signers "$DIR/key/allowed_signers" --summary "$DIR/notes-$v.txt" --notes "$DIR/notes-$v.txt" --min-installed "$OLD" --strip \
       --out "$DIR/built" > "$DIR/logs/release-$v.log" 2>&1 || { tail -20 "$DIR/logs/release-$v.log"; exit 1; }
     grep -E 'signature ok|AUDIT' "$DIR/logs/release-$v.log" || true
   done

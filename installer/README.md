@@ -14,9 +14,8 @@ installer/appimage/build_appimage.sh --skip-package   # reuse build/installer/pa
 
 Needs the game built first (`build/linux-amd64-relwithdebinfo`, see the main README), GTK 3 development files,
 `rsvg-convert`, `objdump`, `desktop-file-validate`, `curl` once. Downloads, each pinned and checked by SHA-256 and
-cached in `build/tools/`: appimagetool 1.9.1 (github.com/AppImage/appimagetool) and the X360 font by Redge
-(dafont.com/x360.font, labelled "100% Free" there; the archive has no licence file, its source is noted next to the
-font in the assets). Output in `build/installer/`; nothing is published.
+cached in `build/tools/`: appimagetool 1.9.1 (github.com/AppImage/appimagetool) and the Cinzel font (SIL Open Font
+License, from the Google Fonts repository, with its licence next to it in the assets). Output in `build/installer/`; nothing is published.
 
 The setup alone: `cmake -S installer -B build/installer -G Ninja && ninja -C build/installer`. During development it
 runs from the build tree with `build/installer/kuf-setup --assets build/installer/assets --payload <unpacked package>`.
@@ -34,7 +33,8 @@ runs from the build tree with `build/installer/kuf-setup --assets build/installe
 
 **Framework:** GTK 3 in C++ (GTK 3 is a build dependency of the project already and is present on every target
 desktop; no browser runtime). GTK and the other system libraries are not bundled: they come from the system, as
-GPU drivers and Vulkan do for the game. The AppImage contains the setup, its assets, and the game package (unpacked).
+GPU drivers and Vulkan do for the game. The AppImage contains the setup, its assets, and the package (unpacked): no code
+of the game, which is built during the installation (`src/core/localbuild.cpp`, docs/LOCAL_BUILD.md).
 
 **Installation layout** (the updater's, `tools/package/install.sh` / `tools/updater/kuf_update.py`): `versions/<v>`,
 `current -> versions/<v>`, `kuf-cod` (the stable launcher: sets `KUF_GAME_DIR` to `game/`, runs `current/kuf-cod.sh`),
@@ -64,9 +64,18 @@ atomically, verified by reading it back (the backup is restored if not), every o
 unknown value type makes it refuse the file and explain how to add the game by hand. The setup's entry has the tag
 `kuf-cod-recomp`: a reinstall updates it, the uninstaller removes only it.
 
-**System requirements:** the build records the newest glibc and GLIBCXX versions the game's binaries need
-(`payload/requires.txt`); the setup compares them with the running system and does not offer the installation when
-they are too old (the game would not start).
+**System check** (`src/core/system_check.cpp`, `src/core/util.cpp`; M11), before anything else: the libraries the
+game's binaries need (`payload/requires.txt`, the package's REQUIRES: glibc, and GLIBCXX unless the package carries a
+new enough libstdc++ of its own) against the running system; and the graphics driver: libvulkan.so.1 opened at run
+time (nothing linked), every device asked for exactly what the game's renderer requires (Vulkan 1.0;
+independentBlend, fragmentStoresAndAtomics, vertexPipelineStoresAndAtomics, geometryShader, fillModeNonSolid; a
+graphics + compute queue; VK_KHR_swapchain; an X11 or Wayland surface), in a child process so a crashing driver
+cannot take the setup down. Software renderers (llvmpipe) do not count. No GPU names or driver versions are
+checked. When something is missing the welcome page says what (in plain words, the missing feature named) and
+offers no installation. The welcome page names the system (SteamOS and the Steam Deck model by its board) and the
+graphics card. On SteamOS "Add to Steam" starts ticked when Steam has a profile (Game Mode starts only what is in
+the library). On a small screen (the Deck's 1280 x 800) the window is maximized; pages scroll when needed.
+`kuf-setup --check-system` prints the same check (exit 0: compatible).
 
 **Uninstalling:** from the menu entry "Uninstall Kingdom Under Fire: Circle of Doom", by running the setup again, or
 `share/setup/kuf-setup --uninstall <folder>`. Only folders with the setup's record; only the entries the setup creates
@@ -75,7 +84,7 @@ explicit confirmation. The original game files are never touched.
 
 ## Testing
 
-- `build/installer/kuf_setup_tests` (unit tests, 18 cases; run by the build): quoting, desktop entries validated,
+- `build/installer/kuf_setup_tests` (unit tests, 20 cases; run by the build): quoting, desktop entries validated,
   `user-dirs.dirs`, the game-file list and checks, verified copies, the record, system requirements; Steam on
   synthetic folders (round trip, other games kept, update not duplicate, removal and renumbering, Steam running,
   unknown formats left untouched, profiles); installing, repairing, uninstalling in disposable folders (failures leave
@@ -83,12 +92,19 @@ explicit confirmation. The original game files are never touched.
   desktop, menu, Steam and saves are never touched.
 - `build/installer/kuf_setup_e2e PAYLOAD ASSETS GAME ROOT` installs for real into a disposable folder (about 4 GB)
   and `--uninstall ROOT` removes it; run with `HOME` / `XDG_*` in a temporary folder.
+- `kuf-setup --walkthrough DIR` goes through the window's real flow by pressing its own buttons, including the installation,
+  without a person at the screen (`GDK_BACKEND=broadway`; `KUF_SETUP_SHOT_GAME`, `KUF_SETUP_WALK_ROOT`, optional
+  `KUF_SETUP_WALK_REFUSED` and `KUF_SETUP_WALK_CANCEL`; `HOME` / `XDG_*` in a temporary folder): pictures and a log in DIR.
 - `kuf-setup --screenshot DIR` draws each page into PNGs (`GDK_BACKEND=broadway` with `broadwayd :7`: no screen).
+  With `KUF_SETUP_SHOT_SIZE=1280x709 KUF_SETUP_SHOT_SCREEN=1280x756` (the Steam Deck's screen less the desktop's
+  panel and the header bar) it also writes `layout.txt`: per page whether the content fits the width and whether it
+  scrolls, and whether the visible window fits the screen (M11: all pages fit, none scrolls).
 
 ## Limitations
 
-- The game binaries need glibc 2.44 / GLIBCXX 3.4.36 (built on Arch Linux): today only rolling distributions run
-  them; Debian, Ubuntu, Fedora and SteamOS need a build made in an older build environment (docs/STEAM_DECK.md). The
-  setup itself needs glibc 2.38 and GTK 3; it refuses cleanly where the game cannot run.
-- Only the original game's base version is accepted (default.xex v1); the game files are copied (about 4 GB).
+- Releases are portable builds (docs/STEAM_DECK.md "Portable build"): the game needs glibc 2.31 or newer (it
+  carries its own libstdc++), the setup glibc 2.31 and GTK 3 (its libstdc++ linked in). The setup refuses cleanly
+  where the game cannot run.
+- Only the original game's base version is accepted (default.xex v1, unencrypted: docs/LOCAL_BUILD.md "Decryption keys");
+  the game files are copied (about 4 GB).
 - Menu artwork from the player's own game files is not used: the setup has its own artwork only.

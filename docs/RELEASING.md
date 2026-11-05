@@ -58,14 +58,18 @@ to reinstall with the setup (for example when the install layout or the release 
 3. Its manifest is downloaded (at most 64 KiB) and its signature verified against the install's `allowed_signers`
    **before it is parsed**. Then: schema 1, product, version = the tag's, platform = the install's, the package name =
    the release asset's, a sane size and a SHA-256.
-4. Newer than the installed version? Compatible (`min_installed`)? Only then is an update offered; the game shows the
-   manifest's (signed) date and notes, never the release page's text.
+4. Newer than the installed version? Compatible (`min_installed`)? Can this system run it (M11: the manifest's
+   `requires`, the package's REQUIRES: glibc not newer than this system's; libstdc++ GLIBCXX covered by this system's
+   or by the copy the package carries; a requirement this updater does not know is refused, the setup installs such
+   a release)? Only then is an update offered; the game shows the manifest's (signed) date and notes, never the
+   release page's text.
 5. After the player confirms: the package is downloaded into `<root>/.download-*` (progress reported; stopped as soon
    as it is larger than the manifest says; a connection that ends early is an error), then its size and SHA-256 must
    equal the manifest's, and its own signature must verify.
 6. Unpacking into `versions/.staging-*`: no absolute paths, `..`, links, devices, set-uid bits or second top folder;
    size and file-count limits; every file must match the package's `MANIFEST.sha256`; `VERSION` must be the
-   release's; `kuf-cod.sh`, `kuf_update.py` and `bin/kuf_cod` must be present and executable.
+   release's; `kuf-cod.sh` and `kuf_update.py` must be present and executable, and `bin/kuf_cod` once it is built locally; the unpacked package's
+   REQUIRES is checked against this system again (also for `install-package` without a manifest).
 7. The staging folder is renamed to `versions/X.Y.Z` and `current` switched by an atomic rename; `previous` records
    the version before; `.first-start` records the switch. Old versions beyond three are pruned.
 Nothing downloaded is ever executed before it passed all of this. Any failure leaves the installation exactly as it
@@ -94,7 +98,9 @@ external disk), and keep the passphrase in a password manager. Without the key n
 existing installs (they would have to reinstall with a new setup); if it leaks, anyone can publish an update that
 installs accept (then: a new key, a new setup, players reinstall).
 
-**Bootstrap** (installs made before the key existed, such as the player's): run the new setup AppImage over the
+**Bootstrap** (installs made before the key existed, such as the player's; tested on a copy of the player's own
+0.7.0-dev.169 installation with `tools/package/appimage_test.sh upgrade`: the new version current, the old one kept,
+the key added, update.conf, saves and settings unchanged, the updater online): run the new setup AppImage over the
 installation (Repair): it installs the program with the manifest-capable updater and, because none is there, the
 release key; the game files, saves and settings stay. From then on Check for Updates works.
 
@@ -128,6 +134,11 @@ checked with the updater's code; the package and the unpacked AppImage against a
 AppImage's package identical to the release package and both carrying the release public key; every byte scanned
 for private keys, tokens, game data (names and the XEX header), home-folder paths, the user name and the git e-mail
 address; SHA256SUMS. Built binaries carry no build-machine paths (`-fmacro-prefix-map`, both CMake projects).
+Portability (M11): releases are built with the portable preset (`linux-amd64-portable`, docs/STEAM_DECK.md
+"Portable build"); the audit reads every binary's ELF version needs and refuses any glibc import above the baseline
+(2.31), a package without its bundled libstdc++ or needing a newer GLIBCXX than it, REQUIRES or the manifest's
+`requires` that differ from what the binaries need, a setup that links libstdc++ or exceeds the baseline, and an
+AppImage whose requires.txt is not its package's REQUIRES.
 
 **Publishing** (each step only with the player's approval of that exact release):
 1. The source: `tools/publish_public.sh --public-dir <clone of the public repository> --rev <commit> --push`
@@ -137,6 +148,17 @@ address; SHA256SUMS. Built binaries carry no build-machine paths (`-fmacro-prefi
    anything); creates the release (stable: marked latest); downloads every asset again and compares it byte for
    byte; runs the updater's own check against GitHub with the release key.
 3. After publishing: `tools/package/set_version.sh 0.7.1` and commit (later development builds sort after 0.7.0).
+
+After publishing (also part of publish_release.sh): `tools/package/verify_github_release.sh vX.Y.Z <new folder>`
+downloads the release as players get it and runs the full audit on it. Release consistency, refused by the audit
+(and so by publish_release.sh): a public key other than the pinned production key; any version that differs between
+the tag, the package, its VERSION, the manifest, the AppImage's name, the AppImage's package and the version compiled
+into the program; development version strings in the binaries; a program not built from the commit in the release's
+SOURCE; an AppImage whose package differs from the update package in any file; a missing updater, an updater or
+installer pointing anywhere but GitHub's API and the official repository, or an update.conf in either; a stable
+release with a pre-release version (make_release.sh picks the channel from the version); SHA256SUMS listing more or
+less than the published assets; private keys, tokens, game data, personal paths; the portability rules above.
+`ctest -R tools.release_audit` tests each rule (19 cases).
 
 **Never** edit or replace the assets of a published release; publish a new version instead. There is deliberately no
 CI publishing: the private key stays offline with the player, and every release needs a person.
@@ -172,6 +194,10 @@ fails cleanly offline, the launcher passes the updater and restart file to the g
 restored, saves kept), uninstall (shortcuts gone, saves kept), the real installation unchanged. `install` / `launch` /
 `report`: an installation kept for the player's manual test from GitHub (launch shares the network).
 
+**Known in v0.7.0** (fixed for later releases, v0.7.0 itself is not changed): its SHA256SUMS also lists notes.txt,
+which is not a release asset (`sha256sum -c` reports it missing; every asset matches); its in-game notes contain the
+setup instructions (shown by 0.7.0's own dialog only).
+
 Automated tests: `ctest -R tools.updater_security` (40 cases: GitHub rate limits, outages and no network, signatures and namespaces, manifests, sizes and hashes,
 downgrades, compatibility, traversal, interrupted and cancelled downloads, the loopback server, the release tools,
 rollback, the launcher's restart and first-start recovery).
@@ -185,3 +211,10 @@ rollback, the launcher's restart and first-start recovery).
 - Recovery covers a version that fails to start; a version that starts but misbehaves later is rolled back by hand
   (`kuf-update rollback`).
 - The updater needs `python3` and `ssh-keygen` on the system (present on SteamOS and the supported distributions).
+
+## Local build (from v0.8.0-rc.2)
+
+A release carries no code of the game and no console keys (docs/LOCAL_BUILD.md). `make_release.sh` also needs the compiler
+(`tools/toolchain/build_local_compiler.sh`, once) and writes the two source archives, which are release assets. Pass
+`--image build/analysis/v1/image.bin` to `audit_release.py` when reviewing a release: its memory image is local, never
+published. Updaters older than this model refuse such a package ("no executable bin/kuf_cod"); the setup installs it.

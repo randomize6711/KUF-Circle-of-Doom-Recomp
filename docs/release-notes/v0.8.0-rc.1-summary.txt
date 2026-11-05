@@ -1,0 +1,1 @@
+Runs on the Steam Deck and on older Linux systems; the setup checks the graphics driver. Steam Deck first start: render scale 1x and VSync on. Your saves and settings are kept.

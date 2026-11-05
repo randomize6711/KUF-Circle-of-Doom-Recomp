@@ -93,7 +93,8 @@ add_executable(kuf_net_tests net/test_net.cpp net/test_lobby.cpp net/test_lobby_
                ${CMAKE_SOURCE_DIR}/src/input/text_entry.cpp
                ${CMAKE_SOURCE_DIR}/src/net/steam_backend.cpp)
 target_include_directories(kuf_net_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(kuf_net_tests PRIVATE Catch2::Catch2WithMain)
+find_package(Threads REQUIRED)  # std::thread: libpthread before glibc 2.34 (the portable build)
+target_link_libraries(kuf_net_tests PRIVATE Catch2::Catch2WithMain Threads::Threads)
 catch_discover_tests(kuf_net_tests TEST_PREFIX "net." DISCOVERY_MODE PRE_TEST PROPERTIES LABELS "net")
 
 add_executable(kuf_ui_tests ui/test_ui_layout.cpp ui/test_menu_pointer.cpp ui/test_update_status.cpp
@@ -154,6 +155,7 @@ catch_discover_tests(kuf_gpu_tests TEST_PREFIX "gpu." DISCOVERY_MODE PRE_TEST)
 # --- PC settings (M6B): pc_settings.toml parsing, validation, unknown keys, atomic write ------------------
 # (M7: the binding tables check key and button names with src/input/keyboard_pad.cpp and pad_remap.cpp.)
 add_executable(kuf_settings_tests settings/test_pc_settings.cpp ${CMAKE_SOURCE_DIR}/src/runtime/pc_settings.cpp
+    ${CMAKE_SOURCE_DIR}/src/runtime/platform_info.cpp
     ${CMAKE_SOURCE_DIR}/src/input/keyboard_pad.cpp ${CMAKE_SOURCE_DIR}/src/input/pad_remap.cpp)
 target_include_directories(kuf_settings_tests PRIVATE ${CMAKE_SOURCE_DIR}/src ${REXSDK_DIR}/include
     ${REXSDK_DIR}/thirdparty/tomlplusplus/include)
@@ -761,6 +763,10 @@ add_test(NAME tools.updater_security
          COMMAND ${CMAKE_COMMAND} -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY KUF_NO_DIALOG=1
                  ${Python3_EXECUTABLE} -I -B ${CMAKE_CURRENT_SOURCE_DIR}/updater/test_updater.py)
 set_tests_properties(tools.updater_security PROPERTIES LABELS "tools;updater" TIMEOUT 300)
+# Release consistency (tools/package/audit_release.py): one version, one commit, the production key, the updater.
+add_test(NAME tools.release_audit
+         COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_CURRENT_SOURCE_DIR}/updater/test_release_audit.py)
+set_tests_properties(tools.release_audit PROPERTIES LABELS "tools;updater" TIMEOUT 300)
 # The peak-memory guard (tools/peak_rss.py): a process holding 300 MB passes a 1,000 MB limit and fails a 100 MB one.
 add_test(NAME tools.peak_rss_under_limit
          COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/peak_rss.py --max-mb 1000 --

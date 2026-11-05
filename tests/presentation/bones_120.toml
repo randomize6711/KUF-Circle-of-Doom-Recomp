@@ -5,7 +5,9 @@
 [scenario]
 description = "M6D D4b: skeletal poses interpolated between ticks at 120 fps in the tutorial fight (alpha sweeps)"
 seconds = 360
-args = ["--kuf_frame_rate=120", "--kuf_trace_presentation=true", "--kuf_trace_presentation_bones=true", "--kuf_freeze_alpha_sweep=true", "--kuf_trace_game_state=true"]
+# The pose trace writes a line per model per presented frame: at M13's frame rates the default 2 x 64 MB of rotated
+# logs dropped the route's first script lines before the check counted them (95/157 applied).
+args = ["--kuf_frame_rate=120", "--kuf_trace_presentation=true", "--kuf_trace_presentation_bones=true", "--kuf_freeze_alpha_sweep=true", "--kuf_trace_game_state=true", "--log_max_files=8"]
 capture_frames = []
 log_expect = ["[kuf-input] context: gameplay", "freeze fight_a: game held", "freeze fight_b: game held"]
 script = """

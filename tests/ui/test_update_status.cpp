@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <utility>
 
 #include "runtime/update_status.h"
 
@@ -19,6 +20,10 @@ TEST_CASE("updater lines: a check result with escaped notes", "[updates]") {
   CHECK(r->latest == "0.8.0");
   CHECK(r->published == "2026-11-02");
   CHECK(r->notes == "Fixes:\n- \"menus\"\xC3\xA9");
+  const auto m = ParseLine(R"({"latest": "0.7.1", "summary": "Short.", "notes": "Long.", "page": "https://x", "exit": 0})");
+  REQUIRE(m);
+  CHECK(m->summary == "Short.");
+  CHECK(m->page == "https://x");
 }
 
 TEST_CASE("updater lines: progress, stage, up to date with null, errors; garbage refused", "[updates]") {
@@ -44,25 +49,77 @@ TEST_CASE("updater lines: progress, stage, up to date with null, errors; garbage
   CHECK_FALSE(ParseLine(R"({"notes": "unterminated)"));
 }
 
-TEST_CASE("dialog texts: versions, date, notes made safe for the game's box", "[updates]") {
+TEST_CASE("offer: only the versions and the question; never notes, dates, URLs or setup text", "[updates]") {
+  Reply r;
+  r.current = "0.7.0-rc.1";
+  r.latest = "0.7.0";
+  r.published = "2026-11-02";
+  r.notes = "Install: download the Setup AppImage and run it.";
+  r.summary = "Faster rendering.";
+  r.page = "https://github.com/randomize6711/KUF-Circle-of-Doom-Recomp/releases/tag/v0.7.0";
+  const std::string t = DialogText(Dialog::kOffer, r, "0.7.0-dev");
+  CHECK(t.rfind("UPDATE AVAILABLE\\n\\nInstalled Version: 0.7.0-rc.1\\nNew Version: 0.7.0\\n\\n"
+                "Download and install the update now?", 0) == 0);
+  for (const char* never : {"AppImage", "Install:", "Faster", "2026", "github", "http", "sha", "..."}) {
+    CHECK(t.find(never) == std::string::npos);
+  }
+  // Room for the two button rows below the question.
+  size_t lines = 0;
+  for (size_t at = t.find("now?"); (at = t.find("\\n", at)) != std::string::npos; at += 2) ++lines;
+  CHECK(lines == size_t(kOfferButtonLines));
+  CHECK(t.find("@(") == std::string::npos);  // the answers are buttons and the box's own line
+  // Versions from the updater; the build's own version when it did not say. Markup characters dropped.
+  Reply v;
+  v.latest = "1.0.0-rc.1@x\\y";
+  const std::string u = DialogText(Dialog::kOffer, v, "0.7.0-dev.12+gabc");
+  CHECK(u.find("Installed Version: 0.7.0-dev.12+gabc\\nNew Version: 1.0.0-rc.1xy") != std::string::npos);
+  CHECK(u.size() < 1023);  // the box's text buffer
+}
+
+TEST_CASE("other update boxes: concise, no notes", "[updates]") {
   Reply r;
   r.current = "0.7.0";
-  r.latest = "0.8.0";
-  r.published = "2026-11-02";
-  r.notes = "Line one\nmail@host \\ path\n" + std::string(400, 'x');
-  const std::string t = DialogText(Dialog::kOffer, r, "0.7.0-dev");
-  CHECK(t.find("Installed: 0.7.0\\nAvailable: 0.8.0 (released 2026-11-02)") != std::string::npos);
-  CHECK(t.find("Line one\\nmailhost  path") != std::string::npos);  // '@' and '\' removed, new lines as "\n"
-  CHECK(t.find("...") != std::string::npos);                         // shortened
-  CHECK(t.find("@(A)Install  @(B)Close") != std::string::npos);
-  // The installed version from the build when the updater did not report one.
-  CHECK(DialogText(Dialog::kNotSetUp, Reply{}, "0.7.0-dev.5").find("Installed: 0.7.0-dev.5") != std::string::npos);
-  Reply f;
-  f.error = "refused: signature not valid";
-  CHECK(DialogText(Dialog::kFailed, f, "0.7.0").find("refused: signature not valid") != std::string::npos);
-  // A note ending in a broken escape is never left as half of the box's "\n".
-  Reply n;
-  n.notes = std::string(299, 'y') + "\nz";
-  const std::string cut = DialogText(Dialog::kOffer, n, "0.7.0");
-  CHECK(cut.find("y\\...") == std::string::npos);
+  r.latest = "0.7.1";
+  r.notes = "Install: download the Setup AppImage.";
+  r.error = "could not reach api.github.com (no network connection?)";
+  CHECK(DialogText(Dialog::kUpToDate, r, "x").rfind("NO UPDATE AVAILABLE\\n\\nInstalled Version: 0.7.0", 0) == 0);
+  CHECK(DialogText(Dialog::kFailed, r, "x").find("could not reach api.github.com") != std::string::npos);
+  CHECK(DialogText(Dialog::kFailed, r, "x").rfind("UPDATE FAILED", 0) == 0);
+  CHECK(DialogText(Dialog::kRestart, r, "x").rfind("RESTART REQUIRED\\n\\nVersion 0.7.1 is installed", 0) == 0);
+  CHECK(DialogText(Dialog::kNotSetUp, Reply{}, "0.7.0-dev.5").find("Installed Version: 0.7.0-dev.5") !=
+        std::string::npos);
+  for (Dialog d : {Dialog::kUpToDate, Dialog::kFailed, Dialog::kNotSetUp, Dialog::kCancelAsk, Dialog::kCancelled,
+                   Dialog::kRestart, Dialog::kInstalledNoRestart}) {
+    CHECK(DialogText(d, r, "x").find("AppImage") == std::string::npos);
+  }
+}
+
+TEST_CASE("Open GitHub Page: only the official repository's release page, else its releases", "[updates]") {
+  const std::string releases = kReleasesPage;
+  CHECK(ReleasePage(releases + "/tag/v0.7.0") == releases + "/tag/v0.7.0");
+  CHECK(ReleasePage(releases + "/tag/v1.2.3-rc.4") == releases + "/tag/v1.2.3-rc.4");
+  for (const char* bad : {"", "https://github.com/other/repo/releases/tag/v0.7.0", "http://github.com/randomize6711/"
+                          "KUF-Circle-of-Doom-Recomp/releases/tag/v0.7.0",
+                          "https://github.com/randomize6711/KUF-Circle-of-Doom-Recomp/releases/tag/v0.7.0/../../x",
+                          "https://github.com/randomize6711/KUF-Circle-of-Doom-Recomp/releases/tag/v0.7.0?x=1",
+                          "https://github.com/randomize6711/KUF-Circle-of-Doom-Recomp/releases/tag/v0.7.0 --x",
+                          "https://github.com/randomize6711/KUF-Circle-of-Doom-Recomp/releases/tag/vx",
+                          "https://evil.example/randomize6711/KUF-Circle-of-Doom-Recomp/releases/tag/v0.7.0",
+                          "https://github.com.evil.example/randomize6711/KUF-Circle-of-Doom-Recomp/releases"}) {
+    CHECK(ReleasePage(bad) == releases);
+  }
+}
+
+TEST_CASE("answers: the box's own line names the actions", "[updates]") {
+  CHECK(AnswerLabels(Dialog::kOffer) == std::pair<std::string, std::string>{"Select", "Cancel"});
+  CHECK(AnswerLabels(Dialog::kRestart).first == "Restart Now");
+  CHECK(AnswerLabels(Dialog::kFailed) == std::pair<std::string, std::string>{"OK", "Close"});
+  // The game's help line (as traced: @(align=1)@(A) Yes @(B) No).
+  CHECK(RelabelAnswers("@(align=1)@(A) Yes @(B) No", "Install Update", "Cancel") ==
+        "@(align=1)@(A) Install Update @(B) Cancel");
+  CHECK(RelabelAnswers("@(A)Yes  @(B)No", "OK", "Close") == "@(A)OK  @(B)Close");
+  // Other texts unchanged: no Yes / No answer pair, or words that only start with them.
+  CHECK(RelabelAnswers("@(align=1)@(A) Confirm", "Install Update", "Cancel") == "@(align=1)@(A) Confirm");
+  CHECK(RelabelAnswers("@(A) Yesterday @(B) Nothing", "x", "y") == "@(A) Yesterday @(B) Nothing");
+  CHECK(RelabelAnswers("@(B) Back", "x", "y") == "@(B) Back");
 }

@@ -42,7 +42,7 @@ fs::path DefaultRoot();
 enum class Target { kNew, kExisting, kNotEmpty, kNotWritable, kInvalid };
 Target CheckTarget(const fs::path& root);
 
-enum Stage { kValidate, kPrepare, kRuntime, kGameData, kShortcuts, kFinalize, kStageCount };
+enum Stage { kValidate, kPrepare, kRuntime, kGameData, kGenerate, kCompile, kLink, kShortcuts, kFinalize, kStageCount };
 const char* StageName(Stage s);
 
 struct Plan {
@@ -54,6 +54,7 @@ struct Plan {
   fs::path setup_assets;
   fs::path icon;             // a PNG
   fs::path signers;          // the release key for updates (optional)
+  int build_jobs = 0;        // the local build's parallel jobs (0: from this machine)
   bool menu = true;
   bool desktop = false;
   std::optional<steam::Profile> steam_profile;
@@ -70,7 +71,7 @@ using ProgressFn = std::function<void(Stage, double fraction, const std::string&
 // Installs or repairs (an existing installation of this setup at plan.root). `cancel` is polled while copying.
 Result Install(const Plan& plan, const ProgressFn& progress, const std::atomic<bool>& cancel);
 
-// Space needed (the package, the game data, 64 MB to spare).
+// Space needed (the package, the game data, the local build, 64 MB to spare).
 uint64_t SpaceNeeded(const Plan& plan);
 
 struct RemoveOptions {

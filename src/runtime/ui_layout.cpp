@@ -341,6 +341,74 @@ std::optional<std::vector<uint8_t>> AddTextClone(std::span<const uint8_t> data, 
   return Serialize(*layout);
 }
 
+std::optional<std::vector<uint8_t>> AddButtonClones(std::span<const uint8_t> data, uint32_t scene_id, uint32_t source,
+                                                    const std::vector<ButtonClone>& clones, std::string* error) {
+  std::optional<Layout> layout = Parse(data, error);
+  if (!layout) {
+    return std::nullopt;
+  }
+  auto scene = std::find_if(layout->scenes.begin(), layout->scenes.end(),
+                            [&](const Scene& s) { return s.id() == scene_id; });
+  if (scene == layout->scenes.end()) {
+    *error = "no such scene";
+    return std::nullopt;
+  }
+  long button = -1;
+  for (size_t i = 0; i < scene->controls.size(); ++i) {
+    for (const ButtonClone& c : clones) {
+      if (scene->controls[i].id == c.id) {
+        *error = "a new button ID is taken";
+        return std::nullopt;
+      }
+    }
+    if (scene->controls[i].id == source) button = long(i);
+  }
+  if (button < 0 || scene->controls[size_t(button)].type != 1 || scene->controls[size_t(button)].bytes.size() != 136) {
+    *error = "the source button is not as expected";
+    return std::nullopt;
+  }
+  const ControlRecord src = scene->controls[size_t(button)];
+  const Placement src_at = scene->placements[size_t(button)];
+  // The images the source button owns (referenced from its state image slots, owner field = the source).
+  std::vector<size_t> owned;
+  for (size_t at = 100; at <= 132; at += 4) {
+    const uint32_t ref = Get32(src.bytes, at);
+    for (size_t i = 0; i < scene->controls.size(); ++i) {
+      const ControlRecord& c = scene->controls[i];
+      if (ref && c.id == ref && c.type == 5 && c.bytes.size() >= 380 && Get32(c.bytes, 376) == source &&
+          std::find(owned.begin(), owned.end(), i) == owned.end()) {
+        owned.push_back(i);
+      }
+    }
+  }
+  std::vector<ControlRecord> recs;
+  std::vector<Placement> places;
+  for (const ButtonClone& c : clones) {
+    ControlRecord b = src;
+    b.id = c.id;
+    Put32(b.bytes, 4, c.id);
+    for (size_t k = 0; k < owned.size(); ++k) {
+      const ControlRecord& image = scene->controls[owned[k]];
+      const uint32_t image_id = c.id + 0x4000 + uint32_t(k);
+      for (size_t at = 100; at <= 132; at += 4) {
+        if (Get32(b.bytes, at) == image.id) Put32(b.bytes, at, image_id);
+      }
+      ControlRecord im = image;
+      im.id = image_id;
+      Put32(im.bytes, 4, image_id);
+      Put32(im.bytes, 376, c.id);
+      const Placement image_at = scene->placements[owned[k]];
+      recs.push_back(std::move(im));
+      places.push_back({image_id, c.x + (image_at.x - src_at.x), c.y + (image_at.y - src_at.y)});
+    }
+    recs.push_back(std::move(b));
+    places.push_back({c.id, c.x, c.y});
+  }
+  scene->controls.insert(scene->controls.begin() + button + 1, recs.begin(), recs.end());
+  scene->placements.insert(scene->placements.begin() + button + 1, places.begin(), places.end());
+  return Serialize(*layout);
+}
+
 std::optional<std::vector<uint8_t>> AddImageClones(std::span<const uint8_t> data, uint32_t scene_id,
                                                    const std::vector<ImageClone>& clones, uint32_t before,
                                                    std::string* error) {

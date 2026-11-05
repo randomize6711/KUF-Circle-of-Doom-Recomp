@@ -1,0 +1,190 @@
+KUF port M14: pipelines met during play are created without driver optimisation first
+(VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT), and an optimised replacement is built in the background. A draw that
+needs a new pipeline waits for its creation at the end of the submission; with a cold pipeline cache this is the
+longest stall in play (RADV, 2560x1440: median creation 27.7 -> 18.4 ms, 90th percentile 67 -> 38 ms; 0.1% low
+18.2 -> 25.2 fps, longest frame 77 -> 60 ms). Replacements are built one at a time, only when no other creation is
+queued, never on creation thread 0, and nothing waits for them; on failure the unoptimised pipeline stays. Only
+with more than one creation thread. --vulkan_pipeline_fast_first_compile=false restores the old behaviour.
+diff --git a/include/rex/graphics/vulkan/pipeline_cache.h b/include/rex/graphics/vulkan/pipeline_cache.h
+--- a/include/rex/graphics/vulkan/pipeline_cache.h
++++ b/include/rex/graphics/vulkan/pipeline_cache.h
+@@ -238,13 +238,16 @@
+     // destroyed by it while the pipeline cache is active.
+     std::atomic<const PipelineLayoutProvider*> pipeline_layout{nullptr};
+     std::atomic<bool> is_placeholder{false};
++    // SDK patch 0018: created without driver optimisation; an optimised replacement is queued in the background.
++    std::atomic<bool> is_unoptimized{false};
+     Pipeline() = default;
+     Pipeline(const PipelineLayoutProvider* pipeline_layout_provider)
+         : pipeline_layout(pipeline_layout_provider) {}
+     Pipeline(const Pipeline& other)
+         : pipeline(other.pipeline.load(std::memory_order_acquire)),
+           pipeline_layout(other.pipeline_layout.load(std::memory_order_acquire)),
+-          is_placeholder(other.is_placeholder.load(std::memory_order_acquire)) {}
++          is_placeholder(other.is_placeholder.load(std::memory_order_acquire)),
++          is_unoptimized(other.is_unoptimized.load(std::memory_order_acquire)) {}
+     Pipeline& operator=(const Pipeline& other) {
+       if (this == &other) {
+         return *this;
+@@ -254,6 +257,8 @@
+                             std::memory_order_release);
+       is_placeholder.store(other.is_placeholder.load(std::memory_order_acquire),
+                            std::memory_order_release);
++      is_unoptimized.store(other.is_unoptimized.load(std::memory_order_acquire),
++                           std::memory_order_release);
+       return *this;
+     }
+   };
+@@ -274,6 +279,8 @@
+     VkShaderModule geometry_shader = VK_NULL_HANDLE;
+     // VK_NULL_HANDLE when dynamic rendering is used.
+     VkRenderPass render_pass = VK_NULL_HANDLE;
++    // SDK patch 0018: create without driver optimisation (fast), then queue the optimised replacement.
++    bool unoptimized = false;
+   };
+   struct PipelineCreationArgumentsPriorityComparator {
+     bool operator()(const PipelineCreationArguments& a, const PipelineCreationArguments& b) const {
+@@ -463,6 +470,10 @@
+                       PipelineCreationArgumentsPriorityComparator>
+       creation_queue_;
+   size_t creation_threads_busy_ = 0;
++  // SDK patch 0018: optimised replacements of pipelines created without optimisation. Built by one creation thread
++  // at a time when no other creation is queued; nothing waits for them.
++  std::deque<PipelineCreationArguments> optimization_queue_;
++  size_t optimization_threads_busy_ = 0;
+   bool startup_loading_ = false;
+   std::unique_ptr<rex::thread::Event> creation_completion_event_;
+   bool creation_completion_set_event_ = false;
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -55,6 +55,9 @@
+     .range(-1, 32)
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
++REXCVAR_DEFINE_BOOL(vulkan_pipeline_fast_first_compile, true, "GPU/Vulkan",
++                    "Create pipelines met during play without driver optimisation first (shorter first-use "
++                    "stalls), then replace them with optimised ones in the background (SDK patch 0018)");
+ REXCVAR_DEFINE_BOOL(vulkan_tessellation_wireframe, false, "GPU/Vulkan",
+                     "Render tessellation as wireframe")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+@@ -809,6 +812,8 @@
+     while (!creation_queue_.empty()) {
+       creation_queue_.pop();
+     }
++    optimization_queue_.clear();
++    optimization_threads_busy_ = 0;
+     creation_threads_busy_ = 0;
+     startup_loading_ = false;
+     creation_completion_set_event_ = false;
+@@ -1155,6 +1160,10 @@
+     pipelines_.erase(description);
+     return false;
+   }
++  // SDK patch 0018: a pipeline met during play is first created without driver optimisation, when a second
++  // creation thread can build the optimised replacement (creation thread 0 never takes those).
++  creation_arguments_real.unoptimized =
++      REXCVAR_GET(vulkan_pipeline_fast_first_compile) && creation_threads_.size() > 1;
+ 
+   bool queued_async_creation = false;
+   if (use_async) {
+@@ -3013,8 +3022,12 @@
+   bool is_placeholder =
+       creation_arguments.pipeline->second.is_placeholder.load(std::memory_order_acquire);
+   bool creating_placeholder = fragment_shader_override != VK_NULL_HANDLE;
++  // SDK patch 0018: an optimised replacement of a pipeline created without optimisation is created again.
++  bool replacing_unoptimized =
++      !creating_placeholder && !creation_arguments.unoptimized &&
++      creation_arguments.pipeline->second.is_unoptimized.load(std::memory_order_acquire);
+   if (existing_pipeline != VK_NULL_HANDLE) {
+-    if (!is_placeholder || creating_placeholder) {
++    if ((!is_placeholder && !replacing_unoptimized) || creating_placeholder) {
+       return true;
+     }
+   }
+@@ -3480,6 +3493,9 @@
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+   const VkDevice device = vulkan_device->device();
+   VkPipeline pipeline;
++  if (!creating_placeholder && creation_arguments.unoptimized) {
++    pipeline_create_info.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
++  }
+   VkResult create_result = dfn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+                                                          &pipeline_create_info, nullptr, &pipeline);
+   if (create_result != VK_SUCCESS) {
+@@ -3499,6 +3515,8 @@
+   }
+   bool was_placeholder =
+       creation_arguments.pipeline->second.is_placeholder.load(std::memory_order_acquire);
++  bool was_unoptimized =
++      creation_arguments.pipeline->second.is_unoptimized.load(std::memory_order_acquire);
+   VkPipeline old_pipeline =
+       creation_arguments.pipeline->second.pipeline.exchange(pipeline, std::memory_order_acq_rel);
+   creation_arguments.pipeline->second.pipeline_layout.store(creation_arguments.pipeline_layout,
+@@ -3506,8 +3524,19 @@
+   if (creating_placeholder) {
+     creation_arguments.pipeline->second.is_placeholder.store(true, std::memory_order_release);
+   } else {
++    creation_arguments.pipeline->second.is_unoptimized.store(creation_arguments.unoptimized,
++                                                             std::memory_order_release);
+     creation_arguments.pipeline->second.is_placeholder.store(false, std::memory_order_release);
+-    if (was_placeholder && old_pipeline != VK_NULL_HANDLE) {
++    if (creation_arguments.unoptimized) {
++      PipelineCreationArguments optimization_arguments = creation_arguments;
++      optimization_arguments.unoptimized = false;
++      {
++        std::lock_guard<std::mutex> lock(creation_request_lock_);
++        optimization_queue_.push_back(optimization_arguments);
++      }
++      creation_request_cond_.notify_all();
++    }
++    if ((was_placeholder || was_unoptimized) && old_pipeline != VK_NULL_HANDLE) {
+       std::lock_guard<std::mutex> lock(deferred_destroy_lock_);
+       deferred_destroy_pipelines_.emplace_back(command_processor_.GetCurrentSubmission(),
+                                                old_pipeline);
+@@ -3520,6 +3549,7 @@
+ void VulkanPipelineCache::CreationThread(size_t thread_index) {
+   while (true) {
+     PipelineCreationArguments creation_arguments;
++    bool optimizing = false;
+     {
+       std::unique_lock<std::mutex> lock(creation_request_lock_);
+       if (thread_index >= creation_threads_shutdown_from_ || creation_queue_.empty()) {
+@@ -3530,12 +3560,32 @@
+         if (thread_index >= creation_threads_shutdown_from_) {
+           return;
+         }
+-        creation_request_cond_.wait(lock);
+-        continue;
++        // SDK patch 0018: optimised replacements, one at a time, only when nothing else is waiting, never on
++        // creation thread 0 (always free for pipelines a draw waits for).
++        if (!thread_index || optimization_queue_.empty() || optimization_threads_busy_ || startup_loading_) {
++          creation_request_cond_.wait(lock);
++          continue;
++        }
++        creation_arguments = optimization_queue_.front();
++        optimization_queue_.pop_front();
++        ++optimization_threads_busy_;
++        optimizing = true;
++      } else {
++        creation_arguments = creation_queue_.top();
++        creation_queue_.pop();
++        ++creation_threads_busy_;
+       }
+-      creation_arguments = creation_queue_.top();
+-      creation_queue_.pop();
+-      ++creation_threads_busy_;
++    }
++
++    if (optimizing) {
++      // On failure the pipeline created without optimisation stays.
++      EnsurePipelineCreated(creation_arguments);
++      {
++        std::lock_guard<std::mutex> lock(creation_request_lock_);
++        --optimization_threads_busy_;
++      }
++      creation_request_cond_.notify_all();
++      continue;
+     }
+ 
+     bool created = EnsurePipelineCreated(creation_arguments);

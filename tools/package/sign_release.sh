@@ -17,5 +17,6 @@ MANIFEST="${PKG%.tar.gz}.update.json"
 echo "signing $(basename "$PKG") and $(basename "$MANIFEST") (the key's passphrase is asked for each)"
 "$ROOT/tools/package/sign_package.sh" --key "$KEY" "$PKG" >/dev/null
 "$ROOT/tools/package/sign_package.sh" --key "$KEY" --manifest "$MANIFEST" >/dev/null
-(cd "$DEST" && sha256sum -- $(ls | grep -v -e '^SHA256SUMS$' -e '^audit.txt$' -e '^publish.txt$') > SHA256SUMS)
+# SHA256SUMS lists exactly the assets that are published (not the notes or the working files).
+(cd "$DEST" && sha256sum -- $(ls | grep -E '^(KingdomUnderFire-CircleOfDoom-Setup-.*\.AppImage|kuf-cod-recomp-.*\.(tar\.gz|update\.json)(\.sig)?|kuf-cod-recomp-.*-source\.tar\.xz|kuf-cod-recomp-.*-toolchain-sources\.tar)$') > SHA256SUMS)
 python3 -I "$ROOT/tools/package/audit_release.py" "$DEST" --report "$DEST/audit.txt" | tail -3

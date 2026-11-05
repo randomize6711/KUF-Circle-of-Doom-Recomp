@@ -19,7 +19,8 @@ The player's saves, settings and logs are elsewhere (the launcher's data directo
 
 A release (docs/RELEASING.md) has three signed assets: the package <prefix>-<v>-<platform>.tar.gz and its .sig, and
 the update manifest <prefix>-<v>-<platform>.update.json and its .sig (version, platform, the package's name, size and
-SHA-256, notes, the oldest installed version it can update).
+SHA-256, the in-game summary and notes, the oldest installed version it can update). Only the package is ever
+downloaded and installed: the setup AppImage of a release is for first installations and repairs.
 
 Security (docs/STEAM_DECK.md "Updates"):
   - releases only from the repository in update.conf, over HTTPS with certificate verification; redirects only to
@@ -31,6 +32,9 @@ Security (docs/STEAM_DECK.md "Updates"):
     before it is opened; the package's own VERSION must equal the release's, and every file must match the
     package's MANIFEST.sha256;
   - no downgrade or reinstall of the running version unless asked (--allow-downgrade);
+  - never an update this system cannot run: the signed manifest's `requires` (the package's REQUIRES: the newest
+    glibc and libstdc++ its binaries need, the libstdc++ it carries) is compared with this system before the
+    download, and the unpacked package's REQUIRES again before the switch (M11; unknown requirements are refused);
   - extraction refuses absolute paths, "..", links, devices and anything outside the package's one top directory,
     and limits sizes; it unpacks into a staging directory renamed into place; the switch is an atomic rename;
   - one updater at a time (a lock file).
@@ -73,6 +77,9 @@ MAX_JSON = 8 << 20
 MAX_MANIFEST = 64 << 10
 MAX_SIGNATURE = 16 << 10
 FIRST_START = ".first-start"
+REQUIREMENT_KEYS = ("glibc", "glibcxx", "glibcxx_bundled")
+LIBSTDCXX_PATHS = ("/usr/lib/x86_64-linux-gnu/libstdc++.so.6", "/lib/x86_64-linux-gnu/libstdc++.so.6",
+                   "/usr/lib64/libstdc++.so.6", "/usr/lib/libstdc++.so.6")
 KEEP_VERSIONS = 3
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -440,22 +447,94 @@ def read_manifest(install, source, best, tmp):
         problems.append(f"package size {size!r}")
     if not (isinstance(pkg.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", pkg["sha256"])):
         problems.append("package sha256")
+    if "summary" in m and not (isinstance(m["summary"], str) and len(m["summary"]) <= MAX_NOTES):
+        problems.append("summary (text, at most 2,000 characters)")
     if "min_installed" in m:
         try:
             parse_version(str(m["min_installed"]))
         except Refused:
             problems.append(f"min_installed {m['min_installed']!r}")
+    if "requires" in m:
+        req = m["requires"]
+        if not (isinstance(req, dict) and all(isinstance(v, str) and re.fullmatch(r"\d+(\.\d+)+", v)
+                                              for v in req.values())):
+            problems.append("requires")
+        elif set(req) - set(REQUIREMENT_KEYS):  # needs something this updater cannot check: the setup can
+            raise Refused(f"{version} needs {', '.join(sorted(set(req) - set(REQUIREMENT_KEYS)))}, which this "
+                          "updater cannot check: install it with the setup instead")
     if problems:
         raise Refused(f"update manifest of {version}: " + "; ".join(problems))
     return m
 
 
 def check_compatible(manifest, current):
-    """An update that needs a newer installed version than this one (a reinstall with the setup) is refused."""
+    """An update that needs a newer installed version than this one (a reinstall with the setup) is refused, and one
+    this system cannot run."""
     need = manifest.get("min_installed")
     if need and current and _sort_key(current) < (0, parse_version(str(need))):
         raise Refused(f"{manifest['version']} cannot update {current} (it needs {need} or later installed): "
                       "install it with the setup instead")
+    check_system(manifest.get("requires") or {}, manifest["version"])
+
+
+def _numeric(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def system_glibc():
+    """This system's C library version ("2.41"), or "" if unknown."""
+    try:
+        name = os.confstr("CS_GNU_LIBC_VERSION") or ""
+    except (ValueError, OSError):
+        name = ""
+    m = re.fullmatch(r"glibc (\d+(?:\.\d+)+)", name)
+    return m.group(1) if m else ""
+
+
+def system_glibcxx():
+    """The newest GLIBCXX_3.4.N this system's libstdc++ defines ("3.4.33"), or "" if none is found."""
+    for path in LIBSTDCXX_PATHS:
+        try:
+            data = open(path, "rb").read()
+        except OSError:
+            continue
+        found = re.findall(rb"GLIBCXX_(3\.4\.\d+)\0", data)
+        if found:
+            return max((f.decode() for f in found), key=_numeric)
+    return ""
+
+
+def check_system(requires, version, glibc=None, glibcxx=None):
+    """Refuses a version whose binaries need a newer glibc than this system's, or a newer libstdc++ than both this
+    system's and the one the package carries (`requires`: the package's REQUIRES)."""
+    glibc = system_glibc() if glibc is None else glibc
+    need = requires.get("glibc")
+    if need and glibc and _numeric(glibc) < _numeric(need):
+        raise Refused(f"{version} needs a newer system: glibc {need} or newer (this system has {glibc}); "
+                      "updating your operating system first is needed")
+    need = requires.get("glibcxx")
+    bundled = requires.get("glibcxx_bundled")
+    if need and not (bundled and _numeric(bundled) >= _numeric(need)):
+        glibcxx = system_glibcxx() if glibcxx is None else glibcxx
+        if not glibcxx or _numeric(glibcxx) < _numeric(need):
+            raise Refused(f"{version} needs a newer C++ library: libstdc++ GLIBCXX {need} (this system has "
+                          f"{glibcxx or 'none'}); updating your operating system first is needed")
+
+
+def read_requires(dir_):
+    """An unpacked package's REQUIRES ({} for packages before 0.8): its lines "glibc 2.31", "glibcxx-bundled ..."."""
+    try:
+        text = open(os.path.join(dir_, "REQUIRES"), encoding="utf-8").read()
+    except OSError:
+        return {}
+    out = {}
+    for line in text.splitlines():
+        key, _, value = line.partition(" ")
+        key = key.replace("-", "_")
+        if key not in REQUIREMENT_KEYS or not re.fullmatch(r"\d+(\.\d+)+", value):
+            raise Refused(f"package REQUIRES line {line!r}")
+        out[key] = value
+    return out
 
 
 def verify_download(path, manifest):
@@ -514,6 +593,12 @@ def safe_extract(package, staging):
     return top
 
 
+# A package with builder/ carries no game program: bin/kuf_cod is made on this machine (docs/LOCAL_BUILD.md), so it is
+# not in the package's manifest.
+LOCAL_PROGRAM = os.path.join("bin", "kuf_cod")
+BUILDER = os.path.join("builder", "kuf-localbuild")
+
+
 def verify_manifest(dir_, version):
     vfile = os.path.join(dir_, "VERSION")
     if _read(vfile) != version:
@@ -532,6 +617,9 @@ def verify_manifest(dir_, version):
             rel = os.path.relpath(os.path.join(base, f), dir_)
             if rel != "MANIFEST.sha256":
                 found.add(rel)
+    if BUILDER in listed:
+        found.discard(LOCAL_PROGRAM)
+        found = {f for f in found if not f.startswith("bin/kuf_cod.")}  # an interrupted link's temporary file
     if found != set(listed):
         raise Refused(f"package files differ from its manifest: extra {sorted(found - set(listed))[:3]}, "
                       f"missing {sorted(set(listed) - found)[:3]}")
@@ -542,6 +630,36 @@ def verify_manifest(dir_, version):
                 h.update(chunk)
         if h.hexdigest() != digest:
             raise Refused(f"package file {rel} does not match its manifest")
+
+
+def game_executable(install):
+    """The default.xex the local build reads: the installation's game folder, else the launcher's remembered one."""
+    candidates = [os.path.join(install.root, "game", "default.xex")]
+    conf = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                        "kuf-cod-recomp", "launcher.conf")
+    try:
+        for line in open(conf):
+            if line.startswith("GAME_DIR="):
+                candidates.append(os.path.join(line[len("GAME_DIR="):].rstrip("\n"), "default.xex"))
+    except OSError:
+        pass
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    raise Refused("the game's default.xex was not found; run the setup again to choose your game files")
+
+
+def build_program(install, unpacked):
+    """Makes the package's bin/kuf_cod with its own builder; objects in <root>/build-cache are reused when the
+    generated code has not changed. Refuses when it fails: the staged version is then dropped, nothing has changed."""
+    builder = os.path.join(unpacked, BUILDER)
+    print("preparing the game for this version (this can take several minutes when its code changed)", file=sys.stderr)
+    r = subprocess.run([builder, "--package", unpacked, "--xex", game_executable(install),
+                        "--cache", os.path.join(install.root, "build-cache"),
+                        "--output", os.path.join(unpacked, LOCAL_PROGRAM)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if r.returncode != 0:
+        raise Refused(f"the game could not be prepared for this version: {r.stderr.strip()[-400:]}")
 
 
 def install_package(install, package, signature, version, allow_downgrade):
@@ -557,6 +675,9 @@ def install_package(install, package, signature, version, allow_downgrade):
         top = safe_extract(package, staging)
         unpacked = os.path.join(staging, top)
         verify_manifest(unpacked, version)
+        check_system(read_requires(unpacked), version)  # also for packages installed without a release manifest
+        if os.path.isfile(os.path.join(unpacked, BUILDER)):
+            build_program(install, unpacked)
         for need in ("kuf-cod.sh", "kuf_update.py", "bin/kuf_cod"):  # what the launcher and the next update run
             p = os.path.join(unpacked, need)
             if not (os.path.isfile(p) and os.access(p, os.X_OK)):
@@ -667,8 +788,12 @@ def _run(args, report):
                 check_compatible(manifest, current)
             if args.cmd == "check" or not newer:
                 notes = release_notes({"body": manifest.get("notes", "")})
+                summary = release_notes({"body": manifest.get("summary") or manifest.get("notes", "")})
+                page = f"https://github.com/{install.conf['repo']}/releases/tag/{rel.get('tag_name', '')}"
+                if rel.get("html_url") != page:  # only the release's own page on GitHub (for Open GitHub Page)
+                    page = ""
                 return report(0 if newer else 3, current=current, latest=version, update=newer,
-                              published=str(manifest.get("published") or "")[:10], notes=notes,
+                              published=str(manifest.get("published") or "")[:10], notes=notes, summary=summary, page=page,
                               size=manifest["package"]["size"],
                               message=(f"update available: {version} (installed {current})" if newer
                                        else f"up to date ({current})"))

@@ -1,0 +1,16 @@
+What the LICENSE file covers
+
+The MIT licence in LICENSE applies only to this project's own original work: its source code, tools, tests, documents and
+the setup's original artwork. The patches in patches/rexglue-sdk change the ReXGlue SDK and stay under its BSD 3-Clause
+licence (thirdparty/rexglue-sdk/LICENSE).
+
+It grants no rights in:
+
+- Kingdom Under Fire: Circle of Doom, its executable, data, names or trademarks, or any code or data derived from them,
+  including anything generated or compiled from a player's copy on their own machine. Those belong to their owners.
+- Microsoft's Xbox 360 software development kit libraries, which are part of the game's executable.
+- The third-party software in thirdparty/ and in the release packages, which stays under its own licences
+  (tools/package/THIRD-PARTY-NOTICES.txt). This includes LGPL and GPL components.
+
+This is an unofficial fan project, not affiliated with or endorsed by the game's publishers or developers. All trademarks
+belong to their owners.

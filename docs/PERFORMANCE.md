@@ -900,3 +900,418 @@ python3 -I tools/bench.py run --tag <tag> --preset <frozen build> --warm <cold> 
 ctest --test-dir build/linux-amd64-relwithdebinfo -R '^render\.direct_load$'   # direct loads draw the same frames
 python3 -I tools/spirv_load_to_image.py <texture_load_*_cs.h> <out.spvasm> --bits 64|32   # the shader variants
 ```
+
+## 9. M12: advanced performance optimisation (2026-11-02)
+
+Branch `m12/performance` (from the M11 work, e59ffb1). ReXGlue SDK v0.10.0 with the port's patches 0001-0015. Same
+machine (Ryzen 7 5700X3D, RX 9070 XT, RADV) and sandbox as sections 7 and 8; `bench_explore` (Shadow Depths: world
+load, then 140 s of the walk-and-turn route), uncapped presentation (`--kuf_frame_rate=240`), native render scale.
+
+### 9.1 Method
+
+- **Frozen builds, interleaved.** Baseline `build/m12-frozen-base` (e59ffb1) and every candidate are copied before
+  measuring; runs alternate A, B, A, B (in the final matrix the order also alternates per repetition). Medians with
+  [min-max]; a change is kept only where the ranges separate or the medians move by clearly more than the spread.
+- **One warm cache for all runs** (new): `tools/merge_shader_storage.py` merges the shader and pipeline storage of
+  every M12 run into `build/warmcache/m12-union` (236 pipelines; a single cold run had 170). Before, every run started
+  from one cold run's cache and met some pipelines for the first time at random: each costs a synchronous placeholder
+  pipeline on the GPU command thread (5-8 ms) and a skipped presentation, a 46-69 ms frame. Across 30 runs at 1440p,
+  runs that met none had a median 0.1 % low of 43.0 fps and worst frame 40.5 ms; runs that met some 38.7 fps and
+  51.2 ms (17 or more: 23-38 fps). With the merged cache every window of the final matrix created 0 pipelines. A
+  player meets each pipeline once: the game stores it and loads it at the next start (verified: storage 11,232 ->
+  12,090 bytes after a run that met 28; "Created 170 graphics pipelines from Vulkan storage" at start).
+- **CPU-constrained runs** use `--cpu-quota 200%` (systemd CPUQuota). Caveat: in silent sandbox runs SDL's playback
+  thread spins on ALSA's null sink (one core, K10, test environment only), so a 200 % quota leaves about one core for
+  the game: those runs are more constrained than any real machine with two free cores. CPU totals below exclude that
+  thread.
+- **New instruments** (diagnostic, off by default): `src/runtime/gpu_wait_trace.cpp` (the game's waits for the GPU and
+  its resource-lock waits by caller), profiler stack words (`--kuf_profile_stack_words`), `tools/profile_report.py
+  --split-threads / --thread-top / --callers / --inclusive`, `tests/render/equivalence_check.py` (render equivalence
+  with the gameplay anchor checked first).
+
+### 9.2 Bottlenecks investigated (in the prescribed order)
+
+| Area | Finding |
+|---|---|
+| Submission gaps | 4-5 submissions per frame, each ended when the command processor drains the ring (`vulkan_submit_on_primary_buffer_end`); no occlusion queries, no forced queue drains. GPU idle between submissions: 4K 6-13 %, 1440p 9-25 %: at 1440p the GPU waits for the command processor (CPU-bound), not for a submission structure |
+| Render target transfers (4K) | 1.26 ms per frame, about 16: the game alternates the same EDRAM ranges between 2x MSAA and 1x (depth 006082D0 <-> 007082D0, 006038E0 <-> 007038E0, 00606B40 <-> 00706B40; colour 00D08000 -> 00C08000 -> 00008000 -> 00108000). Required by the EDRAM model |
+| Resolves and texture loads (4K) | resolves 1.36 ms (12), texture loads 1.7 ms (12) per frame; every load follows a new resolve of that address (no redundant reloads): depth (24_8_FLOAT -> R32F) 512^2, 1024^2 and 1280x720 x3, HDR 16_16_16_16_FLOAT 1280x720 x2 (66 MB at 3x3), 320x180 x3. About 275 GB/s read plus as much written: near the GPU's memory bandwidth. With the draws (4.6 ms) copies are half of the 8.5 ms GPU frame; only avoiding copies helps (resolve straight into the texture image: an architecture change) |
+| CPU: command processor | Before B1: per-register work for constant uploads (type-0 packets) -> **B1**. After B1 the profile is flat: `memmove` of `VulkanSharedMemory::UploadRanges` about 19 % of the thread (required), `UpdateBindings` about 7 %, nothing else above 2 % |
+| CPU: guest render thread | Waits for the command processor: the game's D3D waits (`sub_82160C90`) and resource locks (`sub_82223A70`, call site 82223B4C: two small vertex buffers per object used alternately, about 1 wait per frame, 1.2-2.9 s per 10 s; 822277BC: one vertex buffer every frame). The game's own double buffering; the lever is command-processor speed |
+| CPU: other threads | The SDK's timer queue thread spun (disruptorplus `spin_wait_strategy`: pause, `sched_yield`, 1 ms sleep every 20th), about 12 % of a core -> **timer** |
+| Shared-memory invalidation | About 710 write faults per second, each widened to about 61 pages (256 KB): about 1.6 GB/s of vertex re-upload, 95-99 % of it unchanged bytes. Narrower windows tried (9.3) |
+| Shader and pipeline caching | First-use hitches only (above); persistent storage works. Pipeline creation is asynchronous except the placeholder pipeline |
+| Memory allocation | RSS flat in play (+10 MB over 140 s), VRAM flat; `malloc`/`free` 0.3 % of samples. No target |
+| Loading | World load 10.2 s, boot to the title 11.1-11.5 s, unchanged: paced by the game tick (section 7.5; 3.1 s with ticks uncapped). A faster loading mode changes game timing: out of scope for this milestone |
+
+### 9.3 Optimisations attempted
+
+| Change | Evidence | Result |
+|---|---|---|
+| **B1: type-0 register ranges written in bulk** (SDK patch 0014: `ExecutePacketType0` hands a range to `WriteRegisterRangeFromRing` instead of one `WriteRegister` call per register) | 1440p 5+5: 125.6 [107.8-143.3] -> 151.1 [146.1-155.9] fps; 1 % low 47.7 -> 57.7; 0.1 % 34.7 -> 39.9; p95 14.6 -> 11.8 ms; p99 19.2 -> 15.4 ms; command processor working 76.8 -> 68.0 %; GPU busy 79.7 -> 87.1 % | **kept** (dcf681e) |
+| **Timer queue blocks instead of spinning** (SDK patch 0015: a mutex and condition-variable wait strategy in `src/core/timer_queue.cpp`; disruptorplus's own blocking strategy does not compile for timed waits) | 1280x800 at 200 % quota 4+4: 95.9 [92.1-100.3] -> 101.4 [97.7-109.5] fps (every pair higher), 1 % low 18.8 -> 22.2, p99 48.8 [47.5-49.6] -> 41.7 [40.7-43.5] ms. At 400 % (not binding): process CPU 190.0 -> 183.1 %, fps neutral | **kept** (4a4e615) |
+| `GetRegisterInfo` only with debug logging | after B1 the register-write family is 0.6 % of samples, `GetRegisterInfo` not visible | not built |
+| Narrower invalidation window (`gpu_shared_memory_invalidation_pages`) | 1 page: fault storm, game ticks 13-17 per second in menus and loading (run invalid); 16 vs 64 pages 5+5: 145.3 vs 151.8 fps, lows equal | reverted |
+| Guest GPU-wait backoff (`kuf_gpu_wait_sleep_us`: sleep after 20 us of spinning in `sub_82160C90`) | 1440p 5+5: 154.6 -> 148.9 fps (median 151.2 -> 147.0, lower in 4 of 5 pairs), p99 14.2 -> 14.9 ms, CPU 179.7 -> 159.8 %; 1280x800 at 200 % 4+4: 105.6 -> 117.8 fps, p99 41.0 -> 37.4 (all pairs). A loss on the main desktop case | reverted (a candidate for a CPU-limited device, to measure there) |
+
+Render equivalence for both kept changes (`tests/perf/render_equivalence.toml` at 4K, `tests/render/equivalence_check.py`):
+B1 and timer runs are bit-identical to baseline runs with the same end state; both builds show both of the known end
+states (play_turn, back_in_play, resumed differ by at most 2 levels between them, as in M8/M9 for one build).
+
+### 9.4 Results: baseline and M12
+
+Final matrix: `build/m12-frozen-base` (e59ffb1) vs `build/m12-final` (4a4e615), 4 + 4 runs per output size,
+interleaved with the order alternating, merged warm cache (0 pipelines created in every window), 32 of 32 runs valid
+(build/logs/m12-matrix.md). Medians [min-max]:
+
+| Output | Build | avg fps | 1 % low | 0.1 % low | p95 ms | p99 ms | jitter ms | CPU % (excl. test audio) | command thread % |
+|---|---|---|---|---|---|---|---|---|---|
+| 3840x2160 | base | 100.3 [99.3-100.8] | 48.4 | 40.5 | 17.5 | 19.5 | 4.3 | 92.3 | 69.2 |
+| 3840x2160 | M12 | 104.4 [100.5-107.2] | 50.7 | 44.2 | 17.6 | 18.9 | 5.8 | **67.5** | 55.2 |
+| 2560x1440 | base | 130.2 [121.3-138.5] | 50.2 | 38.8 | 13.8 | 18.7 | 1.3 | 103.8 | 82.0 |
+| 2560x1440 | M12 | **156.6** [151.9-163.9] | 63.0 | 50.5 | **11.4** | 14.8 | 1.5 | **80.3** | 71.9 |
+| 1920x1080 | base | 126.2 [121.5-132.1] | 48.1 | 36.0 | 14.0 | 19.0 | 1.4 | 103.2 | 81.4 |
+| 1920x1080 | M12 | **147.9** [139.5-155.6] | **60.0** | 45.3 | **11.4** | **15.1** | 1.5 | **81.1** | 71.8 |
+| 1280x800 | base | 126.4 [117.1-129.0] | 47.4 | 36.2 | 14.8 | 19.5 | 1.4 | 102.9 | 81.3 |
+| 1280x800 | M12 | **159.0** [147.6-179.8] | **63.6** | 49.4 | **10.8** | **14.3** | 1.2 | **81.2** | 73.6 |
+
+Bold: ranges separate from the baseline's (at 1440p one baseline run reached a 1 % low of 60.4 and p99 14.5 ms, so those
+overlap; the 0.1 % lows overlap everywhere). Below 4K: +17 to +26 % average fps, 1 % lows +24 to +34 %, p99 -20 to
+-27 %, and about 22 % less CPU at a higher frame rate. At 4K the frame is GPU-bound (GPU busy 96 % vs 92.5 %, GPU
+8.7 ms per frame in both): +4 % fps (ranges touch: 100.5 vs 100.8), p95 and p99 unchanged, 0.1 % low 40.5 -> 44.2
+within the spread, and frame-time jitter 4.3 -> 5.8 ms. The jitter is measured at the game's present call on the CPU;
+M13 (section 10) found it reproducible (base 4.1-4.5, M12 5.3-6.0 in every run) but a queueing effect: with the faster
+CPU a slow frame is now nearly always followed by a fast one (the CPU runs ahead, then waits for the GPU), while the
+GPU's frame completion intervals, closer to what reaches the display, became steadier (stdev 1.85-2.25 -> 1.26-1.46
+ms, p99 15.7-16.5 -> 14.2-14.8 ms). The CPU saving at 4K is clear (92 -> 68 %). GPU time per frame did not change at any
+size (no GPU-side change was made). Boot (11.45-11.48 s), world load (10.17-10.23 s), peak RSS (1,412-1,418 MB) and
+VRAM (1,263-2,992 MB over idle by size) unchanged.
+
+### 9.5 Visual correctness and validation
+
+- Image equivalence (tests/render/equivalence_check.py, tests/perf/render_equivalence.toml): at 4K during M12, and at
+  1440p after the matrix: the pair that entered gameplay at the same tick (base run 2 and M12 run 1, tick 1388) is
+  identical in all 8 captures (largest difference 0). The other pairings entered gameplay one tick apart (1387-1389),
+  which is an anchor mismatch, not a rendering result.
+- Vulkan validation (one 1440p run per build, `--vulkan_validation_enabled=true`): the same message IDs and counts in
+  both builds (the K75 dynamic-rendering attachment messages, 4 IDs at the duplicate limit, and the unused fragment
+  output warning); nothing new.
+
+### 9.6 Regression and stability (M12 final build)
+
+- Unit tests: all pass except kuf_insn_divergence_tests (K1, by design).
+- ctest (build/logs/m12-regression-1.log): 135 of 142 passed. The 7 others are all display smoke routes:
+  display_menu, display_revert, display_title, display_widescreen_toggle and display_render_menu failed, and
+  display_persist and display_render_persist did not run because a test they depend on failed. All are K66 (the
+  routes navigate the old settings structure); none is new.
+- Stability (tools/stability.py --tag m12, build/logs/m12-stability.log): 21 of 21 runs passed (boot ×5, boot120 ×2,
+  world ×3, save/load ×4, unload/reload, frame-rate switch ×2, resize ×2, memory pressure, a 32-minute long run).
+  Peak RSS 1421 MB; the long run grew 0.17 MB per minute.
+- Portable package (old_runtime_test.sh): REQUIRES glibc 2.30, glibcxx 3.4.32 (bundled 3.4.33); OLD RUNTIME PASS.
+
+### 9.7 Remaining bottlenecks
+
+At 4K the GPU is the limit (9.2 ms per frame in the bench scene). About 3.5 ms of it does not scale with resolution:
+shared memory uploads that break render passes, about 250 render passes, 800 buffer barriers and 550 buffer copies
+per frame. The resolution-dependent part is the shadow pass, the full-screen post pass, EDRAM resolves (one depth
+resolve is redundant) and texture loads. First-use pipeline hitches (K76) remain. These are M13's subject (section 10).
+
+### 9.8 Reproducing
+
+Builds: build/m12-frozen-base (the baseline) and build/m12-final, each with a COMMIT file. Warm cache:
+build/warmcache/m12-union (tools/merge_shader_storage.py over the runs' storage). Matrix: tools/bench.py run --preset
+P --scenario tests/perf/bench_explore.toml --fps 240 --cache-from build/warmcache/m12-union --res RES --tag TAG, four
+resolutions × four reps, builds alternating; report with tools/bench.py report --tag M12TAG --compare BASETAG.
+
+## 10. M13: Vulkan GPU optimisation at 4K (2026-11-02/03, branch `m13/gpu` from d44c219)
+
+### 10.1 Method
+
+- A/B builds frozen from the same tree: build/m13-base (the M12 code, 4a4e615, built in build/m13-dev without M13
+  changes; same sections as m12-final) and one build per candidate (build/m13-h1, m13-p1, m13-hp2, m13-hpu), each
+  with a COMMIT file. Final: build/m13-final (SDK patches 0016 + 0017).
+- Warm runs: tools/bench.py run --scenario tests/perf/bench_explore.toml --fps 240 --cache-from
+  build/warmcache/m12-union, 4 resolutions × 4 reps, builds alternating, order alternating per rep. Cold runs: no
+  cache, 1440p, 4-6 reps each. Report: tools/bench.py report --tag CANDIDATE --compare BASE (first column is the
+  candidate; the "Change" column reads from the base's side). Ranges are min-max over the reps; a change counts only
+  when the ranges separate or the GPU timing moves consistently.
+- GPU side: --gpu_timestamp_stats (whole-submission timestamps, command counts per frame) and the one-frame pass
+  trace (--gpu_trace_frame, --gpu_trace_pass_timing). RADV on the RX 9070 XT has no VK_KHR_performance_query, so no
+  hardware counters; costs come from timestamps and command counts, not CPU profiles.
+
+### 10.2 4K GPU bottlenecks (M12 build, one-frame trace and per-frame counts)
+
+8.4-9.2 ms of GPU per frame at 4K: draws 4.6 ms (shadow pass 1.8 ms over 342 draws, one full-screen post pass
+1.25 ms, bloom 0.36 ms), resolves 1.4 ms, texture loads 1.7 ms, transfers 1.2 ms. The game renders with predicated
+tiling at 2×MSAA. GPU time per frame did not scale with pixels (3.9 ms at 800p, 5.0 at 1440p, 9.2 at 4K): about
+3.5 ms per frame was fixed cost. Per frame: ~250 render passes, ~735 buffer barriers, ~470 buffer copies, about 480
+shared memory uploads (21.5 MB). Each upload ended the current render pass and added two whole-buffer barriers that
+drain the GPU. GPU idle between submissions: 0.7 ms per frame (7 %).
+
+### 10.3 Optimisations attempted
+
+| # | Change | Result | Decision |
+|---|---|---|---|
+| H1 | SDK patch 0016: shared memory uploads of pages the submission has not accessed are recorded at the start of the submission (one barrier pair), the rest in place | 4K: render passes 244 → 37, barriers 735 → 71, buffer copies 466 → 8; GPU ms 8.5 → 7.7; avg fps 109.1 → 116.4, 1% low 51.2 → 57.6, p99 18.9 → 16.2 ms (ranges separate). 1440p/1080p/800p GPU ms −15..−25 %, fps within noise (CPU-limited) | **kept** (3994e1f; restructured, see 10.6) |
+| U1 | SDK patch 0017: upload buffer pages in device-local host-visible memory (resizable BAR) on discrete GPUs with a ≥ 1 GiB BAR heap | against H1: 4K avg 116.7 → 123.5 fps, 1% low 54.8 → 60.3, p99 17.0 → 15.6 ms, GPU ms 7.5 → 7.0 (ranges separate); other sizes GPU ms −6..−17 %, fps within noise. VRAM in use +0.3-0.6 GB (pages moved from system memory) | **kept** (6b5df4d) |
+| P1 | No synchronous placeholder pipeline for new pipelines (K76) | cold 1440p ×4: 0.1 % low 17.3 vs 17.2 fps, max frame and skipped presentations unchanged | rejected (no effect) |
+| P2 | P1 plus asynchronous creation of depth-only pipelines (no pixel shader; not for memexport vertex shaders) | cold 1440p ×6 against H1: synchronous creations 118 → 63 per run, but 0.1 % low 17.8 vs 18.3 fps, max frame 79 vs 75 ms, skipped presentations 31.5 vs 29.8 | rejected (no effect) |
+
+Not attempted: R1, the redundant depth resolve. Draws after the 4th resolve write no depth, so the 6th resolve
+(depth to 1EC10000) and its reload repeat data; it is worth about 0.25 ms at 4K. Fixing it needs EDRAM write
+tracking across resolves, a larger change with correctness risk.
+
+### 10.4 Results: M12 baseline vs M13 final (warm, 4 reps each, tags m13-fb / m13-ff)
+
+| | 3840×2160 M12 → M13 | 2560×1440 | 1920×1080 | 1280×800 |
+|---|---|---|---|---|
+| avg fps | 104.8 → **119.4** (+14 %) | 136.2 → 146.8 (+8 %) | 135.4 → 140.9 (noise) | 148.3 → 142.9 (noise) |
+| 1 % low fps | 47.8 → **56.9** (+19 %) | 55.0 → 57.3 | 56.4 → 54.1 | 57.0 → 58.9 |
+| 0.1 % low fps | 36.9 → **42.3** | 38.9 → 40.7 | 39.7 → 43.3 | 42.6 → 46.1 |
+| p95 / p99 ms | 18.0 / 19.7 → **14.8 / 16.3** | 12.6 / 15.8 → 11.9 / 15.5 | 12.8 / 15.9 → 12.4 / 16.5 | 12.0 / 15.7 → 12.4 / 15.5 |
+| jitter ms | 6.3 → **3.9** | 1.8 → 1.5 | 1.9 → 1.7 | 1.5 → 1.6 |
+| GPU ms per frame (p99) | 8.6 (10.0) → **7.2 (8.1)** | 5.8 (7.5) → **4.5 (5.6)** | 5.8 (7.7) → **4.6 (5.6)** | 4.5 (5.8) → **3.1 (3.9)** |
+| GPU busy % | 97 → 94 | 88 → 79 | 88 → 77 | 80 → 59 |
+| CPU % (one core = 100) | 169 → 175 | 185 → 184 | 185 → 186 | 184 → 184 |
+| peak RSS MB | 1422 → 1417 | 1416 → 1418 | 1422 → 1419 | 1419 → 1414 |
+| peak VRAM over idle MB | 2991 → 3499 | 1955 → 2467 | 1955 → 2566 | 1282 → 1785 |
+
+4K is no longer at 97 % GPU busy. Below 4K the bench scene is limited by the CPU (guest threads ≈ 1.06 cores, the
+GPU command thread ≈ 0.7), so the lower GPU time shows as headroom and power (800p: 131 → 68 W median) rather than
+fps. CPU time per frame is unchanged: the M12 CPU gains are kept.
+
+### 10.5 Frame-time stability, stutter and pipeline hitches
+
+- The M12 4K jitter (5.3-6.0 ms, measured at the CPU present call) is reproducible and was a GPU queueing effect
+  (9.4); with the GPU no longer saturated, it falls to 3.4-4.9 ms, below the pre-M12 4.1-4.5 ms.
+- Cold cache (1440p ×4, tags m13-cb / m13-cf): unchanged: 0.1 % low 17.2 → 17.8 fps, max frame 75.7 → 76.3 ms,
+  ~118 pipelines created and ~30 presentations skipped per run in both.
+- K76 analysed. A new pipeline costs a synchronous placeholder build (2-8 ms) for draws with a pixel shader, or a
+  synchronous build of the real pipeline for depth-only draws. The frame that uses it is then not presented while
+  the real pipeline is built on a worker thread. Removing both synchronous builds (P1, P2) left the hitches as they
+  were, so the visible stutter is the skipped presentation and the wait for the real pipeline, not the placeholder.
+  What remains to try:
+  - pipeline libraries (VK_EXT_graphics_pipeline_library, available on RADV) for fast-linked first use;
+  - prewarming from the stored descriptions at load, which the cache already does for a warm install;
+  - presenting the frame with the missing draws skipped, a visual trade-off for the player to decide.
+
+  Pipelines are stored after first use, so each hitch happens once per installation.
+
+### 10.6 Correctness, validation, regression, stability
+
+- **Equivalence** (tests/render/equivalence_check.py, render_equivalence.toml, base vs final ×3 at 1440p and 4K):
+  - Every tick-matched pair at 1440p is identical in all 8 captures.
+  - At 4K, final runs 2 and 3 are identical to base run 4. The other 4K pairs differ by at most 1 level, in at most
+    50 pixels: the status capture and one pixel of play_start. Two runs of the same build (base 3 vs base 4,
+    final 1 vs final 2) show the same differences, so this is run-to-run variation, not M13.
+  - H1 alone was also identical at 1440p and 4K.
+- **Vulkan validation** (1440p and 800p):
+  - At 1440p, only the K75 IDs, as in M12.
+  - At 800p, 8 × VUID-VkImageCreateInfo-flags-08865: a cube texture created with a 32×64 extent in the texture
+    cache, which M13 does not touch. The M12 build shows the same 8 messages (10.6a; K77).
+- **Unit tests:** all pass except kuf_insn_divergence_tests (K1, by design).
+- **ctest** (same labels as M12, build/logs/m13-regression-1.log): 133 of 142 passed.
+  - The 7 display failures are K66, as in M12.
+  - presentation.bones_120 failed, and pose_check did not run because it depends on it. This is new, and it is a
+    test artifact: the per-frame pose trace grows with M13's higher frame rate, and the runner's 2 × 64 MB log
+    rotation dropped the route's first script lines, so the check counted 95/157. The freezes were reached, the
+    captures passed and there were no errors. The test now keeps 8 log files (tests/presentation/bones_120.toml),
+    and it passes on the rerun (10.6a).
+- **Stability** (tools/stability.py --tag m13, build/logs/m13-stability.log): 21 of 21 passed. Peak RSS 1419 MB;
+  the 32-minute long run grew 0.13 MB per minute (M12: 0.17).
+- **Patch hygiene:** H1 first added two lines inside code that SDK patch 0012 adds. apply_sdk_patches.sh --check
+  reverse-applies every patch alone, so the portable configure failed. 0016 now runs the hoisted uploads from a
+  pre-execute callback of the deferred command buffer (same position: after the timestamp resets, before the
+  submission's commands), and shared memory logs its own upload counts. --check passes, and applying patches
+  0001-0017 to a fresh SDK export gives the working tree exactly. The final build, matrix and verification above all
+  use this version (4K sanity run: GPU 6.5 ms per frame, all uploads hoisted, 1.1 GB/s).
+
+### 10.7 Steam Deck compatibility (no hardware tested)
+
+- Portable build (Steam Runtime sniper sysroot, -march=x86-64-v2), package_linux.sh --strip: REQUIRES glibc 2.30,
+  glibcxx 3.4.32, bundled libstdc++ 3.4.33, the same as M12. tools/toolchain/old_runtime_test.sh: OLD RUNTIME PASS.
+- No new mandatory extension or feature.
+  - U1 only selects a memory type, and only on a discrete GPU with a ≥ 1 GiB host-visible device-local heap. The
+    Deck's integrated GPU keeps the old system-memory type.
+  - H1 uses core Vulkan copies and barriers.
+  - Both can be switched off: --vulkan_upload_device_local=false, --vulkan_hoist_shared_memory_uploads=false.
+- 1280×800 was in every matrix. Deck defaults, installer and updater are unchanged (no files touched).
+- Build note (fixed in M14, section 11.2): the main and portable trees used to write the SDK's static libraries to the
+  same directory (thirdparty/rexglue-sdk/out/linux-amd64), so a host build after the portable build made the portable
+  link fail on glibc 2.38 symbols (__isoc23_strtol, __libc_single_threaded). Each build tree now has its own.
+- Not done: any test on Deck hardware (postponed by the player). The Deck's results for H1 (fewer barriers, lower
+  GPU time) are expected to carry over but are unmeasured.
+
+### 10.8 Remaining bottlenecks and next steps
+
+- **4K**, now about 7.2 ms of GPU per frame:
+  - the shadow pass (about 1.8 ms, 342 small draws);
+  - the full-screen post pass (1.25 ms);
+  - resolves (1.4 ms, including R1's redundant depth resolve, about 0.25 ms);
+  - texture loads (1.7 ms);
+  - the 21.5 MB of shared memory uploads per frame. Many of these may be whole pages re-uploaded for small CPU
+    writes; finer watch granularity would cut them.
+- **Below 4K**, the CPU limits the bench scene: the guest threads and the GPU command thread (about 0.7 cores).
+- **K76 first-use hitches:** see 10.5.
+
+### 10.9 Reproducing
+
+- Patches: patches/rexglue-sdk/0016 and 0017; rejected P1/P2 source in the session scratchpad only.
+- Builds: build/m13-base, build/m13-final (COMMIT files).
+- Tags:
+  - m13-hb / m13-h1 (H1);
+  - m13-ub / m13-u1 (U1);
+  - m13-pcb / m13-pc1 and m13-c2h / m13-c2p (P1/P2 cold);
+  - m13-fb / m13-ff (final);
+  - m13-cb / m13-cf (final cold).
+- Equivalence: run prefixes m13-eq* and m13-feq*.
+
+### 10.6a Follow-up checks
+
+- 800p validation on the M12 build (build/m13-base, tag m13-val-base800): the same 8 ×
+  VUID-VkImageCreateInfo-flags-08865, so the message predates M13. Recorded as K77.
+- presentation.bones_120 and pose_check rerun with the 8-file log limit: both pass (build/logs/m13-regression-bones.log).
+  With that, ctest is at M12's state: only the 7 K66 display routes fail.
+
+## 11. M14: Vulkan uploads, resolves and pipeline creation (2026-11-03/04, branch `m14/performance` from 0dcb3d6)
+
+### 11.1 Method and M13 baseline
+
+- Same method as M13 (10.1): builds frozen with a COMMIT file (build/m13-final = the M13 baseline, build/m14-exp,
+  build/m14-exp2 = candidates switched by cvar, build/m14-cand = the M14 final), tools/bench.py with
+  tests/perf/bench_explore.toml at 240 fps and the merged warm cache, builds interleaved and the order alternating per
+  rep; cold runs without a cache. Report columns: candidate first, "Change" read from the base's side.
+- M13 re-verified at the start: the 17 patches apply (--check, and a fresh SDK export patched equals the tree);
+  build/m13-final baseline (tag m14-b0, 2 reps): 4K 122.9 / 127.6 fps, 1440p 149.4 / 168.1, 1080p 136.7 / 161.8,
+  800p 147.6 / 171.1. Run-to-run spread below 4K is large (CPU-limited scene), so decisions there rest on GPU and CPU
+  time, not fps.
+- 4K one-frame trace of the M13 build (tag m14-tr4k, frame 12000): GPU 6.9-8.0 ms per gameplay frame: draws
+  2.4-2.9 ms, texture loads 1.5-1.9 ms, resolves 1.2-1.6 ms (11-12 per frame), transfers 1.3 ms (16 per frame).
+
+### 11.2 Build isolation (the shared SDK output directory)
+
+The SDK wrote its binaries into its own tree (thirdparty/rexglue-sdk/out/<platform>), shared by every preset, so a
+host build replaced the static libraries a portable (Steam Runtime) build links (10.7). CMakeLists.txt now collects
+every SDK target (recursively over the SDK's directories) and sets its output directories into the build tree:
+executables and shared libraries in <build>/bin, static libraries in <build>/sdk-lib (8bc6f1b). Checked: host then
+portable, portable then host with a forced rebuild of an SDK archive, no-op rebuilds, the shared out/ directory left
+untouched, and the portable package (old_runtime_test.sh: OLD RUNTIME PASS). Stale libraries from before the change
+remain in thirdparty/rexglue-sdk/out and are no longer used.
+
+### 11.3 Optimisations attempted
+
+| # | Change | Result | Decision |
+|---|---|---|---|
+| R1 | Skip a resolve whose source EDRAM contents (per render target generation, bumped by writing draws and ownership transfers) and destination (shared memory watch, memory export) are unchanged since the same resolve copied them | Correct: identical captures at 1440p and 4K, validation only K75. About 10 % of 4K resolves skipped, but 4K GPU 7.0 vs 6.9 ms per frame, fps within noise at every size (3 reps, tags m14-r1 / m14-r1b). The trace frame of M12 had a redundant depth resolve; in the M13 build's frame the draws between those resolves write depth, so most are not redundant | **rejected** (no measurable gain); source kept in patches/rejected/m14-r1-skip-redundant-resolves.diff |
+| U2 | Pages invalidated by a CPU write but unchanged are not uploaded again (folded into SDK patch 0016). A diagnostic run showed 99.2-99.9 % of re-uploaded pages byte-identical to their last upload (1.5-3 GB/s at 4K): write protection invalidates a window of about 64 pages around each CPU write. Pages uploaded more than once keep a copy of what was uploaded (128 MB cap, --vulkan_upload_skip_unchanged_mb); an unchanged page is protected again without an upload; uploads of such pages are made from the copy, and every GPU write drops the copies of its pages | Uploads 1.5-3 GB/s → 3.5-55 MB/s. GPU ms per frame 4K 6.9 → 6.6, 1440p 4.4 → 4.1, 1080p 4.4 → 4.0, 800p 3.1 → 2.6; CPU −1..−5 % (the GPU command thread's copies). Identical captures; validation only K75. RSS +130 MB (tags m14-u2 / m14-u2b, 3 reps) | **kept** |
+| P3 | Pipelines met during play are created with VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT and an optimised replacement is built in the background (SDK patch 0018, --vulkan_pipeline_fast_first_compile) | Creation time (RADV, cold 1440p): median 27.7 → 18.4 ms, 90th percentile 67 → 38 ms. Cold 1440p ×6: 0.1 % low 18.2 → 25.2 fps, max frame 77.0 → 60.2 ms; warm runs create no pipelines (unchanged) | **kept** (default on) |
+| GPL | VK_EXT_graphics_pipeline_library for fast-linked first use (K76) | Not implemented, from measurements: the merged warm cache holds 236 pipelines from only 98 vertex and 101 pixel shader variants; in cold runs 130-153 pipelines are created per run, and only 50-57 of them have both shaders seen before. Replaying the creation order, at most 45-52 of 163-187 pipelines could be fast-linked from libraries built earlier with all state dynamic, 14-15 with the state in the library keys. Most first uses bring a new shader, whose library must be compiled anyway; the stall is the wait for that compile at the end of the submission | **rejected** (P3 shortens that compile instead) |
+| — | Presenting frames with the draws of missing pipelines skipped | Not done: the player excluded rendering incomplete frames | — |
+
+Prewarming does not apply to the hitches measured here: a warm install already creates every stored pipeline at
+load; the cold-cache hitches are pipelines no install has seen yet, and pipeline data is game-derived and cannot be
+shipped.
+
+### 11.4 Other GPU costs at 4K (Phase 5, analysed, not changed)
+
+- Transfers (1.3 ms, 16 per frame): the game's EDRAM ping-pong between 1× and 2× MSAA render targets at the same
+  addresses (for example depth 006082D0 ↔ 007082D0, 921,600 pixels each at 4K). The SDK already skips transfers into
+  areas that a resolve clear overwrites; removing more needs knowing that later draws overwrite the whole area, an
+  architectural change to the render target cache.
+- Resolves (1.2-1.6 ms): the copies themselves; R1 found few redundant ones. Resolving straight into the texture a
+  later draw samples would remove a copy and a texture load per resolve: a texture/render target cache redesign.
+- Texture loads (1.5-1.9 ms): reloads of resolved data at the 3× resolution scale; same redesign.
+- Draws (2.4-2.9 ms): the game's own passes (shadow, post); no quality reduction or new setting allowed.
+
+### 11.5 CPU below 4K (Phase 6)
+
+Sample profiles at 1280×800, 60-200 s (tags m14-prof-final / m14-prof-cand, --kuf_profile_samples):
+- The guest threads take about one core (103.9 → 100.9 %), the game's own code; its largest single function is the
+  frame-cap wait (sub_82160C90, 4.6 %, K10). Changing guest timing, physics, AI, combat or animation is out of scope.
+- The GPU command thread: 73.6 → 71.6 % of a core. U2 removed most of its C library copy time (5.0 → 3.4 % of all
+  samples); the rest is spread over binding updates, packet execution, constants and texture layout (each ≤ 1.7 %),
+  with no single hotspot worth a risky change.
+- SDLAudioP's full core is the silent sandbox's null audio sink (K10, test environment only).
+No CPU-only change was made in M14; the CPU reduction below comes from U2.
+
+### 11.6 Results: M13 vs M14 (warm, 3 reps each, interleaved; tags m14-fm13 / m14-fm14)
+
+| | 3840×2160 M13 → M14 | 2560×1440 | 1920×1080 | 1280×800 |
+|---|---|---|---|---|
+| avg fps | 126.0 → **131.4** | 157.7 → 156.0 (noise) | 152.3 → **168.0** | 158.9 → 154.8 (noise) |
+| 1 % low fps | 60.2 → 61.3 | 58.9 → 59.4 | 59.6 → **66.0** | 60.5 → 60.9 |
+| 0.1 % low fps | 44.0 → 47.6 | 44.4 → 41.8 | 44.4 → 46.9 | 43.5 → 48.5 |
+| p95 / p99 ms | 14.0 / 15.3 → **13.2 / 14.9** | 11.1 / 15.0 → 11.4 / 14.9 | 11.5 / 14.6 → **9.9 / 13.1** | 10.8 / 14.7 → 11.1 / 15.1 |
+| jitter ms | 3.6 → 3.7 | 1.2 → 1.4 | 1.3 → 1.3 | 1.2 → 1.5 |
+| GPU ms per frame | 7.0 → **6.7** | 4.3 → **4.1** | 4.4 → **4.0** | 3.1 → **2.6** |
+| GPU busy % | 94 → 94 | 79 → 75 | 77 → 79 | 61 → 52 |
+| CPU % (one core = 100) | 173 → 171 | 184 → **178** | 184 → 181 | 183 → **177** |
+| GPU power W (median) | 312 → 320 | 119 → 99 | 133 → 120 | 73 → 69 |
+| peak RSS MB | 1421 → 1551 | 1416 → 1549 | 1415 → 1546 | 1416 → 1550 |
+| peak VRAM over idle MB | 3480 → 3492 | 2617 → 2667 | 2701 → 2570 | 2097 → 1744 |
+
+GPU time per frame falls at every size (ranges separate), and CPU use falls with it. 4K gains 4 % average fps and
+lower p95/p99 (it is GPU-bound at 94 %); below 4K the scene is CPU-limited and fps stays within run-to-run noise
+except 1080p. Jitter at 1440p and 800p is 0.2-0.3 ms higher in both rounds (U2: 1.1 → 1.4 at 800p), without a
+change in p99 or the lows. RSS is 130 MB higher: U2's page copies (cap 128 MB). Pipelines created and presentations
+skipped in warm runs: 0 in both.
+
+### 11.7 Cold-cache hitches (K76)
+
+| Cold cache | 2560×1440 ×4 (m14-fc13 / m14-fc14) | 3840×2160 ×2 (m14-fk13 / m14-fk14) |
+|---|---|---|
+| 0.1 % low fps | 18.3 → **25.5** | 15.6 → **21.0** |
+| 1 % low fps | 50.5 → 52.4 | 43.4 → **47.4** |
+| longest frame ms | 73.7 (72.0-75.3) → **64.1** (49.6-73.8) | 78.4 → **70.5** |
+| pipelines created | 117 → 182 (the optimised replacements counted too) | 122 → 212 |
+| presentations skipped | 29.8 → 30.5 | 30.5 → 34.5 |
+
+The hitches remain (a presentation is still skipped while a new pipeline is built) but are shorter. Steady-state GPU
+time with the replacements in place is unchanged.
+
+### 11.8 Correctness, validation, regression, stability
+
+- **Equivalence** (render_equivalence.toml, M13 vs M14 ×4 each at 800p, 1440p and 4K, every pair entered gameplay
+  at the same tick compared, 25 pairs): at 800p all 8 matched pairs identical (4 of them M13 vs M14); at 1440p and
+  4K, 14 of 17 identical, among them M14 run 4 identical to three M13 runs at 1440p and M14 runs 1 and 4 to two M13
+  runs at 4K. The 3 others differ in one pixel by one level in play_start, each involving a single run (4K M14 run 2
+  against two M13 runs; 1440p M14 run 2 against M13 run 2), the run-to-run variation M13 already recorded (10.6). U2 and R1 were also identical to their base in round 1.
+- **Vulkan validation** (1440p, warm and cold cache; cold exercises the background pipeline replacement): only the
+  K75 IDs, as in M13. 800p's K77 message is in the texture cache, not touched.
+- **Unit tests:** all pass except kuf_insn_divergence_tests (K1, expected to fail).
+- **ctest** (same labels as M12/M13, build/logs/m14-regression-1.log): 135 of 142; the 7 others are the K66 display
+  routes, as in M12 and M13.
+- **Stability** (tools/stability.py --tag m14, build/logs/m14-stability.log): 21 of 21 passed; peak RSS 1537 MB; the
+  32-minute long run grew 0.17 MB per minute (M13: 0.13, M12: 0.17).
+- **Patches:** U2 extends the upload code of SDK patch 0016 and is folded into it (apply_sdk_patches.sh --check
+  reverse-applies each patch alone, so overlapping patches are not possible); P3 is patch 0018. --check passes, and
+  patches 0001-0018 applied to a fresh export of the SDK commit give the working tree exactly (new files included).
+- **Saves, installer, updater:** not touched by M14 (no files changed); save/load is covered by the stability runs.
+
+### 11.9 Steam Deck compatibility (no hardware tested)
+
+- Portable package (build/packages/m14-final, --strip): REQUIRES glibc 2.30, glibcxx 3.4.32, bundled libstdc++
+  3.4.33, the same as M13; old_runtime_test.sh (Steam Runtime 3 sniper, glibc 2.31): OLD RUNTIME PASS.
+- No new extension, feature or instruction set: U2 is CPU memory and copies; P3 uses
+  VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT (core Vulkan 1.0; RADV honours it, a driver may ignore it). P3 is only
+  used with two or more pipeline creation threads (the Deck gets 6 by default) and keeps creation thread 0 free.
+- On the Deck's shared memory U2 costs up to 128 MB of RAM and saves the CPU copies and the upload bandwidth; switch
+  off with --vulkan_upload_skip_unchanged_mb=0 or --vulkan_pipeline_fast_first_compile=false.
+- 1280×800 was in every matrix. Deck defaults, installer and updater unchanged. Not measured on Deck hardware.
+
+### 11.10 Remaining bottlenecks and next steps
+
+- **4K** (6.7 ms GPU, 94 % busy): draws 2.4-2.9 ms, texture loads and resolves about 3 ms together, transfers 1.3 ms
+  (11.4). The next large step is resolving straight into sampled textures and avoiding the 1×/2× MSAA transfers:
+  a render target / texture cache redesign.
+- **Below 4K:** the guest threads (one core) and the GPU command thread (0.7 core), no single hotspot.
+- **K76:** shorter but still present; what remains is the skipped presentation while the pipeline is built.
+- Memory: U2's copies could be capped lower on small-memory systems if a Deck test shows pressure.
+
+### 11.11 Reproducing
+
+- Patches: patches/rexglue-sdk/0016 (with U2), 0018 (P3); rejected R1 in patches/rejected/.
+- Builds: build/m13-final (baseline), build/m14-exp, build/m14-exp2 (candidates by cvar), build/m14-cand (final).
+- Tags: m14-b0 (baseline), m14-tr4k (trace), m14-u2 / m14-u2b, m14-r1 / m14-r1b, m14-c3 / m14-c0 (P3 cold),
+  m14-val-u2, m14-fval-warm / -cold, m14-fm13 / m14-fm14, m14-fc13 / m14-fc14, m14-fk13 / m14-fk14, m14-prof-*.
+  Equivalence: run prefixes m14-eq* (round 1) and m14-feq* (final).

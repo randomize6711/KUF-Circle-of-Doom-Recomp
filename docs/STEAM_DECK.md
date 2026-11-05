@@ -1,115 +1,116 @@
-# Steam Deck and other Linux PCs: packages, installation, updates
+# Steam Deck and other Linux PCs: the portable build, installation, updates
 
-Status (2026-10-30): the package, installer, launcher and updater are built and tested on this development PC with
-synthetic packages (`tools.updater_security`, 18 cases). **Nothing here has been run on a Steam Deck yet**, and no
-release has been published (see "Blockers").
+Status (2026-11-01, M11): releases are built for **glibc 2.31 and newer** (SteamOS 3.x, Debian 11+, Ubuntu 20.04+,
+any current desktop distribution) with their own C++ library, and the setup checks the graphics driver for what the
+game's renderer needs. Tested on this development PC (Arch, RADV) and in an old Linux runtime (Steam Runtime 3:
+glibc 2.31, libstdc++ 10). **Not yet run on a physical Steam Deck** (section 7).
 
-## 1. What you need
-- Your own copy of the original Xbox 360 game, extracted to a folder: the folder that contains `default.xex` (the
-  same folder this port uses on the PC). The port only reads it; it never writes there.
-- A package of the port (section 2). It contains no game data, but it does contain code recompiled from the game's
-  executable: keep it for your own use with your own copy.
+## 1. Why v0.7.0 did not install on a Steam Deck (M11 findings)
+- **glibc.** v0.7.0 was built on this Arch PC (glibc 2.44, GCC 16 libstdc++). Its binaries imported symbol versions
+  that exist only there: `librexruntimerd.so` needed GLIBC_2.44 (`cosh`, `sinh`: glibc 2.43/2.44 re-versioned the
+  math functions) and GLIBCXX_3.4.36 (`std::format` internals of GCC 16), `kuf_cod` GLIBC_2.43 (`sqrtf`, `remainder`)
+  and GLIBC_2.38 (`__isoc23_strtol`: C23 headers); the setup itself only needed glibc 2.38. The setup read these
+  needs from the binaries (`requires.txt`) and correctly refused SteamOS, whose glibc is older. Nothing in
+  the game needs those functions' new versions: it was purely the build machine.
+- **Vulkan.** v0.7.0's setup had **no** Vulkan check: nothing in it (or in the game's launcher) reads the graphics
+  driver, so the Vulkan message seen on the Deck did not come from the setup's checks (to be identified from a
+  screenshot or log). The game's real requirements (ReXGlue SDK, `src/ui/vulkan/vulkan_device.cpp`): Vulkan 1.0; the
+  features `independentBlend`, `fragmentStoresAndAtomics`, `vertexPipelineStoresAndAtomics`, `geometryShader`,
+  `fillModeNonSolid`; a graphics + compute queue; `VK_KHR_swapchain`; `VK_KHR_surface` with the X11 (xcb) or Wayland
+  surface. RADV (SteamOS's driver for the Deck's RDNA 2 GPU) has all of them. No GPU names or driver versions are
+  checked anywhere.
+- **One real gap, fixed:** the M9 direct texture loads (SDK patch 0013) created textures with storage usage without
+  asking the device whether their formats support storage images. Now the 14 formats are checked at start
+  (`vkGetPhysicalDeviceFormatProperties`, optimal tiling) and any that is not supported takes the staging-buffer path
+  (logged). On this PC (RADV, RDNA 4) all 14 are supported, so the desktop keeps every fast path; RADV reports the
+  same for RDNA 2.
 
-## 2. Make a package (on the development PC)
+## 2. Portable build
 ```sh
-ninja -C build/linux-amd64-relwithdebinfo -j8         # the build (AGENTS.md)
-tools/package/package_linux.sh                        # -> build/packages/kuf-cod-recomp-<version>-linux-x86_64.tar.gz
-tools/package/package_linux.sh --strip                # smaller; crash reports then name fewer host functions
+tools/toolchain/setup_sniper.sh                  # once: build/toolchains (about 1.3 GB download, 15-30 min)
+cmake --preset linux-amd64-portable && cmake --build build/linux-amd64-portable
+tools/package/package_linux.sh --strip           # refuses binaries that exceed the baseline
+tools/toolchain/old_runtime_test.sh build/packages/kuf-cod-recomp-*.tar.gz   # the package on glibc 2.31
 ```
-The package holds `bin/` (the game and its three libraries, found through `$ORIGIN`), `kuf-cod.sh` (launcher),
-`install.sh`, `kuf_update.py`, `VERSION`, `MANIFEST.sha256` (every file's SHA-256) and licenses. About 76 MB.
-
-**glibc:** packages built on this PC need glibc 2.44 (and libstdc++ GLIBCXX 3.4.36). SteamOS ships an older
-glibc, so the package runs on a Steam Deck only inside a container with a current userland (section 3, option A),
-until a build environment with an older glibc is approved (option B).
+- **Sysroot:** Valve's Steam Runtime 3 "sniper" SDK (Debian 11, glibc 2.31), pinned version and SHA-256
+  (`cmake/steamrt3-sniper-version.cmake`), unpacked under `build/toolchains`. This machine's Clang compiles against it
+  (`cmake/steamrt3-sniper.cmake`): headers, libraries and pkg-config files come only from the sysroot; its absolute
+  symbolic links are made relative so nothing resolves to this machine's files. SDL's Wayland code is generated with
+  the sysroot's own wayland-scanner (libwayland 1.18). Same compiler flags as the desktop build (`-O2 -g`,
+  `-march=x86-64-v2`; the Deck's Zen 2 has x86-64-v3).
+- **C++ library:** the SDK's GCC 14 ships only a static libstdc++, but the game's GPU code is a plugin sharing C++
+  objects with the runtime, so it needs one shared copy. `setup_sniper.sh` builds GNU GCC 14.2.0's libstdc++ (SHA-256
+  pinned source, the configuration of the SDK's own GCC 14) inside the sysroot. The package carries it as
+  `bin/compat/libstdc++.so.6` (GLIBCXX_3.4.33, needs glibc 2.26). The launcher uses it only when the system's
+  libstdc++ is older than the game needs (`REQUIRES`); otherwise the system's (it then also serves the graphics
+  driver, which may need the newer one). Not in `$ORIGIN`, where it would always win.
+- **Result:** the game needs glibc 2.30 and GLIBCXX 3.4.32 (GCC 13); the setup glibc 2.25, with its C++ library
+  linked in. glibc itself is never bundled.
+- **Checks:** `package_linux.sh` writes `REQUIRES` (glibc, glibcxx, glibcxx-bundled) from the binaries and refuses
+  anything above the baseline; the release audit refuses the same from the ELF version tables, and a REQUIRES or
+  manifest `requires` that does not match (docs/RELEASING.md); `build_appimage.sh` refuses a setup above the baseline
+  or linking libstdc++.
 
 ## 3. Install on a Steam Deck
-Copy the package to the Deck (USB stick, `scp`, a network share), then in Desktop Mode open Konsole.
+**You need the game's files on the Deck, with an unencrypted `default.xex`.** Retail copies are encrypted and are
+refused (docs/RETAIL_FILES.md). This has not been tried on a physical Deck yet (section 7).
 
-### Option A: in an Arch Linux distrobox (works with today's packages; untested on a Deck)
-SteamOS 3.5 and later include distrobox and podman.
-```sh
-distrobox create --name kuf --image docker.io/library/archlinux:latest
-distrobox enter kuf
-sudo pacman -Syu --needed vulkan-radeon vulkan-icd-loader libx11 libxcb wayland libpulse alsa-lib zenity
-tar -xzf ~/Downloads/kuf-cod-recomp-*-linux-x86_64.tar.gz -C ~/Downloads
-~/Downloads/kuf-cod-recomp-*-linux-x86_64/install.sh
-~/.local/share/kuf-cod-recomp/app/kuf-cod --game-dir /path/to/your/game   # first start; the folder is remembered
-exit
-```
-The container shares your home folder, so the install, saves and settings are in your normal home
-(`~/.local/share/kuf-cod-recomp/`), and the game folder can stay on the SD card.
+1. Desktop Mode (Power > Switch to Desktop). Download the AppImage from the GitHub release page in a browser, or copy
+   it over with a USB stick or a network share, into e.g. `~/Downloads`.
+2. Dolphin: right-click the AppImage > Properties > Permissions > "Is executable" or "Allow executing" (or Konsole:
+   `chmod +x ~/Downloads/KingdomUnderFire-CircleOfDoom-Setup-*.AppImage`). Double-click it.
+3. The setup checks the system first (libraries and the graphics driver; the welcome page names the system and the
+   GPU). Choose your game folder (with `default.xex`; the SD card is fine). Keep the installation folder
+   `~/Games/Kingdom Under Fire - Circle of Doom` or choose another; 5.5 GB must be free.
+4. Options: on SteamOS, "Add to Steam" is ticked when Steam has a profile: Game Mode starts only what is in the Steam
+   library. Steam must be closed while the setup adds the shortcut (the setup asks: Steam > Exit, then Retry).
+5. Install. The setup generates and compiles the game on the Deck, without a terminal or a compiler of yours. How long
+   this takes on a Deck has not been measured: plug it in. Cancel is safe, and an interrupted attempt continues.
+6. Start Steam again, then return to Gaming Mode. The game is in the library under non-Steam games. Controller: Steam
+   Input's default gamepad layout (the port reads it as an Xbox controller).
 
-**Game Mode:** Steam > Add a Non-Steam Game > Browse, any program (e.g. Konsole), then edit the shortcut:
-- Target: `/usr/bin/distrobox-enter`
-- Launch options: `-n kuf -- /home/deck/.local/share/kuf-cod-recomp/app/kuf-cod`
-- Controller: Steam Input's "Gamepad" template (Xbox layout); the port reads it as an Xbox controller.
+If the shortcut is missing: in Desktop Mode, Steam > Games > Add a Non-Steam Game to My Library > Browse, and choose
+`kuf-cod` in the installation folder.
 
-### Option B: native SteamOS package (blocked: approval)
-A package that runs directly on SteamOS needs a build against an older glibc: inside Valve's Steam Runtime
-"sniper" SDK image (Docker is installed on the development PC) or a Flatpak SDK. Both download an environment
-from outside the repository, which needs the player's approval (AGENTS.md rule 8). Then the launcher would be the
-shortcut's target directly.
+Without a window: `./KingdomUnderFire-...AppImage --check-system` prints what the setup checks (exit 0: compatible).
 
-### Settings for the Deck
-- Display: the port fills 16:10 (1280 x 800) correctly (M6C, Hor+), menus and HUD in the centred 16:9 area.
-- Frame rate (PC Settings > Frame Rate): the LCD Deck's screen runs at 60 Hz, the OLED's at up to 90 Hz. Start
-  with 60; whether the Deck holds 60 is not measured yet. 30 (Original) is the original game.
+### Settings on the Deck
+On the first start on a Steam Deck (recognised by its board: Valve Jupiter / Galileo, not by its GPU) and only
+when there is no `pc_settings.toml` yet: render scale 1x (the game's 1280x720 frame rendered once; "native" would
+render 1280x1440 for the 800-line screen) and VSync on (even pacing on its 60 Hz panel). The frame rate stays the
+original 30. Everything is changeable in PC Settings and never overwritten afterwards. The display fills 16:10
+(1280 x 800) Hor+, menus and HUD in the centred 16:9 area (M6C).
 
 ## 4. Updates
+In the installation folder (a terminal install: `~/.local/share/kuf-cod-recomp/app`):
 ```sh
-~/.local/share/kuf-cod-recomp/app/kuf-update check      # is there a newer release?
-~/.local/share/kuf-cod-recomp/app/kuf-update update     # download, verify, install, switch (asks first)
-~/.local/share/kuf-cod-recomp/app/kuf-update rollback   # back to the version before
-~/.local/share/kuf-cod-recomp/app/kuf-update status
+./kuf-update check      # is there a newer release?
+./kuf-update update     # download, verify, make the program, switch (asks first)
+./kuf-update rollback   # back to the version before
+./kuf-update status
 ```
-In the game: the title list's CHECK FOR UPDATES row runs the same check and shows the result in a dialog (installed
-and available version, release date and notes); Install downloads with progress (cancellable), verifies and installs,
-then offers Restart (docs/SETTINGS.md "Title menu rows"). With `--json` the updater prints one result line, and for
-`update` progress lines before it (`{"progress": bytes, "total": bytes}`, `{"stage": "verifying"}`); SIGTERM / SIGINT
-during the download cancel it (exit 5, nothing changed; leftovers of a killed run are removed at the next run).
-Restart: the launcher sets `KUF_RESTART_FILE` (or `--kuf_restart_file`); the game writes it and quits; the launcher
-then starts the install's stable `kuf-cod` again, which runs the version now current.
-
-Trying the whole flow without GitHub (done 2026-10-31): build two versions (`KUFCOD_RELEASE_VERSION=0.7.1` /
-`0.7.2`, `package_linux.sh`), install the older into a disposable root with a throwaway key's `allowed_signers`, put
-the newer and its signature with a `releases.json` in a local folder, and start the game in the sandbox with
-`--copy-dir <that folder>` and `--kuf_updater=` a wrapper running `kuf_update.py --source-dir ... --source-rate 3072`
-(slow enough to see progress and cancel) plus `--kuf_restart_file=...`.
-
-Updates are off until the install knows where releases come from and which key signs them:
-`install.sh --repo owner/name --signers allowed_signers` (or edit `app/update.conf` and copy `allowed_signers`).
-
-How an update is checked (tools/updater/kuf_update.py):
-- releases come only from the repository in `update.conf`, over HTTPS with certificate checks; redirects only to
-  GitHub's download hosts;
-- the package is verified before it is opened: an `ssh-keygen -Y verify` signature (ed25519, namespace
-  `kuf-cod-recomp-release`) by a key in `allowed_signers`; then its `VERSION` must equal the release's and every file
-  must match `MANIFEST.sha256`;
-- never a downgrade or a reinstall of the running version unless asked (`--allow-downgrade`); an old signed package
-  re-published under a newer number is refused by its `VERSION`;
-- unpacking refuses absolute paths, `..`, links, devices, set-uid files and anything outside the package's one
-  directory, with size limits; it unpacks next to the installed versions and switches with an atomic rename;
-- the version in use, the one before and one more are kept; `rollback` switches back;
-- saves, settings and logs (`~/.local/share/kuf-cod-recomp/data`) are never touched.
-
-Making a release (when the player decides to publish, see "Blockers"):
-```sh
-tools/package/sign_package.sh --new-key ~/kuf-release-key            # once; keep the private key safe and offline
-KUFCOD_RELEASE_VERSION=0.7.0 ninja -C build/linux-amd64-relwithdebinfo   # the version shown and checked
-tools/package/package_linux.sh --version 0.7.0
-tools/package/sign_package.sh --key ~/kuf-release-key/kuf-cod-release build/packages/kuf-cod-recomp-0.7.0-linux-x86_64.tar.gz
-# release v0.7.0 with both files: kuf-cod-recomp-0.7.0-linux-x86_64.tar.gz and .tar.gz.sig
-```
+A pre-release is only offered with `channel = prerelease` in `update.conf` there.
+In the game: the title list's CHECK FOR UPDATES row (docs/SETTINGS.md "Title menu rows"): the installed and the new
+version, Install Update / Open GitHub Page / Cancel; download with progress (cancellable), verification, Restart.
+Updates are signed (ed25519, `ssh-keygen -Y verify`; the production key is pinned in releases) and checked in detail
+(docs/RELEASING.md section 2), including whether this system can run the new version (M11: the signed manifest's
+`requires`, and the unpacked package's REQUIRES before the switch). A new version that fails its first start is
+switched back automatically. Saves, settings and logs (`~/.local/share/kuf-cod-recomp/data`) are never touched.
 
 ## 5. Logs and bug reports
-- Logs: `~/.local/share/kuf-cod-recomp/data/logs/kuf_cod.log` (64 MB, 3 files kept); a crash writes
-  `data/user/crash-report.txt`; each session's statistics: `data/user/run-summary.json`.
-- `kuf-cod --collect-logs` packs those (no saves, no game files) into `~/kuf-cod-logs-<date>.tar.gz`.
+- `~/.local/share/kuf-cod-recomp/data/logs/kuf_cod.log` (the game: `[kuf-platform]` names the system, Steam Deck
+  model and gamescope; the Vulkan device and driver follow), `logs/launcher.log` (each start: version, system,
+  board, glibc, which libstdc++, display, `LD_LIBRARY_PATH`, exit status); a crash writes `data/user/crash-report.txt`.
+- `kuf-cod --collect-logs`, in the installation folder, packs those (no saves, no game files) into
+  `~/kuf-cod-logs-<date>.tar.gz`. For example:
+  `~/"Games/Kingdom Under Fire - Circle of Doom"/kuf-cod --collect-logs`
+- The setup prints its system check to stderr: run the AppImage from Konsole to see it, or `--check-system`.
 
-## 6. Blockers
-- **Publishing:** a package contains code recompiled from the game's executable. Whether releases may be published
-  (and where) is the player's decision; the project has no licence file of its own yet. Until then: personal use.
-- **Release repository and signing key:** the player's choice (`update.conf`, `sign_package.sh --new-key`).
-- **Native SteamOS build:** an older-glibc build environment (section 3, option B) needs approval.
-- **Steam Deck hardware test:** not done (no Deck available to this session).
+## 6. What changed for desktop Linux
+Nothing visible: the same game, settings and update flow. Releases now also run on older distributions; on this PC
+the portable build passes the same tests as the desktop build (docs/TESTING.md).
+
+## 7. Not verified yet (needs the physical Steam Deck)
+The AppImage in Desktop Mode, the installation and how long its compile takes, the game's start in Desktop and Game Mode, rendering (RADV on
+RDNA 2), the controller through Steam Input, audio, frame rate at 1280 x 800, the Steam shortcut, the updater on the
+Deck. Steam's environment for non-Steam games (its runtime's `LD_LIBRARY_PATH`) is logged by the launcher.

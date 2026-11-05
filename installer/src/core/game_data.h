@@ -1,6 +1,7 @@
 // The player's original game files (installer/README.md "Game data"): the supported version's reference list
 // (installer/assets/game_v1.tsv: SHA-256, size and path of each file the game reads; the console's $SystemUpdate
-// folder is not needed) and the checks against a chosen folder. The folder is only ever read.
+// folder is not needed) and the checks against a chosen folder. The folder is only ever read. default.xex is compared
+// by its decompressed memory image and must be unencrypted: the setup carries no console keys (docs/LOCAL_BUILD.md).
 #pragma once
 
 #include <cstdint>
@@ -27,11 +28,20 @@ struct GameManifest {
 // Parses the reference list (tab-separated: sha256, size, path; '#' comment lines). Empty on a malformed list.
 GameManifest ParseGameManifest(std::string_view text, std::string name);
 
-// The quick check made when a folder is chosen: every file present with its size, and default.xex's SHA-256 (the
-// executable decides the version; the rest is hashed while it is copied).
+// A default.xex looked at without any key: its format and, when it is unencrypted, its memory image's SHA-256.
+enum class XexStatus { kUnreadable, kNotXex, kEncrypted, kUnsupportedCompression, kOk };
+struct XexInfo {
+  XexStatus status = XexStatus::kUnreadable;
+  std::string image_sha256;
+};
+XexInfo InspectXex(const fs::path& path);
+
+// The quick check made when a folder is chosen: every file present with its size, and default.xex's image SHA-256
+// (the executable decides the version; the rest is hashed while it is copied).
 struct GameCheck {
   bool folder_ok = false;        // a readable folder
   bool executable_found = false;
+  bool executable_encrypted = false;  // default.xex is encrypted: it cannot be used (docs/LOCAL_BUILD.md)
   bool executable_known = false; // default.xex is the supported version
   std::vector<std::string> missing;
   std::vector<std::string> wrong_size;

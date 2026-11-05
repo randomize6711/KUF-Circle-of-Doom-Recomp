@@ -21,14 +21,24 @@ add_library(kuf_setup_core STATIC
     src/core/game_data.cpp
     src/core/vdf.cpp
     src/core/steam.cpp
-    src/core/install.cpp)
+    src/core/install.cpp
+    src/core/localbuild.cpp
+    src/core/system_check.cpp)
 target_include_directories(kuf_setup_core PUBLIC src)
+# Vulkan's headers only (the loader is opened at run time): the SDK's pinned copy.
+target_include_directories(kuf_setup_core PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/rexglue-sdk/thirdparty/vulkan-headers/include")
+target_link_libraries(kuf_setup_core PUBLIC ${CMAKE_DL_LIBS})
 target_link_libraries(kuf_setup_core PUBLIC PkgConfig::GLIB)
 target_compile_options(kuf_setup_core PRIVATE -Wall -Wextra)
 
 add_executable(kuf-setup src/gui/main.cpp src/gui/unattended.cpp)
 target_link_libraries(kuf-setup PRIVATE kuf_setup_core PkgConfig::GTK3 PkgConfig::FONTCONFIG)
 target_compile_options(kuf-setup PRIVATE -Wall -Wextra -Wno-deprecated-declarations)
+
+# The local build without a window, for the updater (docs/LOCAL_BUILD.md).
+add_executable(kuf-localbuild src/localbuild_main.cpp)
+target_link_libraries(kuf-localbuild PRIVATE kuf_setup_core)
 
 # Unit tests (Catch2 from the pinned SDK, as the game's tests).
 set(KUF_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/rexglue-sdk")

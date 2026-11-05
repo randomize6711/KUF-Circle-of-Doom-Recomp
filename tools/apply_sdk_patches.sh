@@ -8,6 +8,19 @@ SDK="$ROOT/thirdparty/rexglue-sdk"
 CHECK=0
 [ "${1:-}" = "--check" ] && CHECK=1
 missing=0
+# The SDK's console-key tables are deleted by pattern, before the patches, so that no patch has to quote them
+# (docs/LOCAL_BUILD.md "Decryption keys"); patch 0019 removes the code that used them. The upstream files are unchanged.
+for spec in 'src/system/xex_module.cpp|xe_xex2_[a-z]*_key\[16\] *=' 'src/kernel/xboxkrnl/xboxkrnl_crypt.cpp|uint8_t key19\[\] *='; do
+  f="$SDK/${spec%%|*}"; rx="${spec#*|}"
+  if grep -q "$rx" "$f"; then
+    if [ "$CHECK" = 1 ]; then
+      echo "MISSING:  console keys still in ${spec%%|*}"; missing=1
+    else
+      sed -i "/$rx/,/};/d" "$f"
+      echo "removed:  console keys from ${spec%%|*}"
+    fi
+  fi
+done
 for p in "$ROOT"/patches/rexglue-sdk/*.patch; do
   [ -e "$p" ] || continue
   if git -C "$SDK" apply --check --reverse "$p" 2>/dev/null; then

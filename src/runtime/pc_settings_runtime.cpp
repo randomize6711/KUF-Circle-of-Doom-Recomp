@@ -11,6 +11,7 @@
 #include <rex/logging.h>
 
 #include "runtime/pc_settings.h"
+#include "runtime/platform_info.h"
 
 REXCVAR_DEFINE_STRING(kuf_pc_settings, "", "KUF/Settings",
                       "Override PC settings for this run: table.key=value,... (e.g. camera.modern_camera=false); "
@@ -41,6 +42,7 @@ std::string ReadFile(const std::filesystem::path& path, bool* ok) {
 
 void Init(const std::filesystem::path& user_data_dir) {
   std::lock_guard lock(g_mutex);
+  const bool steam_deck = kuf::platform::Current().steam_deck;  // logs the platform (bug reports)
   g_path = user_data_dir / "pc_settings.toml";
   g_current = {};
   g_file_text.clear();
@@ -66,7 +68,9 @@ void Init(const std::filesystem::path& user_data_dir) {
                   ec ? "it was left in place: " + ec.message() : "kept as " + bad.filename().string());
     }
   } else {
-    REXLOG_INFO("[kuf-settings] no {} yet: defaults", g_path.string());
+    ApplyFirstStartDefaults(&g_current, steam_deck);
+    REXLOG_INFO("[kuf-settings] no {} yet: defaults{}", g_path.string(),
+                steam_deck ? " for the Steam Deck (render scale 1x, VSync on)" : "");
   }
   const std::string overrides = REXCVAR_GET(kuf_pc_settings);
   if (!overrides.empty()) {

@@ -490,6 +490,15 @@ bool ExtendLayout(std::string_view name, std::vector<uint8_t>* data, std::string
       changed = true;
     }
   }
+  // The game's message box: the update offer's three buttons (src/runtime/title_menu.cpp; hidden in other boxes).
+  if (has(kuf::ui::kMessageBoxScene, kuf::ui::kMessageBoxButton)) {
+    std::vector<kuf::ui::ButtonClone> clones;
+    for (const uint32_t id : kuf::ui::kUpdateBoxButtons) clones.push_back({id, 423, 424});  // placed by the offer
+    auto with = kuf::ui::AddButtonClones(out, kuf::ui::kMessageBoxScene, kuf::ui::kMessageBoxButton, clones, why);
+    if (!with) return false;
+    out = std::move(*with);
+    changed = true;
+  }
   if (changed) *data = std::move(out);
   return changed;
 }

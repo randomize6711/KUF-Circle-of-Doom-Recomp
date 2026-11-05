@@ -26,7 +26,7 @@ checked on this machine. Impressions are marked **[I]**. Re-verify pinned versio
 | Clang | 23.1.3 (system) | SDK requires ≥ 20 |
 | CMake / Ninja | 4.4.4 / system | |
 | PowerPC binutils (tests only) | prebuilt in the SDK (`tools/binutils`, sha256 of `as`: `626017ea…`) | Run only inside `bwrap` (`tools/ppc_asm_sandboxed.sh`) |
-| Python | 3.14 + numpy 2.5.4 + cryptography | Analysis tools and test generator, run with `python3 -I` |
+| Python | 3.14 + numpy 2.5.4 | Analysis tools and test generator, run with `python3 -I` |
 
 Facts learned in M1 that differ from the M0 survey:
 - ReXGlue's manifest format replaced the wiki's TOML (`[project]` + `[entrypoint]`, `includes = [...]`).
@@ -48,14 +48,14 @@ Facts learned in M1 that differ from the M0 survey:
 
 ## Toolchain on this machine **[V-local]**
 
-clang, cmake, ninja, git, llvm-objdump, python3 (+`cryptography`) are present. Missing: `xxd`, `7z`
+clang, cmake, ninja, git, llvm-objdump, python3 are present. Missing: `xxd`, `7z`
 (not needed). Build host: Arch (Omarchy), kernel 7.2. ReXGlue and XenonRecomp require **Clang ≥ 18**.
 Windows builds need clang-cl/MSVC and an actual Windows test environment. Wine tests are not proof of
 Windows compatibility.
 
 ## Asset/format tools
 
-- In-house scripts (M0): `xexinfo.py` (XEX2 headers), `xeximage.py` (decrypt + basic decompress + import
+- In-house scripts (M0): `xexinfo.py` (XEX2 headers), `xeximage.py` (basic decompress + import
   ordinals via Xenia's export tables), `soxindex.py` (full `.sox`/`.pak` index + inflate check).
 - vgmstream / unxwb for XWB/XSB inspection; ffmpeg for the WMV title movies.
 - External community history: XeNTaX thread t=4361 (2010 QuickBMS PAK script, now offline); XPGameSaves
@@ -66,8 +66,10 @@ Windows compatibility.
 - Our runtime code can be BSD-3/MIT compatible if built on ReXGlue/Xenia. **Avoid copying UnleashedRecomp
   or MarathonRecomp code** unless the project accepts GPL-3.
 - Generated C++ from the game binary, extracted shaders and assets are **proprietary derivatives**. They live
-  only in ignored build directories and are never committed or distributed. Users supply their own disc
-  files.
+  only in ignored build directories and are never committed or distributed: a release makes them on the player's
+  machine from the player's files (docs/LOCAL_BUILD.md).
+- `thirdparty/disasm` in the SDK is GNU binutils code (GPL-2.0-or-later), linked into the code generator only; FFmpeg and
+  libmspack (LGPL) are linked into the runtime library. Each release carries their source (docs/LOCAL_BUILD.md "Licences").
 - A leaked "Sep 2006 Source Code" of COD appears on Hidden Palace (released Feb 2026). **Recommendation: do not
   download or consult it.** It is unlicensed proprietary code and would contaminate the project's provenance.
   (User decision.)

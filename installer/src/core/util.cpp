@@ -257,6 +257,7 @@ Requirements ParseRequirements(std::string_view text) {
   while (in >> key >> value) {
     if (key == "glibc") r.glibc = value;
     if (key == "glibcxx") r.glibcxx = value;
+    if (key == "glibcxx-bundled") r.glibcxx_bundled = value;
   }
   return r;
 }
@@ -288,6 +289,16 @@ std::string HostGlibcxx() {
         return 0;
       },
       &path);
+  if (path.empty()) {  // linked statically (the AppImage's setup): the system's own
+    for (const char* c : {"/usr/lib/x86_64-linux-gnu/libstdc++.so.6", "/lib/x86_64-linux-gnu/libstdc++.so.6",
+                          "/usr/lib64/libstdc++.so.6", "/usr/lib/libstdc++.so.6"}) {
+      std::error_code ec;
+      if (fs::exists(c, ec)) {
+        path = c;
+        break;
+      }
+    }
+  }
   std::string bytes;
   if (path.empty() || !ReadFile(path, &bytes)) return {};
   std::string best;
@@ -308,7 +319,9 @@ std::vector<std::string> CompatibilityProblems(const Requirements& need, const s
   if (!need.glibc.empty() && CompareVersions(glibc, need.glibc) < 0) {
     out.push_back("the C library (glibc) is " + glibc + "; the game needs " + need.glibc + " or newer");
   }
-  if (!need.glibcxx.empty() && (glibcxx.empty() || CompareVersions(glibcxx, need.glibcxx) < 0)) {
+  const bool bundled = !need.glibcxx_bundled.empty() &&
+                       (need.glibcxx.empty() || CompareVersions(need.glibcxx_bundled, need.glibcxx) >= 0);
+  if (!bundled && !need.glibcxx.empty() && (glibcxx.empty() || CompareVersions(glibcxx, need.glibcxx) < 0)) {
     out.push_back("the C++ library (libstdc++) provides " + (glibcxx.empty() ? std::string("an unknown version")
                                                                               : "GLIBCXX " + glibcxx) +
                   "; the game needs GLIBCXX " + need.glibcxx + " or newer");

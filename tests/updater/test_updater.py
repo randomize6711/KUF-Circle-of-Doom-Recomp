@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -402,14 +403,29 @@ def _(t):
     build = os.path.join(t, "build")
     os.makedirs(os.path.join(build, "bin"))
     os.makedirs(os.path.join(build, "generated_include"))
-    for f in ("kuf_cod", "librexruntimerd.so", "librexgpu-xenosrd.so", "libTracyClientrd.so"):
+    for f in ("rexgluerd", "librexruntimerd.so", "librexgpu-xenosrd.so", "libTracyClientrd.so"):
         with open(os.path.join(build, "bin", f), "w") as h:
             h.write(f)
+    # A stand-in builder: it writes the program it is asked for, or fails when told to.
+    builder = os.path.join(t, "builder")
+    os.makedirs(builder)
+    with open(os.path.join(builder, "kuf-localbuild"), "w") as h:
+        h.write('#!/bin/sh\n[ -n "$KUF_TEST_BUILD_FAILS" ] && { echo "no space left" >&2; exit 1; }\n'
+                'while [ $# -gt 0 ]; do [ "$1" = --output ] && out="$2"; shift; done\n'
+                'printf "#!/bin/sh\\necho game\\n" > "$out"; chmod +x "$out"\n')
+    os.chmod(os.path.join(builder, "kuf-localbuild"), 0o755)
+    game = os.path.join(t, "game")
+    os.makedirs(game)
+    with open(os.path.join(game, "default.xex"), "w") as h:
+        h.write("x")
     with open(os.path.join(build, "generated_include", "kuf_version_generated.h"), "w") as h:
         h.write('#define KUFCOD_VERSION "1.2.3"\n')
     out = os.path.join(t, "out")
     r = subprocess.run([os.path.join(ROOT, "tools", "package", "package_linux.sh"), "--build", build, "--out", out],
                        capture_output=True, text=True)
+    assert r.returncode == 1 and "not the portable build" in r.stderr, r.stderr  # releases are portable builds
+    r = subprocess.run([os.path.join(ROOT, "tools", "package", "package_linux.sh"), "--build", build, "--out", out,
+                        "--host-build", "--test-builder", builder], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     pkg = r.stdout.strip().splitlines()[-1]
     assert os.path.basename(pkg) == "kuf-cod-recomp-1.2.3-linux-x86_64.tar.gz", pkg
@@ -417,8 +433,10 @@ def _(t):
         names = tar.getnames()
     assert {n.split("/")[0] for n in names} == {"kuf-cod-recomp-1.2.3-linux-x86_64"}, names
     rel = {n.split("/", 1)[1] for n in names if "/" in n}
-    for need in ("bin/kuf_cod", "kuf-cod.sh", "install.sh", "kuf_update.py", "VERSION", "MANIFEST.sha256"):
+    for need in ("bin/rexgluerd", "builder/kuf-localbuild", "kuf-cod.sh", "install.sh", "kuf_update.py", "VERSION",
+                 "MANIFEST.sha256"):
         assert need in rel, f"missing {need}"
+    assert "bin/kuf_cod" not in rel, "the game's program must not be in a package"
     assert not any(x.endswith((".xex", ".pak", ".sox", ".xwb", ".wmv")) or "generated" in x for x in rel), rel
     # The real updater accepts it once signed.
     e = Env(os.path.join(t, "e"))
@@ -426,14 +444,28 @@ def _(t):
     p = os.path.join(e.src, os.path.basename(pkg))
     e.sign(p)
     e.release("1.2.3", p)
+    # Without the game's files the program cannot be made: refused, nothing changes.
+    code, res = e.run("update", "--yes")
+    assert code == 4 and "default.xex" in res["error"] and e.current() is None, f"{code} {res}"
+    os.makedirs(os.path.join(e.root, "game"))
+    shutil.copy(os.path.join(game, "default.xex"), os.path.join(e.root, "game", "default.xex"))
+    # A failed build refuses the update.
+    os.environ["KUF_TEST_BUILD_FAILS"] = "1"
+    try:
+        code, res = e.run("update", "--yes")
+    finally:
+        del os.environ["KUF_TEST_BUILD_FAILS"]
+    assert code == 4 and "no space left" in res["error"] and e.current() is None, f"{code} {res}"
+    assert not [n for n in os.listdir(os.path.join(e.root, "versions")) if n.startswith(".staging")], "staged leftovers"
     code, res = e.run("update", "--yes")
     assert code == 0 and e.current() == "1.2.3", f"{code} {res}"
+    assert os.access(os.path.join(e.root, "current", "bin", "kuf_cod"), os.X_OK), "the updater made the program"
     # install.sh from the unpacked package: a second install root, the stable launcher written.
     unpack = os.path.join(t, "unpack")
     with tarfile.open(p) as tar:
         tar.extractall(unpack, filter="data")
     root2 = os.path.join(t, "app2")
-    r = subprocess.run([os.path.join(unpack, "kuf-cod-recomp-1.2.3-linux-x86_64", "install.sh"), "--root", root2],
+    r = subprocess.run([os.path.join(unpack, "kuf-cod-recomp-1.2.3-linux-x86_64", "install.sh"), "--root", root2, "--game-dir", game],
                        capture_output=True, text=True)
     assert r.returncode == 0 and os.readlink(os.path.join(root2, "current")) == "versions/1.2.3", r.stderr
     assert os.access(os.path.join(root2, "kuf-cod"), os.X_OK), "launcher"
@@ -470,6 +502,42 @@ def _(t):
     r = subprocess.run([launcher], env=env, capture_output=True, text=True)
     assert f"--game_data_root={game}" in r.stdout.splitlines(), "remembered"
     assert os.listdir(game) == ["default.xex"], "nothing written into the game folder"
+
+
+@case("launcher (M11): the bundled libstdc++ only when the system's is older than the game needs; a start log")
+def _(t):
+    pkg = os.path.join(t, "pkg")
+    os.makedirs(os.path.join(pkg, "bin", "compat"))
+    launcher = os.path.join(pkg, "kuf-cod.sh")
+    with open(launcher, "w") as f:
+        f.write(open(os.path.join(ROOT, "tools", "package", "kuf-cod.sh")).read())
+    os.chmod(launcher, 0o755)
+    fake = os.path.join(pkg, "bin", "kuf_cod")
+    with open(fake, "w") as f:
+        f.write('#!/bin/sh\necho "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"\n')
+    os.chmod(fake, 0o755)
+    open(os.path.join(pkg, "bin", "compat", "libstdc++.so.6"), "wb").close()
+    game = os.path.join(t, "game")
+    os.makedirs(game)
+    open(os.path.join(game, "default.xex"), "w").close()
+    env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
+                                                            "LD_LIBRARY_PATH")}
+    env.update(HOME=os.path.join(t, "home"), XDG_CONFIG_HOME=os.path.join(t, "cfg"),
+               XDG_DATA_HOME=os.path.join(t, "data"), PATH="/usr/bin:/bin", KUF_NO_DIALOG="1")
+    compat = os.path.join(pkg, "bin", "compat")
+
+    def run(requires):
+        with open(os.path.join(pkg, "REQUIRES"), "w") as f:
+            f.write(requires)
+        r = subprocess.run([launcher, "--game-dir", game], env=env, capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return r.stdout.strip().splitlines()[-1]
+    # Newer than any system's: the bundled copy, first in the search path.
+    assert run("glibc 2.30\nglibcxx 3.4.99\nglibcxx-bundled 3.4.99\n") == f"LD_LIBRARY_PATH={compat}"
+    # Older than this system's: the system's own (nothing added).
+    assert run("glibc 2.30\nglibcxx 3.4.19\nglibcxx-bundled 3.4.33\n") == "LD_LIBRARY_PATH="
+    log = open(os.path.join(t, "data", "kuf-cod-recomp", "data", "logs", "launcher.log")).read()
+    assert "libstdc++: the bundled one" in log and "libstdc++: the system's" in log and "glibc " in log, log
 
 
 @case("check reports the installed version, the signed manifest's date and notes as plain text (not the release body)")
@@ -688,6 +756,75 @@ def _(t):
     e.release("2.0.0", p, edit=lambda m: m.update(min_installed="1.0.0"))
     code, r = e.run("update", "--yes")
     assert code == 0 and e.current() == "2.0.0", f"{code} {r}"
+
+
+@case("system (M11): an update needing a newer glibc or libstdc++ than this system has is refused before download")
+def _(t):
+    e = Env(t)
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    p = e.package("2.0.0")
+    e.sign(p)
+    e.release("2.0.0", p, edit=lambda m: m.update(requires={"glibc": "99.0"}))
+    code, r = e.run("check")
+    assert code == 4 and "glibc 99.0" in r["error"] and "newer system" in r["error"], f"{code} {r}"
+    code, r = e.run("update", "--yes")
+    assert code == 4 and e.current() == "1.0.0", f"{code} {r}"
+    assert not any(n.startswith(".download-") for n in os.listdir(e.root)), os.listdir(e.root)
+    # libstdc++: refused when neither this system's nor the package's own copy is new enough ...
+    e = Env(os.path.join(t, "cxx"))
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    p = e.package("2.0.0")
+    e.sign(p)
+    e.release("2.0.0", p, edit=lambda m: m.update(requires={"glibc": "2.17", "glibcxx": "3.4.99"}))
+    code, r = e.run("update", "--yes")
+    assert code == 4 and "GLIBCXX 3.4.99" in r["error"] and e.current() == "1.0.0", f"{code} {r}"
+    # ... and accepted when the package carries one that is (the launcher then uses it).
+    e = Env(os.path.join(t, "bundled"))
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    p = e.package("2.0.0")
+    e.sign(p)
+    e.release("2.0.0", p, edit=lambda m: m.update(requires={"glibc": "2.17", "glibcxx": "3.4.99",
+                                                            "glibcxx_bundled": "3.4.99"}))
+    code, r = e.run("update", "--yes")
+    assert code == 0 and e.current() == "2.0.0", f"{code} {r}"
+
+
+@case("system (M11): a requirement this updater cannot check is refused (the setup installs such a release)")
+def _(t):
+    e = Env(t)
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    p = e.package("2.0.0")
+    e.sign(p)
+    e.release("2.0.0", p, edit=lambda m: m.update(requires={"glibc": "2.17", "vulkan": "1.3"}))
+    code, r = e.run("check")
+    assert code == 4 and "vulkan" in r["error"] and "setup" in r["error"], f"{code} {r}"
+    p = e.package("3.0.0")
+    e.sign(p)
+    e.release("3.0.0", p, edit=lambda m: m.update(requires={"glibc": "new"}))
+    code, r = e.run("check")
+    assert code == 4 and "requires" in r["error"], f"{code} {r}"
+
+
+@case("system (M11): the unpacked package's REQUIRES is checked before the switch (also without a manifest)")
+def _(t):
+    e = Env(t)
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    p = e.package("2.0.0", files={"bin/kuf_cod": b"#!/bin/sh\n", "kuf-cod.sh": b"#!/bin/sh\n",
+                                  "kuf_update.py": b"#!/usr/bin/env python3\n", "REQUIRES": b"glibc 99.0\n"})
+    sig = e.sign(p)
+    code, r = e.run("install-package", p, sig)
+    assert code == 4 and "glibc 99.0" in r["error"] and e.current() == "1.0.0", f"{code} {r}"
+    assert sorted(os.listdir(os.path.join(e.root, "versions"))) == ["1.0.0"], os.listdir(e.root)
+    p = e.package("2.0.1", files={"bin/kuf_cod": b"#!/bin/sh\n", "kuf-cod.sh": b"#!/bin/sh\n",
+                                  "kuf_update.py": b"#!/usr/bin/env python3\n", "REQUIRES": b"glibc 2.17\n"})
+    sig = e.sign(p)
+    code, r = e.run("install-package", p, sig)
+    assert code == 0 and e.current() == "2.0.1", f"{code} {r}"
 
 
 @case("update writes .first-start for the launcher; rollback clears it")
@@ -1002,6 +1139,84 @@ def _(t):
     json.dump(e.releases, open(os.path.join(e.src, "releases.json"), "w"))
     code, r = e.run("check")
     assert code == 0 and r["latest"] == "1.0.0", f"{code} {r}"
+
+@case("check reports the signed in-game summary (else the notes), never the release page's text")
+def _(t):
+    e = Env(t)
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    p = e.package("1.1.0")
+    e.sign(p)
+    e.release("1.1.0", p, notes="Fixes the dialog.", edit=lambda m: m.update(summary="Fixes the dialog."))
+    e.releases[-1].update(body="Install: download the Setup AppImage and run it.")
+    json.dump(e.releases, open(os.path.join(e.src, "releases.json"), "w"))
+    code, r = e.run("check")
+    assert code == 0 and r["summary"] == "Fixes the dialog." and "AppImage" not in json.dumps(r), r
+    e2 = Env(os.path.join(t, "old"))
+    e2.publish("1.0.0")
+    e2.run("update", "--yes")
+    e2.publish("1.1.0")  # a manifest without a summary (0.7.0's): its notes
+    code, r = e2.run("check")
+    assert code == 0 and r["summary"] == "Notes.", r
+
+
+@case("an update downloads only the signed package, never the release's setup AppImage")
+def _(t):
+    e = Env(t)
+    e.publish("0.7.0")
+    e.run("update", "--yes")
+    p = e.publish("0.7.1")
+    img = os.path.join(e.src, "KingdomUnderFire-CircleOfDoom-Setup-0.7.1-x86_64.AppImage")
+    open(img, "wb").write(b"\x7fELF not to be run")
+    e.releases[-1]["assets"].insert(0, {"name": os.path.basename(img), "size": os.path.getsize(img),
+                                        "browser_download_url": "https://github.com/x/y/" + os.path.basename(img)})
+    proc, _ = _serve(e)
+    try:
+        code, lines = _run_http(e, "update", "--yes")
+        assert code == 0 and e.current() == "0.7.1", lines[-1]
+    finally:
+        proc.terminate()
+        proc.wait(10)
+    gets = [line.split('"GET ')[1].split(" ")[0] for line in open(os.path.join(t, "server.log")) if '"GET ' in line]
+    downloads = sorted(g.rsplit("/", 1)[1] for g in gets if g.startswith("/download/"))
+    assert downloads == sorted(["kuf-cod-recomp-0.7.1-linux-x86_64.tar.gz", "kuf-cod-recomp-0.7.1-linux-x86_64.tar.gz.sig",
+                                "kuf-cod-recomp-0.7.1-linux-x86_64.update.json",
+                                "kuf-cod-recomp-0.7.1-linux-x86_64.update.json.sig"]), downloads
+    assert not any("AppImage" in g for g in gets), gets
+
+
+@case("make_manifest.py: the summary goes into summary and notes; setup instructions refused")
+def _(t):
+    e = Env(t)
+    p = e.package("0.7.1")
+    good = os.path.join(t, "summary.txt")
+    open(good, "w").write("Fixes the update dialog.\n")
+    out = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "tools", "package", "make_manifest.py"), p,
+                          "--summary", good], check=True, capture_output=True, text=True).stdout.strip()
+    m = json.load(open(out))
+    assert m["summary"] == m["notes"] == "Fixes the update dialog.", m
+    bad = os.path.join(t, "bad.txt")
+    open(bad, "w").write("Download the Setup AppImage and run it.\n")
+    r = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "tools", "package", "make_manifest.py"), p,
+                        "--summary", bad], capture_output=True, text=True)
+    assert r.returncode != 0 and "setup" in r.stderr, r.stderr
+
+@case("check reports the release's own GitHub page for Open GitHub Page, nothing else")
+def _(t):
+    e = Env(t)
+    e.publish("1.0.0")
+    e.run("update", "--yes")
+    e.publish("1.1.0")
+    good = "https://github.com/player/kuf-cod-recomp/releases/tag/v1.1.0"
+    for html, want in ((good, good), ("https://evil.example/x", ""), (None, ""),
+                       ("https://github.com/other/repo/releases/tag/v1.1.0", "")):
+        if html is None:
+            e.releases[-1].pop("html_url", None)
+        else:
+            e.releases[-1]["html_url"] = html
+        json.dump(e.releases, open(os.path.join(e.src, "releases.json"), "w"))
+        code, r = e.run("check")
+        assert code == 0 and r["page"] == want, f"{html}: {r.get('page')}"
 
 
 def _fake_install(t, versions, bins):

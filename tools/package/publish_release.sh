@@ -31,6 +31,10 @@ TAG="v$VERSION"
 echo "== audit"
 python3 -I "$ROOT/tools/package/audit_release.py" "$DEST" --report "$DEST/audit.txt" | tail -1
 grep -q '^AUDIT: clean$' "$DEST/audit.txt" || { echo "the audit is not clean: $DEST/audit.txt" >&2; exit 1; }
+[[ -f "$DEST/SOURCE" ]] || { echo "no SOURCE (make the release with tools/package/make_release.sh)" >&2; exit 1; }
+grep -q '^built from commit ' "$DEST/audit.txt" || { echo "the audit did not tie the program to its commit" >&2; exit 1; }
+[[ -f "$DEST/KingdomUnderFire-CircleOfDoom-Setup-$VERSION-x86_64.AppImage" ]] ||
+  { echo "no setup AppImage: a release always carries the setup of the same version (--appimage)" >&2; exit 1; }
 echo "== GitHub state"
 gh api "repos/$REPO/commits/$TARGET" --jq .sha >/dev/null || { echo "$REPO has no commit $TARGET" >&2; exit 1; }
 if gh api "repos/$REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then echo "tag $TAG already exists on $REPO" >&2; exit 1; fi
@@ -40,7 +44,8 @@ FLAGS=(--latest)
 [[ "$CHANNEL" == prerelease ]] && FLAGS=(--prerelease)
 ASSETS=()
 for f in "KingdomUnderFire-CircleOfDoom-Setup-$VERSION-x86_64.AppImage" "$PKG" "$PKG.sig" \
-         "${PKG%.tar.gz}.update.json" "${PKG%.tar.gz}.update.json.sig" SHA256SUMS; do
+         "${PKG%.tar.gz}.update.json" "${PKG%.tar.gz}.update.json.sig" SHA256SUMS \
+         "${PKG%-linux-x86_64.tar.gz}-source.tar.xz" "${PKG%-linux-x86_64.tar.gz}-toolchain-sources.tar"; do
   [[ -f "$DEST/$f" ]] && ASSETS+=("$DEST/$f")
 done
 echo "== publish $TAG to $REPO (${#ASSETS[@]} assets, $CHANNEL)"
@@ -56,8 +61,11 @@ done
 echo "all ${#ASSETS[@]} assets downloaded again: identical"
 mkdir -p "$CHECK/root"
 printf 'repo = %s\nkey_identity = release@kuf-cod-recomp\n' "$REPO" > "$CHECK/root/update.conf"
+[[ "$CHANNEL" != prerelease ]] || echo "channel = prerelease" >> "$CHECK/root/update.conf"  # stable installs ignore it
 cp "$ROOT/tools/package/allowed_signers" "$CHECK/root/allowed_signers"
 python3 -I "$ROOT/tools/updater/kuf_update.py" --install-root "$CHECK/root" --json check | tee "$CHECK/check.json"
 python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if r.get("latest")==sys.argv[2] else 1)' \
   "$CHECK/check.json" "$VERSION" || { echo "the updater does not see $VERSION on GitHub" >&2; exit 1; }
+echo "== the release as players download it (tools/package/verify_github_release.sh)"
+"$ROOT/tools/package/verify_github_release.sh" "$TAG" "$CHECK/as-published" --repo "$REPO"
 echo "published and verified: https://github.com/$REPO/releases/tag/$TAG"

@@ -1,0 +1,1 @@
+A new update dialog (Install Update, Open GitHub Page, Cancel) and stricter release checks. Your saves and settings are kept.

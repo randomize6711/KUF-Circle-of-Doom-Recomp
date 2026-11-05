@@ -97,6 +97,21 @@ std::optional<std::vector<uint8_t>> MoveControls(std::span<const uint8_t> data, 
                                                  const std::vector<uint32_t>& ids, int32_t dx, int32_t dy,
                                                  std::string* error);
 
+// Copies of a scene's button control (type 1) with new IDs, each placed at (x, y), its text set by code (the source's
+// text number kept until then): the update box's three buttons (src/runtime/update_box.cpp) from the message box's
+// own. Images the source button owns (its state images, +100..+132, whose owner field +376 is the source) are copied
+// too, with IDs `id + 0x4000 + k`, at the same offset from their button. Added after the source.
+struct ButtonClone {
+  uint32_t id;
+  int32_t x, y;
+};
+std::optional<std::vector<uint8_t>> AddButtonClones(std::span<const uint8_t> data, uint32_t scene_id, uint32_t source,
+                                                    const std::vector<ButtonClone>& clones, std::string* error);
+// The game's message box (scene 0x025: the message text, the answer line button 0x02501001, a second text below).
+constexpr uint32_t kMessageBoxScene = 0x02500000;
+constexpr uint32_t kMessageBoxButton = 0x02501001;
+constexpr uint32_t kUpdateBoxButtons[3] = {0x02501010, 0x02501011, 0x02501012};  // Install, GitHub, Cancel
+
 // The multiplayer menus' columns on the game type screen (scene 0x02F, UiStartGame.uitb; src/runtime/lobby_screen.cpp):
 // for each of its six rows a label text (kLobbyLabelText + row) and a value text (kLobbyValueText + row), copies of
 // the screen's description line (left-aligned, the rows' text size), at fixed places: the label column from the rows'

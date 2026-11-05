@@ -3,6 +3,10 @@
 Read this first after a context reset or interruption, then `docs/PROGRESS.md` for history. Update it after every
 completed step (commit it with the step).
 
+## Release cleanup (2026-11-04)
+The old draft releases are deleted. The public history's key removal and the rc.2 publication wait for the player's explicit
+approval; nothing is signed or published without it. Private recovery copies stay outside the repository and are never uploaded.
+
 ## Mandate (2026-10-30, the player's "FINAL OVERRIDE")
 Work autonomously through the feature-completion roadmap below without stopping between features. After each
 feature: build, run lightweight targeted checks (never skip the high-risk ones: updater security, save integrity,
@@ -39,8 +43,8 @@ Facts (2026-10-30):
   Flatpak SDK): **needs approval** (downloads a container image / runtime outside the repo; AGENTS rule 8).
 - The binary's RUNPATH is `$ORIGIN`: a package directory with kuf_cod + librexruntime/librexgpu/libTracyClient is
   relocatable.
-- **Legal blocker for publishing:** a release package contains the recompiled game code (derived from the
-  player's XEX). Publishing it on GitHub is the player's decision; until then packages are for personal use only.
+- **Distribution model (2026-11):** a release carries no game code and no console keys; the setup builds the game on the
+  player's machine from an unencrypted default.xex (docs/LOCAL_BUILD.md). v0.7.0 and v0.7.0-dev.169 are withdrawn.
 - No git remote; the release repository (owner/name) and the release signing key are the player's to choose.
 - Signature verification: `ssh-keygen -Y verify` (ed25519; present on SteamOS and here), no new dependency.
 
@@ -133,7 +137,72 @@ no Steam, no network, no push/merge). Results: docs/PERFORMANCE.md section 8.
 - **M9 is at its gate: waiting for the player's review.** Not done: 120 fps at 4K, GPU idle between submissions,
   K75 (SDK validation messages).
 
+## M11: Steam Deck compatibility (2026-11-01, branch `m10/updater`)
+The player's M11 prompt: one portable AppImage and package for SteamOS and desktop Linux; build environments
+allowed (no system changes); no publishing, push or merge without approval; manual Deck test by the player.
+- Findings and design: docs/STEAM_DECK.md sections 1-2. v0.7.0 needed glibc 2.44 (build machine only); its setup had
+  no Vulkan check (the Deck's Vulkan message is not from it: ask the player for its text). Real gap fixed: SDK
+  patch 0013 now checks storage-image format support (staging fallback).
+- Portable build: tools/toolchain/setup_sniper.sh (sniper 3.0.20260928.262393 sysroot + GCC 14.2.0 libstdc++ built
+  in it, build/toolchains), preset linux-amd64-portable (cmake/steamrt3-sniper.cmake). Game: glibc 2.30, GLIBCXX
+  3.4.32, bundled libstdc++ 3.4.33 in bin/compat (launcher picks it only when the system's is older). Setup: glibc
+  2.25, libstdc++ static.
+- Checks: package_linux.sh REQUIRES + baseline refusal; audit portability rules (19 audit tests); updater refuses
+  updates the system cannot run (manifest `requires`, package REQUIRES; 48 updater tests); setup system check
+  (Vulkan features, SteamOS/Deck, 20 setup tests); old-runtime test tools/toolchain/old_runtime_test.sh (PASS; the
+  v0.7.0 package FAILS it as it should).
+- Steam Deck defaults on first start only (render scale 1x, VSync on); platform logged ([kuf-platform]);
+  launcher.log.
+- Release candidate: 0.8.0-rc.1 (pre-release), notes docs/release-notes/v0.8.0-rc.1*.txt. The unpublished v0.7.1
+  release folder is superseded for the Deck test (the player has not signed or approved it).
+- Built from de55b82 (build/releases/v0.8.0-rc.1, unsigned): audit clean, AppImage selftest PASS (19), upgrade from
+  a disposable v0.7.0 install with the 0.7.0 updater PASS, forced-Deck run 1280x800 PASS. Tests on the portable
+  build: 1,824 non-game ctest tests PASS; game subset (build/runs/m11-ctest-game.txt) 22/27: smoke, capture,
+  gameplay (new_game, controller_gameplay, combat_loot, k24), render (frames_complete, native 4K, 32:9, check),
+  display 16:10 / native 16:10 / ref 16:9 and 9 menu routes PASS. The 5 red (menu.sdl_events, menu.sliders,
+  menu.title_arrow, display.display_menu, display.display_title) fail the same on the desktop build: routes
+  written before the M7 menu overhaul (K66), not M11.
+
+## M12: advanced performance optimisation (2026-11-02, branch `m12/performance` from e59ffb1)
+The player's M12 prompt: desktop optimisation (Deck testing postponed), sandboxed automated runs only, local commits
+only (no push, merge, release, signing-key or installation changes). Results: docs/PERFORMANCE.md section 9.
+- Kept: SDK patch 0014 (type-0 register ranges in bulk, dcf681e), SDK patch 0015 (timer queue blocking wait,
+  4a4e615). Diagnostics fa4c351, 2306ef5. Tool: tools/merge_shader_storage.py (b812676).
+- Rejected: narrower invalidation window, guest GPU-wait backoff (source kept only in the session scratchpad; it
+  helps CPU-limited runs: re-measure on the Deck), GetRegisterInfo gating (no cost left).
+- Frozen builds: build/m12-frozen-base (e59ffb1), build/m12-final (4a4e615). Warm cache for all M12 comparisons:
+  build/warmcache/m12-union (rebuild with merge_shader_storage.py from build/runs/m8-m12-*).
+- Final matrix tags m12-mb / m12-mf (4 sizes x 4+4), build/logs/m12-matrix.md. Verification: build/logs/m12-*.
+- **M12 is at its gate: waiting for the player's review.** Next candidates: resolves into texture images (4K copies),
+  command-processor translation, a loading-screen tick mode (needs approval: changes timing).
+
+## M13: Vulkan GPU optimisation at 4K (2026-11-02/03, branch `m13/gpu` from d44c219)
+The player's M13 prompt: GPU optimisation, sandboxed automated runs only, local commits only; physics (Jolt) is
+postponed until the player asks. Results: docs/PERFORMANCE.md section 10.
+- Kept: SDK patch 0016 (shared memory uploads hoisted to the submission start), 0017 (upload buffers in BAR
+  VRAM on discrete GPUs). 4K: 104.8 -> 119.4 fps, p99 19.7 -> 16.3 ms, GPU 8.6 -> 7.2 ms per frame.
+- Rejected: P1/P2 (pipeline placeholders, async depth-only pipelines): no effect on K76 hitches.
+- Frozen builds: build/m13-base, build/m13-final. Verification logs: build/logs/m13-*.
+- **M13 is at its gate: waiting for the player's review.** Next candidates: R1 redundant depth resolve, finer
+  upload granularity, pipeline libraries for K76.
+
+## M14: uploads, resolves and pipeline creation (2026-11-03/04, branch `m14/performance` from 0dcb3d6)
+The player's M14 prompt: advanced Vulkan rendering, upload and pipeline optimisation; sandboxed automated runs only,
+local commits only; physics (Jolt) stays postponed. Results: docs/PERFORMANCE.md section 11.
+- Build isolation: every SDK target writes into its own build tree (8bc6f1b).
+- Kept: U2 (unchanged pages not uploaded again, folded into SDK patch 0016), P3 (pipelines created without
+  optimisation first, SDK patch 0018). GPU per frame 4K 7.0 -> 6.7 ms, 800p 3.1 -> 2.6; 4K 126.0 -> 131.4 fps; cold
+  1440p 0.1 % low 18.3 -> 25.5 fps. RSS +130 MB.
+- Rejected: R1 (redundant resolves, no measurable gain; patches/rejected/), pipeline libraries (from measurements).
+- Frozen builds: build/m13-final (baseline), build/m14-exp, build/m14-exp2, build/m14-cand. Logs: build/logs/m14-*.
+- **M14 is at its gate: waiting for the player's review.**
+
 ## Next exact action
+**M14:** at the milestone gate (report delivered); wait for the player.
+**M13:** at the milestone gate (report delivered); wait for the player.
+**M12:** at the milestone gate (report delivered); wait for the player.
+**M11:** 0.8.0-rc.1 built and reported; waiting for the player's Steam Deck test (and the text of the original
+Vulkan message). Do not publish; Phase 12 (the next release) only after the Deck results.
 **M9:** at the milestone gate (report delivered); wait for the player.
 **M8:** at the milestone gate (report delivered); wait for the player. Before M8 (M7):
 **Now:** the player tests the overhaul manually (checklist in the report); only then automated in-game tests.
@@ -144,7 +213,6 @@ then the comprehensive regression (not run yet).
 
 ## Required approvals (open)
 - Publishing release packages (contains game-derived code) and choosing the GitHub repository.
-- Downloading an older-glibc build environment (Docker image or Flatpak SDK) for a native SteamOS build.
 - Merging M6D / this branch into main (never without approval).
 
 ## Tests performed / deferred

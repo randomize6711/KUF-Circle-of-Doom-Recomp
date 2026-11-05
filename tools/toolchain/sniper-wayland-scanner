@@ -1,0 +1,11 @@
+#!/bin/sh
+# The sysroot's own wayland-scanner (libwayland 1.18), run inside the sysroot (cmake/steamrt3-sniper.cmake): code it
+# generates calls only what libwayland-client 1.18 has, where this machine's newer scanner would emit
+# wl_proxy_marshal_flags (1.20). The repository is visible at its own path (protocol files in, headers out).
+set -eu
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+V="$(sed -n 's/^set(KUFCOD_SNIPER_VERSION \(.*\))$/\1/p' "$ROOT/cmake/steamrt3-sniper-version.cmake")"
+SR="${KUFCOD_SNIPER_SYSROOT:-$ROOT/build/toolchains/sniper-$V/sysroot}"
+exec bwrap --ro-bind "$SR/usr" /usr --ro-bind "$SR/lib" /lib --ro-bind "$SR/lib64" /lib64 --ro-bind "$SR/etc" /etc \
+  --dev /dev --proc /proc --tmpfs /tmp --bind "$ROOT" "$ROOT" --chdir "$PWD" --unshare-all --die-with-parent \
+  /usr/bin/wayland-scanner "$@"

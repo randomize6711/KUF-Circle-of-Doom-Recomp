@@ -53,18 +53,21 @@ std::string Sha256File(const fs::path& path);
 std::string CopyHashed(const fs::path& from, const fs::path& to, const std::function<void(uint64_t)>& progress,
                        const std::function<bool()>& cancelled);
 
-// The game package's system requirements (payload/requires.txt, written by build_appimage.sh from the binaries):
-// "glibc 2.44" and "glibcxx 3.4.36" lines. The check compares them with this system's C library and the C++ library
-// this program has loaded. `problems` lists what is too old (empty: compatible).
+// The game package's system requirements (its REQUIRES file, written by package_linux.sh from the binaries;
+// payload/requires.txt in the AppImage): "glibc 2.31", "glibcxx 3.4.33" and, when the package carries its own
+// libstdc++ (bin/compat, used by the launcher when the system's is older), "glibcxx-bundled 3.4.33". The check
+// compares them with this system's C library and C++ library. `problems` lists what is too old (empty: compatible).
 struct Requirements {
-  std::string glibc;    // "2.44"
-  std::string glibcxx;  // "3.4.36"
+  std::string glibc;            // "2.31"
+  std::string glibcxx;          // "3.4.33"
+  std::string glibcxx_bundled;  // "3.4.33", or "" (the system's libstdc++ must do)
 };
 Requirements ParseRequirements(std::string_view text);
 // -1, 0, 1 for dotted numeric versions ("2.39" < "2.44").
 int CompareVersions(std::string_view a, std::string_view b);
 std::string HostGlibc();
-// The newest GLIBCXX_3.4.x version the loaded libstdc++ defines ("" if unknown).
+// The newest GLIBCXX_3.4.x version this system's libstdc++ defines: the loaded one, else the one in the usual
+// library folders ("" if none).
 std::string HostGlibcxx();
 std::vector<std::string> CompatibilityProblems(const Requirements& need, const std::string& glibc,
                                                const std::string& glibcxx);

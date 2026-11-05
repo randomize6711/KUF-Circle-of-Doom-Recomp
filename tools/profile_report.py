@@ -180,7 +180,7 @@ def category(obj, func, exe):
     return obj
 
 
-def read_samples(prof, frame_from, frame_to, symbols, names, exe, top):
+def read_samples(prof, frame_from, frame_to, symbols, names, exe, top, thread_top=12, split_threads=False):
     path = os.path.join(prof, "samples.bin")
     if not os.path.exists(path):
         return None
@@ -198,6 +198,8 @@ def read_samples(prof, frame_from, frame_to, symbols, names, exe, top):
             cache[ip] = symbols.lookup(ip)
         obj, func = cache[ip]
         group = thread_group(names.get(tid, "?"))
+        if split_threads:
+            group = f"{group} [{tid}]"
         cat = category(obj, func, exe)
         by_cat[cat] += 1
         by_func[(cat, func)] += 1
@@ -205,8 +207,75 @@ def read_samples(prof, frame_from, frame_to, symbols, names, exe, top):
         by_thread_func[group][(cat, func)] += 1
     return {"samples": n, "by_category": by_cat.most_common(), "by_thread": by_thread.most_common(),
             "top_functions": [(c, f, k) for (c, f), k in by_func.most_common(top)],
-            "per_thread": {g: [(c, f, k) for (c, f), k in by_thread_func[g].most_common(12)]
+            "per_thread": {g: [(c, f, k) for (c, f), k in by_thread_func[g].most_common(thread_top)]
                            for g, _ in by_thread.most_common(8)}}
+
+
+def read_callers(prof, frame_from, frame_to, symbols, pattern, depth=3, top=25):
+    """Callers of the functions matching pattern, by stack scanning (--kuf_profile_stack_words): the first `depth`
+    words on the sampled stack that point into executable code (for a leaf function the first is its return address;
+    later ones may be stale values, so read them as likely, not certain)."""
+    path = os.path.join(prof, "samples_stack.bin")
+    if not os.path.exists(path):
+        return None
+    with open(os.path.join(prof, "samples.bin"), "rb") as f:
+        samples = list(SAMPLE.iter_unpack(f.read()))
+    with open(path, "rb") as f:
+        words = struct.unpack("<Q", f.read(8))[0]
+        stack = f.read()
+    rx = [(m[0], m[1]) for m in symbols.maps]
+    starts = [m[0] for m in rx]
+
+    def is_code(v):
+        i = bisect.bisect_right(starts, v) - 1
+        return i >= 0 and v < rx[i][1]
+
+    regex = re.compile(pattern)
+    first, chains = Counter(), Counter()
+    n = 0
+    for k, (ip, tid, frame) in enumerate(samples):
+        if not frame_from <= frame <= frame_to:
+            continue
+        _, func = symbols.lookup(ip)
+        if not regex.search(func):
+            continue
+        n += 1
+        vals = struct.unpack_from(f"<{words}Q", stack, k * words * 8)
+        code = [symbols.lookup(v)[1] for v in vals if v and is_code(v)][:depth]
+        if code:
+            first[code[0]] += 1
+            chains[" <- ".join(code)] += 1
+    return {"samples": n, "first": first.most_common(top), "chains": chains.most_common(top)}
+
+
+def read_inclusive(prof, frame_from, frame_to, symbols, names, thread_pattern, top=40):
+    """Approximate inclusive time on the threads whose name matches thread_pattern: each sample counts once for its
+    own function and once for every function a code address on its sampled stack belongs to (--kuf_profile_stack_words
+    words only, so deep callers are missed and stale words can add a function that is not on the stack)."""
+    path = os.path.join(prof, "samples_stack.bin")
+    if not os.path.exists(path):
+        return None
+    with open(os.path.join(prof, "samples.bin"), "rb") as f:
+        samples = list(SAMPLE.iter_unpack(f.read()))
+    with open(path, "rb") as f:
+        words = struct.unpack("<Q", f.read(8))[0]
+        stack = f.read()
+    rx = [(m[0], m[1]) for m in symbols.maps]
+    starts = [m[0] for m in rx]
+    regex = re.compile(thread_pattern)
+    counts = Counter()
+    n = 0
+    for k, (ip, tid, frame) in enumerate(samples):
+        if not frame_from <= frame <= frame_to or not regex.search(names.get(tid, "?")):
+            continue
+        n += 1
+        funcs = {symbols.lookup(ip)[1]}
+        for v in struct.unpack_from(f"<{words}Q", stack, k * words * 8):
+            i = bisect.bisect_right(starts, v) - 1
+            if v and i >= 0 and v < rx[i][1]:
+                funcs.add(symbols.lookup(v)[1])
+        counts.update(funcs)
+    return {"samples": n, "functions": counts.most_common(top)}
 
 
 def main():
@@ -221,6 +290,12 @@ def main():
     ap.add_argument("--top", type=int, default=40)
     ap.add_argument("--bin-dir", default=os.path.join(ROOT, "build", "linux-amd64-relwithdebinfo", "bin"))
     ap.add_argument("--json")
+    ap.add_argument("--thread-top", type=int, default=12, help="functions listed per thread group")
+    ap.add_argument("--split-threads", action="store_true", help="one group per thread (thread id), not per name")
+    ap.add_argument("--callers", metavar="REGEX",
+                    help="callers of the matching functions by stack scanning (needs --kuf_profile_stack_words)")
+    ap.add_argument("--inclusive", metavar="THREAD_REGEX",
+                    help="approximate inclusive time per function on the matching threads (stack scanning)")
     args = ap.parse_args()
     prof = os.path.join(args.run_dir, "user", "profile")
     if not os.path.isfile(os.path.join(prof, "frames.csv")):
@@ -270,7 +345,12 @@ def main():
             print(f"WARNING: {', '.join(newer)} in {args.bin_dir} were built after this profile was recorded: the "
                   "host function names below are not reliable (guest sub_ names in kuf_cod neither)", file=sys.stderr)
             report["symbols_unreliable"] = newer
-        report["samples"] = read_samples(prof, frame_from, frame_to, symbols, names, "kuf_cod", args.top)
+        report["samples"] = read_samples(prof, frame_from, frame_to, symbols, names, "kuf_cod", args.top,
+                                         args.thread_top, args.split_threads)
+        if args.callers:
+            report["callers"] = read_callers(prof, frame_from, frame_to, symbols, args.callers)
+        if args.inclusive:
+            report["inclusive"] = read_inclusive(prof, frame_from, frame_to, symbols, names, args.inclusive)
 
     f = report["frames"]
     print(f"profile {report['run']}: {report['from_s']:.0f}-{report['to_s']:.0f} s")
@@ -305,6 +385,21 @@ def main():
             print(f"   {g}:")
             for c, func, k in funcs:
                 print(f"    {100.0 * k / n:5.1f} %  {func[:110]}  [{c}]")
+    c = report.get("callers")
+    if c:
+        print(f"  callers of /{args.callers}/ ({c['samples']} samples; stack scanning: the first is the likely caller)")
+        for func, k in c["first"]:
+            print(f"    {100.0 * k / max(1, c['samples']):5.1f} %  {func[:150]}")
+        print("   chains:")
+        for chain, k in c["chains"][:15]:
+            print(f"    {100.0 * k / max(1, c['samples']):5.1f} %  {chain[:220]}")
+    elif args.callers:
+        print("  no stack words in this profile (record with --kuf_profile_stack_words)")
+    inc = report.get("inclusive")
+    if inc:
+        print(f"  inclusive on /{args.inclusive}/ ({inc['samples']} samples; stack scanning, approximate):")
+        for func, k in inc["functions"]:
+            print(f"    {100.0 * k / max(1, inc['samples']):5.1f} %  {func[:150]}")
     if args.json:
         with open(args.json, "w") as out:
             json.dump(report, out, indent=1)

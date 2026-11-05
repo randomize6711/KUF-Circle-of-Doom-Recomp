@@ -1,0 +1,81 @@
+Kingdom Under Fire: Circle of Doom Recomp 0.8.0-rc.2 (release candidate)
+
+This is a pre-release. It changes how the game is installed, and it is faster.
+
+This release contains no game files and no code of the game. The setup makes the native game on your own computer, from your own files, with tools it brings along. You do not need a compiler or a terminal, nothing is installed on your system, and nothing is uploaded.
+
+## Before you download: you need an unencrypted default.xex
+
+You need your own copy of the original Xbox 360 game (base version) with an **unencrypted** `default.xex`. **Ordinary retail copies are encrypted and do not work with this release.** It contains no console decryption keys and cannot decrypt your file, and this project does not provide a way to do so. If your `default.xex` is encrypted, the setup will tell you and will not install. See docs/RETAIL_FILES.md.
+
+Earlier releases (0.7.0 and 0.7.0-dev.169) are no longer offered.
+
+## Installing
+
+1. Download `KingdomUnderFire-CircleOfDoom-Setup-0.8.0-rc.2-x86_64.AppImage`.
+2. Make it executable (file manager: Properties > Permissions > Allow executing) and open it.
+3. Choose your game folder and an installation folder, then Install.
+
+The setup checks and copies your game files, generates the native code, compiles it and creates the shortcuts. Cancel is safe, and an interrupted attempt continues where it stopped. You need about 5.5 GB of free space; about 4.5 GB stays in use.
+
+On our test machine (Ryzen 7 5700X3D, limited to 4 of its 16 threads), generating and compiling took about 3 to 4 minutes. It will differ on your computer.
+
+## Steam Deck
+
+Not yet tested on a physical Steam Deck, so these steps are unconfirmed. You need your game files on the Deck, with an unencrypted `default.xex` (see above).
+
+1. Switch to Desktop Mode (Steam button > Power > Switch to Desktop).
+2. Download the AppImage from this page into `Downloads` (use a browser, or copy it over with a USB stick or a network share).
+3. In Dolphin, right-click it > Properties > Permissions, tick "Is executable" or "Allow executing", then double-click it.
+4. Choose your game folder (the SD card is fine), then the installation folder. The default is `~/Games/Kingdom Under Fire - Circle of Doom`.
+5. Leave "Add to Steam" ticked. Steam must be closed for this: the setup asks, so use Steam > Exit, then Retry.
+6. Install, and keep the Deck plugged in. It compiles on the Deck; how long that takes has not been measured.
+7. Start Steam again and return to Gaming Mode. The game is in your library under Non-Steam.
+
+If the shortcut is missing: in Desktop Mode, Steam > Games > Add a Non-Steam Game to My Library > Browse, and choose `kuf-cod` in the installation folder.
+
+If something fails, the logs are in `~/.local/share/kuf-cod-recomp/data/logs`. In Konsole, `~/"Games/Kingdom Under Fire - Circle of Doom"/kuf-cod --collect-logs` packs them for a bug report, and running the AppImage with `--check-system` prints what the setup checks. More in docs/STEAM_DECK.md.
+
+## Updates, saves and problems
+
+**Updates:** this is a pre-release, so an installed game is only offered it if `channel = prerelease` is in `update.conf` in the installation folder. Updates are signed and verified. If an update does not change the generated code it only links again, which takes seconds; otherwise it compiles again before switching, and a failed update leaves your current version in place. Installations older than this release cannot update to it: run this setup instead.
+
+**Your saves and settings** stay in `~/.local/share/kuf-cod-recomp/data` and `~/.config/kuf-cod-recomp`, and are kept when you install, update or uninstall. Logs are in `data/logs`.
+
+**Problems:** open an issue on this repository with the logs (`kuf-cod --collect-logs` packs them; no saves or game files are included).
+
+## What's new
+
+- **Automatic local recompilation:** the setup generates and compiles the native game from your files. No game code or console keys are in the download.
+- **Lower CPU use:** less overhead on the guest and GPU command threads.
+- **Vulkan optimisations:** fewer GPU synchronisation stalls, and game memory that has not changed is no longer uploaded again.
+- **Shorter stutters the first time a new effect is drawn:** pipelines start unoptimised, and an optimised one replaces them in the background.
+- **Steadier frame pacing,** with lower 99th-percentile frame times at 1080p and above in the table below.
+- **Installation and updates:** progress for each stage, safe Cancel, recovery after a crash, compiled code cached for reinstalls and updates, and failed updates that leave your version in place.
+- **Linux compatibility:** runs on Linux with glibc 2.31 or newer.
+
+## Performance
+
+Measured against 0.8.0-rc.1 with the same scripted scene, averages of 3 runs on a Ryzen 7 5700X3D and Radeon RX 9070 XT, Linux with Vulkan, frame cap 240:
+
+Resolution | Average fps | 99th percentile frame | GPU time per frame | CPU (one core = 100)
+1280x800 | 141 to 149 | 15.7 to 15.4 ms | 4.3 to 2.6 ms | 204 to 178
+1920x1080 | 144 to 163 | 17.4 to 13.9 ms | 5.4 to 4.1 ms | 200 to 177
+2560x1440 | 132 to 163 | 17.9 to 15.1 ms | 5.5 to 4.1 ms | 202 to 178
+3840x2160 | 101 to 131 | 19.5 to 15.2 ms | 8.7 to 6.7 ms | 188 to 173
+
+It uses more memory to do this: about 450 to 620 MB more video memory and about 130 MB more system memory. These measurements were made before the change to local installation, with a build whose generated code is the same function for function. Your results depend on your hardware, resolution and what is happening in the game.
+
+## Known limitations
+
+- An encrypted `default.xex` cannot be used (see above). Only the base version is supported; title updates are not.
+- **Steam Deck:** hardware compatibility is unverified. No test on a physical Steam Deck has been made. The installer has been tested on Valve's Steam Runtime 3 Platform image, but not on SteamOS itself. Its compile time has not been measured, and it has no Deck "Verified" status.
+- The first start compiles shaders, so the first minutes of play stutter more (K76: reduced, not eliminated).
+- K1, K66: see docs/KNOWN_ISSUES.md.
+- K75, K77: reports from Vulkan's validation layers, with no visible effect known.
+- The setup needs GTK 3 from your system, and the game needs a Vulkan driver.
+- Online co-op is not available.
+
+The project's own work is under the MIT licence, which grants nothing in the game itself (NOTICE). It uses FFmpeg and libmspack under the GNU LGPL. Licences and sources: `kuf-cod --licenses`, `licenses/THIRD-PARTY-NOTICES.txt` in the package, and the `-source.tar.xz` and `-toolchain-sources.tar` assets of this release.
+
+This is an unofficial fan project, not affiliated with or endorsed by the game's publishers.

@@ -1,0 +1,84 @@
+KUF port M13: upload buffer pages (shared memory uploads, constants, converted vertex and index data) are placed in
+device-local host-visible memory on discrete GPUs whose host-visible device-local heap is at least 1 GiB (resizable
+BAR), instead of system memory: about 21 MB of shared memory uploads per frame at 4K were copied over PCIe by the GPU.
+Integrated GPUs (the Steam Deck) and small BAR windows keep the old choice. --vulkan_upload_device_local=false
+restores it.
+diff --git a/src/ui/vulkan/vulkan_upload_buffer_pool.cpp b/src/ui/vulkan/vulkan_upload_buffer_pool.cpp
+--- a/src/ui/vulkan/vulkan_upload_buffer_pool.cpp
++++ b/src/ui/vulkan/vulkan_upload_buffer_pool.cpp
+@@ -11,15 +11,54 @@
+ 
+ #include <algorithm>
+ 
++#include <rex/cvar.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
+ #include <rex/ui/vulkan/upload_buffer_pool.h>
+ #include <rex/ui/vulkan/util.h>
+ 
++REXCVAR_DEFINE_BOOL(vulkan_upload_device_local, true, "UI/Vulkan",
++                    "Place upload buffers in device-local host-visible memory (resizable BAR) on discrete GPUs with a "
++                    "heap of at least 1 GiB")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++
+ namespace rex {
+ namespace ui {
+ namespace vulkan {
+ 
++namespace {
++
++// SDK patch 0017 (KUF port M13): with resizable BAR on a discrete GPU, upload pages live in device-local host-visible
++// memory, so the GPU's copies and reads of uploaded data (vertex data, constants, shared memory) do not cross PCIe
++// each frame. Integrated GPUs (the Steam Deck) and small BAR windows keep system memory.
++constexpr VkDeviceSize kMinUploadBarHeapSize = VkDeviceSize(1) << 30;
++
++uint32_t ChooseUploadMemoryType(const VulkanDevice* vulkan_device, uint32_t supported_types) {
++  if (REXCVAR_GET(vulkan_upload_device_local)) {
++    const VulkanInstance::Functions& ifn = vulkan_device->vulkan_instance()->functions();
++    VkPhysicalDeviceProperties properties;
++    ifn.vkGetPhysicalDeviceProperties(vulkan_device->physical_device(), &properties);
++    VkPhysicalDeviceMemoryProperties memory_properties;
++    ifn.vkGetPhysicalDeviceMemoryProperties(vulkan_device->physical_device(), &memory_properties);
++    const VulkanDevice::MemoryTypes& memory_types = vulkan_device->memory_types();
++    uint32_t candidates = supported_types & memory_types.device_local & memory_types.host_visible &
++                          memory_types.host_coherent & ~memory_types.host_cached;
++    if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
++      uint32_t memory_type;
++      while (rex::bit_scan_forward(candidates, &memory_type)) {
++        candidates &= ~(uint32_t(1) << memory_type);
++        if (memory_properties.memoryHeaps[memory_properties.memoryTypes[memory_type].heapIndex].size >=
++            kMinUploadBarHeapSize) {
++          return memory_type;
++        }
++      }
++    }
++  }
++  return util::ChooseHostMemoryType(vulkan_device->memory_types(), supported_types, false);
++}
++
++}  // namespace
++
+ // Host-visible memory sizes are likely to be internally rounded to
+ // nonCoherentAtomSize (it's the memory mapping granularity, though as the map
+ // or flush range must be clamped to the actual allocation size as a special
+@@ -88,8 +127,7 @@
+   if (memory_type_ == kMemoryTypeUnknown) {
+     VkMemoryRequirements memory_requirements;
+     dfn.vkGetBufferMemoryRequirements(device, buffer, &memory_requirements);
+-    memory_type_ = util::ChooseHostMemoryType(vulkan_device_->memory_types(),
+-                                              memory_requirements.memoryTypeBits, false);
++    memory_type_ = ChooseUploadMemoryType(vulkan_device_, memory_requirements.memoryTypeBits);
+     if (memory_type_ == UINT32_MAX) {
+       REXLOG_ERROR(
+           "No host-visible memory types can store an Vulkan upload buffer with "
+@@ -109,8 +147,8 @@
+           VK_SUCCESS) {
+         VkMemoryRequirements memory_requirements_expanded;
+         dfn.vkGetBufferMemoryRequirements(device, buffer_expanded, &memory_requirements_expanded);
+-        uint32_t memory_type_expanded = util::ChooseHostMemoryType(
+-            vulkan_device_->memory_types(), memory_requirements.memoryTypeBits, false);
++        uint32_t memory_type_expanded =
++            ChooseUploadMemoryType(vulkan_device_, memory_requirements.memoryTypeBits);
+         if (memory_requirements_expanded.size <= allocation_size_ &&
+             memory_type_expanded != UINT32_MAX) {
+           page_size_ = size_t(allocation_size_);

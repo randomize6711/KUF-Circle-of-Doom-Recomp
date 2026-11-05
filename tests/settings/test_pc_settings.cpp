@@ -11,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "runtime/pc_settings.h"
+#include "runtime/platform_info.h"
 
 using namespace kuf::pc;
 
@@ -505,4 +506,58 @@ TEST_CASE("vsync and button prompts (M7 UX fixes 3, 4): defaults, round-trip, in
   std::string error;
   CHECK(ApplyOverrides("display.vsync=true,interface.button_prompts=1", &s, &error));
   CHECK(s.ui.button_prompts == kPromptsKeyboard);
+}
+
+TEST_CASE("Steam Deck (M11): first-start defaults only on a Deck, and only where nothing was chosen", "[settings]") {
+  using namespace kuf::pc;
+  Settings desktop;
+  ApplyFirstStartDefaults(&desktop, false);
+  CHECK(desktop.display.render_scale == Settings{}.display.render_scale);  // a desktop keeps "native"
+  CHECK(desktop.display.vsync == Settings{}.display.vsync);
+  Settings deck;
+  ApplyFirstStartDefaults(&deck, true);
+  CHECK(deck.display.render_scale == 1);
+  CHECK(deck.display.vsync);
+  CHECK(deck.frame_rate.fps_limit == Settings{}.frame_rate.fps_limit);  // the original 30 stays
+  CHECK(deck.display.mode == Settings{}.display.mode);
+  // The defaults are only for a first start: a saved file's values are what the game uses (Init applies
+  // ApplyFirstStartDefaults only when there is no pc_settings.toml); a written Deck default round-trips as chosen.
+  std::vector<std::string> warnings;
+  const auto parsed = Parse(Serialize(deck, ""), &warnings);
+  REQUIRE(parsed);
+  CHECK(parsed->display.render_scale == 1);
+  CHECK(parsed->display.vsync);
+}
+
+TEST_CASE("Steam Deck (M11): recognised by its board, not by its GPU; SteamOS and gamescope", "[settings]") {
+  namespace fs = std::filesystem;
+  const fs::path root = fs::temp_directory_path() / ("kuf-platform-" + std::to_string(::getpid()));
+  fs::remove_all(root);
+  fs::create_directories(root / "etc");
+  fs::create_directories(root / "sys/class/dmi/id");
+  auto write = [&](const char* rel, const char* text) { std::ofstream(root / rel) << text; };
+  write("etc/os-release", "NAME=\"SteamOS\"\nPRETTY_NAME=\"SteamOS\"\nID=steamos\nVARIANT_ID=steamdeck\n");
+  write("sys/class/dmi/id/board_vendor", "Valve\n");
+  write("sys/class/dmi/id/board_name", "Jupiter\n");
+  auto i = kuf::platform::Detect(root, nullptr, "KDE");
+  CHECK(i.steamos);
+  CHECK(i.steam_deck);
+  CHECK(i.deck_model == "LCD");
+  CHECK_FALSE(i.gamescope);
+  write("sys/class/dmi/id/board_name", "Galileo\n");
+  i = kuf::platform::Detect(root, "gamescope-0", nullptr);
+  CHECK(i.deck_model == "OLED");
+  CHECK(i.gamescope);
+  // SteamOS on another PC (or an AMD handheld) is not a Steam Deck.
+  write("sys/class/dmi/id/board_vendor", "ASUSTeK COMPUTER INC.\n");
+  write("sys/class/dmi/id/board_name", "RC71L\n");
+  i = kuf::platform::Detect(root, nullptr, "gamescope");
+  CHECK(i.steamos);
+  CHECK_FALSE(i.steam_deck);
+  CHECK(i.gamescope);
+  write("etc/os-release", "PRETTY_NAME=\"Arch Linux\"\nID=arch\n");
+  i = kuf::platform::Detect(root, nullptr, nullptr);
+  CHECK_FALSE(i.steamos);
+  CHECK(kuf::platform::Summary(i) == "Arch Linux");
+  fs::remove_all(root);
 }

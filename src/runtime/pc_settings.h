@@ -119,6 +119,12 @@ std::string Serialize(const Settings& settings, std::string_view previous);
 // on an unknown key or an invalid value; `settings` is then unchanged.
 bool ApplyOverrides(std::string_view spec, Settings* settings, std::string* error);
 
+// The first start on a Steam Deck (no pc_settings.toml yet; M11, docs/STEAM_DECK.md "Settings"): the game's
+// 1280x720 frame rendered once (render scale 1x) instead of "native", which for the Deck's 1280x800 screen renders
+// 1280x1440 (twice the pixels for an 800-line screen), and VSync on (even frame pacing on its 60 Hz panel, no
+// tearing). Everything else stays the defaults. Never applied over an existing file: the player's choices stand.
+void ApplyFirstStartDefaults(Settings* settings, bool steam_deck);
+
 // Writes `text` to `path` atomically, keeping the old file as <path>.bak. False (with *error) on failure; the
 // old file is then unchanged.
 bool WriteFileAtomically(const std::filesystem::path& path, std::string_view text, std::string* error);
