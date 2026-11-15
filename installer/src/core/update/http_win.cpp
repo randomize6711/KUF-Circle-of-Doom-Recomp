@@ -1,15 +1,26 @@
-// The Windows updater's downloads (M17G): WinHTTP, HTTPS with the system's certificate checks. Redirects are followed
-// by hand, each one checked: only HTTPS to GitHub's hosts (as tools/updater/kuf_update.py), or, for tests, only the
-// configured loopback origin (http://127.0.0.1:<port>).
+// The Windows updater's downloads (M17G): HTTPS with the system's certificate checks. Redirects are followed by hand,
+// each one checked: only HTTPS to GitHub's hosts (as tools/updater/kuf_update.py), or, for tests, only the configured
+// loopback origin (http://127.0.0.1:<port>).
+//
+// Three ways to the server, tried in this order until one gets an HTTP answer (0.9.0-rc.3: a player's Windows 11 got
+// "error 12152", the answer cannot be parsed, from WinHTTP with TLS 1.2 and 1.3 forced, while the same program under
+// Wine got through): WinHTTP with Windows' own protocol settings, WinHTTP with TLS 1.2 only, and WinINet (Windows'
+// other HTTP stack, the one Internet Options configure). Only a failure to get an answer moves on to the next way; an
+// HTTP answer (403, 404, a hostile redirect) is final. The way that worked is kept for the following downloads.
+// KUF_UPDATE_HTTP=winhttp|winhttp-tls12|wininet uses only that way (tests).
 #if defined(_WIN32)
 
 #include <windows.h>
 #include <winhttp.h>
 
+#include <cstdlib>
+#include <cwchar>
 #include <fstream>
+#include <memory>
 #include <vector>
 
 #include "core/platform.h"
+#include "core/update/http_transport_win.h"
 #include "core/update/json.h"
 #include "core/update/updater.h"
 
@@ -20,15 +31,12 @@ constexpr const char* kGitHubApi = "https://api.github.com";
 const char* const kAllowedHosts[] = {"api.github.com", "github.com", "objects.githubusercontent.com",
                                      "release-assets.githubusercontent.com", "codeload.github.com"};
 constexpr uint64_t kMaxJson = 8 << 20;
+constexpr const wchar_t* kAgent = L"kuf-cod-recomp-updater";
 
 std::wstring Wide(const std::string& s) { return PathFromUtf8(s).wstring(); }
 std::string Narrow(const std::wstring& s) { return PathUtf8(fs::path(s)); }
 
-struct Url {
-  bool https = false;
-  std::wstring host, path;
-  INTERNET_PORT port = 0;
-};
+using Url = HttpTarget;
 
 bool Crack(const std::string& url, Url* out) {
   const std::wstring w = Wide(url);
@@ -51,23 +59,114 @@ bool Crack(const std::string& url, Url* out) {
   return true;
 }
 
+// ---- WinHTTP ----
+class WinHttpResponse : public HttpResponse {
+ public:
+  WinHttpResponse(HINTERNET connect, HINTERNET request) : connect_(connect), request_(request) {}
+  ~WinHttpResponse() override {
+    WinHttpCloseHandle(request_);
+    WinHttpCloseHandle(connect_);
+  }
+  bool Read(char* buf, DWORD size, DWORD* got) override { return WinHttpReadData(request_, buf, size, got); }
+
+ private:
+  HINTERNET connect_, request_;
+};
+
+class WinHttp : public HttpTransport {
+ public:
+  // protocols: 0 leaves Windows' own choice (TLS 1.3 where the system enables it).
+  WinHttp(const char* name, DWORD protocols) : name_(name) {
+    session_ = WinHttpOpen(kAgent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS,
+                           0);
+    if (!session_) {  // before Windows 8.1 (not supported, but no reason to fail): the default proxy settings
+      session_ = WinHttpOpen(kAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                             WINHTTP_NO_PROXY_BYPASS, 0);
+    }
+    if (session_ && protocols) WinHttpSetOption(session_, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
+  }
+  ~WinHttp() override {
+    if (session_) WinHttpCloseHandle(session_);
+  }
+  const char* Name() const override { return name_; }
+  bool ok() const override { return session_ != nullptr; }
+
+  std::unique_ptr<HttpResponse> Send(const Url& u, const std::wstring& headers, DWORD* err) override {
+    HINTERNET connect = WinHttpConnect(session_, u.host.c_str(), u.port, 0);
+    HINTERNET request = connect ? WinHttpOpenRequest(connect, L"GET", u.path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                                     WINHTTP_DEFAULT_ACCEPT_TYPES, u.https ? WINHTTP_FLAG_SECURE : 0)
+                                : nullptr;
+    if (!request) {
+      *err = GetLastError();
+      if (connect) WinHttpCloseHandle(connect);
+      return nullptr;
+    }
+    DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy));
+    if (!WinHttpSendRequest(request, headers.c_str(), DWORD(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        !WinHttpReceiveResponse(request, nullptr)) {
+      *err = GetLastError();
+      WinHttpCloseHandle(request);
+      WinHttpCloseHandle(connect);
+      return nullptr;
+    }
+    auto r = std::make_unique<WinHttpResponse>(connect, request);
+    DWORD size = sizeof(r->status);
+    WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                        &r->status, &size, WINHTTP_NO_HEADER_INDEX);
+    wchar_t location[4096];
+    DWORD len = sizeof(location);
+    if (WinHttpQueryHeaders(request, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, location, &len,
+                            WINHTTP_NO_HEADER_INDEX)) {
+      r->location.assign(location, wcsnlen(location, len / sizeof(wchar_t)));
+    }
+    wchar_t length_text[32];
+    len = sizeof(length_text);
+    if (WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, length_text, &len,
+                            WINHTTP_NO_HEADER_INDEX)) {
+      r->length = std::wcstoull(length_text, nullptr, 10);
+    }
+    return r;
+  }
+
+ private:
+  const char* name_;
+  HINTERNET session_ = nullptr;
+};
+
+// WinHTTP's and WinINet's error numbers agree for these (winhttp.h, wininet.h).
+std::string ErrorText(DWORD err) {
+  std::string t = "error " + std::to_string(err);
+  if (err == ERROR_WINHTTP_SECURE_FAILURE || (err >= 12037 && err <= 12045) || err == 12057) {
+    t += ": the server's certificate was not accepted";
+  } else if (err == ERROR_WINHTTP_INVALID_SERVER_RESPONSE) {
+    t += ": the answer could not be read";
+  } else if (err == ERROR_WINHTTP_TIMEOUT) {
+    t += ": no answer in time";
+  } else if (err == ERROR_WINHTTP_NAME_NOT_RESOLVED) {
+    t += ": the name was not found (no internet connection?)";
+  } else if (err == ERROR_WINHTTP_CANNOT_CONNECT) {
+    t += ": cannot connect";
+  }
+  return t;
+}
+
 class Http : public ReleaseSource {
  public:
   Http(std::string repo, std::string api) : repo_(std::move(repo)), api_(std::move(api)) {
-    session_ = WinHttpOpen(L"kuf-cod-recomp-updater", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
-                           WINHTTP_NO_PROXY_BYPASS, 0);
-    if (session_) {
-      DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
-      WinHttpSetOption(session_, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
-    }
+    const char* only = std::getenv("KUF_UPDATE_HTTP");
+    const std::string want = only ? only : "";
+    const auto add = [&](const std::string& key, std::unique_ptr<HttpTransport> t) {
+      if ((want.empty() || want == key) && t->ok()) ways_.push_back(std::move(t));
+    };
+    add("winhttp", std::make_unique<WinHttp>("WinHTTP", 0));
+    add("winhttp-tls12", std::make_unique<WinHttp>("WinHTTP (TLS 1.2)", WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2));
+    add("wininet", MakeWinInetTransport(kAgent));
     Url u;
     loopback_ = Crack(api_, &u) && !u.https && (u.host == L"127.0.0.1" || u.host == L"[::1]");
     if (loopback_) loopback_port_ = u.port;
   }
-  ~Http() override {
-    if (session_) WinHttpCloseHandle(session_);
-  }
-  bool ok() const { return session_ != nullptr; }
+  bool ok() const { return !ways_.empty(); }
 
   bool Releases(std::vector<Release>* out, std::string* why) override {
     std::string body;
@@ -120,91 +219,77 @@ class Http : public ReleaseSource {
     return false;
   }
 
-  bool Get(std::string url, uint64_t limit, const char* accept, std::string* body, std::ofstream* file,
+  // One download over the ways in turn, starting with the one that worked last.
+  bool Get(const std::string& url, uint64_t limit, const char* accept, std::string* body, std::ofstream* file,
            const DownloadProgress* progress, const std::atomic<bool>* cancel, std::string* why) {
+    std::string failures;
+    for (size_t n = 0; n < ways_.size(); ++n) {
+      const size_t i = (preferred_ + n) % ways_.size();
+      bool answered = false;
+      const bool ok = GetWith(*ways_[i], url, limit, accept, body, file, progress, cancel, &answered, why);
+      if (answered) {
+        preferred_ = i;
+        return ok;
+      }
+      failures += (failures.empty() ? "" : "; ") + std::string(ways_[i]->Name()) + ": " + *why;
+    }
+    *why = failures.empty() ? "no way to download (KUF_UPDATE_HTTP?)" : "no answer from GitHub (" + failures + ")";
+    return false;
+  }
+
+  // *answered: an HTTP answer came (then the result is final, whatever it is).
+  bool GetWith(HttpTransport& t, std::string url, uint64_t limit, const char* accept, std::string* body,
+               std::ofstream* file, const DownloadProgress* progress, const std::atomic<bool>* cancel, bool* answered,
+               std::string* why) {
+    const std::wstring headers = L"Accept: " + Wide(accept) + L"\r\nX-GitHub-Api-Version: 2022-11-28\r\n";
     for (int hop = 0; hop < 6; ++hop) {
       Url u;
       if (!Crack(url, &u) || !Allowed(u)) {
+        *answered = true;
         *why = "refused to download from " + url + " (only " + (loopback_ ? api_ : std::string("GitHub over HTTPS")) +
                ")";
         return false;
       }
-      HINTERNET connect = WinHttpConnect(session_, u.host.c_str(), u.port, 0);
-      HINTERNET request = connect ? WinHttpOpenRequest(connect, L"GET", u.path.c_str(), nullptr, WINHTTP_NO_REFERER,
-                                                       WINHTTP_DEFAULT_ACCEPT_TYPES, u.https ? WINHTTP_FLAG_SECURE : 0)
-                                  : nullptr;
-      const auto close = [&] {
-        if (request) WinHttpCloseHandle(request);
-        if (connect) WinHttpCloseHandle(connect);
-      };
-      if (!request) {
-        close();
-        *why = "cannot connect to " + Narrow(u.host);
-        return false;
+      DWORD err = 0;
+      const auto r = t.Send(u, headers, &err);
+      if (!r) {
+        *why = "the download from " + Narrow(u.host) + " failed (" + ErrorText(err) + ")";
+        return false;  // not answered: the next way may get through
       }
-      DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-      WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy));
-      const std::wstring headers = L"Accept: " + Wide(accept) + L"\r\nX-GitHub-Api-Version: 2022-11-28\r\n";
-      if (!WinHttpSendRequest(request, headers.c_str(), DWORD(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-          !WinHttpReceiveResponse(request, nullptr)) {
-        const DWORD err = GetLastError();
-        close();
-        *why = "the download from " + Narrow(u.host) + " failed (error " + std::to_string(err) +
-               (err == ERROR_WINHTTP_SECURE_FAILURE ? ": the server's certificate was not accepted" : "") + ")";
-        return false;
-      }
-      DWORD status = 0, size = sizeof(status);
-      WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
-                          &status, &size, WINHTTP_NO_HEADER_INDEX);
-      if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
-        wchar_t location[4096];
-        DWORD len = sizeof(location);
-        const bool has = WinHttpQueryHeaders(request, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, location,
-                                             &len, WINHTTP_NO_HEADER_INDEX);
-        close();
-        if (!has) {
+      *answered = true;
+      if (r->status == 301 || r->status == 302 || r->status == 303 || r->status == 307 || r->status == 308) {
+        if (r->location.empty()) {
           *why = "a redirect without a location";
           return false;
         }
-        url = Narrow(std::wstring(location, len / sizeof(wchar_t)));
+        url = Narrow(r->location);
         continue;
       }
-      if (status != 200) {
-        close();
-        *why = "the server answered " + std::to_string(status) + " for " + url +
-               (status == 403 ? " (GitHub's rate limit? try again later)" : "");
+      if (r->status != 200) {
+        *why = "the server answered " + std::to_string(r->status) + " for " + url +
+               (r->status == 403 ? " (GitHub's rate limit? try again later)" : "");
         return false;
       }
-      wchar_t length_text[32];
-      DWORD llen = sizeof(length_text);
-      uint64_t total = 0;
-      if (WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, length_text, &llen,
-                              WINHTTP_NO_HEADER_INDEX)) {
-        total = std::wcstoull(length_text, nullptr, 10);
-        if (total > limit) {
-          close();
-          *why = url + ": larger than " + std::to_string(limit) + " bytes";
-          return false;
-        }
+      const uint64_t total = r->length;
+      if (total > limit) {
+        *why = url + ": larger than " + std::to_string(limit) + " bytes";
+        return false;
       }
       uint64_t done = 0;
       std::vector<char> buf(1 << 16);
       for (;;) {
         if (cancel && *cancel) {
-          close();
           *why = "cancelled";
           return false;
         }
         DWORD got = 0;
-        if (!WinHttpReadData(request, buf.data(), DWORD(buf.size()), &got)) {
-          close();
-          *why = "the download was interrupted";
+        if (!r->Read(buf.data(), DWORD(buf.size()), &got)) {
+          *why = "the download was interrupted (" + ErrorText(GetLastError()) + ")";
           return false;
         }
         if (got == 0) break;
         done += got;
         if (done > limit) {
-          close();
           *why = url + ": larger than " + std::to_string(limit) + " bytes";
           return false;
         }
@@ -212,19 +297,20 @@ class Http : public ReleaseSource {
         if (file) file->write(buf.data(), got);
         if (progress && *progress) (*progress)(done, total ? total : limit);
       }
-      close();
       if (total && done != total) {
         *why = "the download was incomplete";
         return false;
       }
       return !file || bool(*file) || (*why = "cannot write the download", false);
     }
+    *answered = true;
     *why = "too many redirects";
     return false;
   }
 
   std::string repo_, api_;
-  HINTERNET session_ = nullptr;
+  std::vector<std::unique_ptr<HttpTransport>> ways_;
+  size_t preferred_ = 0;
   bool loopback_ = false;
   INTERNET_PORT loopback_port_ = 0;
 };
@@ -240,7 +326,7 @@ std::unique_ptr<ReleaseSource> HttpSource(const std::string& repo, const std::st
   }
   auto h = std::make_unique<Http>(repo, origin);
   if (!h->ok()) {
-    *why = "WinHTTP could not be started";
+    *why = "neither WinHTTP nor WinINet could be started";
     return nullptr;
   }
   return h;

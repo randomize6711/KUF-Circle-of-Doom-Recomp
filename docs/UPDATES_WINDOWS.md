@@ -11,7 +11,15 @@ player's Check for Updates finds nothing yet ("up to date"). Publishing needs th
 ## What it trusts
 
 - Releases only from the repository in `Runtime\update.conf` (`randomize6711/KUF-Circle-of-Doom-Recomp`), over HTTPS
-  with Windows' own certificate checks (WinHTTP). Redirects are followed one at a time and only to GitHub's hosts.
+  with Windows' own certificate checks. Redirects are followed one at a time and only to GitHub's hosts. Three ways
+  to the server are tried in turn until one gets an HTTP answer (0.9.0-rc.3; rc.1 forced TLS 1.2/1.3 on WinHTTP and
+  a player's Windows 11 got "error 12152"): WinHTTP with Windows' own protocol settings, WinHTTP with TLS 1.2 only,
+  and WinINet. An HTTP answer (403, 404, a refused redirect) is final; the way that worked is kept for the next
+  downloads. A failure names every way and its error. `KUF_UPDATE_HTTP=winhttp|winhttp-tls12|wininet` uses only one
+  (tests).
+- The channel: `channel = prerelease` or `channel = stable` in update.conf; without one (the packages' update.conf
+  has none, and an update replaces it), an installed pre-release (0.9.0-rc.N) is offered pre-releases and a release
+  only releases. The Linux updater decides the same way.
   A loopback `api = http://127.0.0.1:<port>` exists only for tests.
 - The newest release's **update manifest** (`<prefix>-<v>-windows-x86_64.update.json`) must be signed by a key in
   `Runtime\allowed_signers` (the project's release key, namespace `kuf-cod-recomp-manifest`) **before it is read**.

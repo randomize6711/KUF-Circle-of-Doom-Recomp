@@ -83,6 +83,9 @@ struct ProgramFolder {
 };
 
 bool ReadUpdateConfig(const ProgramFolder& f, UpdateConfig* c, std::string* why);  // Runtime/update.conf
+// Whether pre-releases are offered: --prerelease, update.conf's channel ("prerelease" or "stable"), and without a
+// channel line, whether the installed version is itself a pre-release (0.9.0-rc.1 follows the pre-releases).
+bool FollowsPrereleases(const UpdateConfig& c, const std::string& installed, bool forced);
 
 enum class Exit { kDone = 0, kError = 1, kUpToDate = 3, kRefused = 4, kCancelled = 5 };
 

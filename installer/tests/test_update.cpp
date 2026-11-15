@@ -481,3 +481,14 @@ TEST_CASE("versions: semver precedence as the Linux updater's", "[update]") {
     CHECK_FALSE(ParseVersion(bad));
   }
 }
+
+TEST_CASE("updater: the channel follows update.conf, else the installed version", "[update]") {
+  UpdateConfig c;
+  CHECK(FollowsPrereleases(c, "0.9.0-rc.1", false));   // no channel line: a pre-release follows the pre-releases
+  CHECK_FALSE(FollowsPrereleases(c, "1.0.0", false));  // and a release the releases
+  CHECK(FollowsPrereleases(c, "1.0.0", true));         // --prerelease
+  c.channel = "stable";
+  CHECK_FALSE(FollowsPrereleases(c, "0.9.0-rc.1", false));
+  c.channel = "prerelease";
+  CHECK(FollowsPrereleases(c, "1.0.0", false));
+}

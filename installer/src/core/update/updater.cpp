@@ -272,6 +272,15 @@ std::string ProgramFolder::CurrentVersion() const { return FirstLine(Runtime() /
 std::string ProgramFolder::PreviousVersion() const { return FirstLine(Previous() / "VERSION"); }
 std::string ProgramFolder::PendingVersion() const { return FirstLine(Pending()); }
 
+// The Windows packages bring their own update.conf (no channel line), so a channel written by hand does not survive
+// an update: the installed version decides then.
+bool FollowsPrereleases(const UpdateConfig& c, const std::string& installed, bool forced) {
+  if (forced || c.channel == "prerelease") return true;
+  if (!c.channel.empty()) return false;
+  const auto v = ParseVersion(installed);
+  return v ? !v->pre.empty() : installed.find('-') != std::string::npos;
+}
+
 bool ReadUpdateConfig(const ProgramFolder& f, UpdateConfig* c, std::string* why) {
   std::string text;
   const fs::path p = f.Runtime() / "update.conf";
@@ -358,7 +367,7 @@ bool Prepare(Session* s, const UpdateOptions& o, const fs::path& tmp) {
     r = Refuse(r, Exit::kError, why);
     return false;
   }
-  if (!Newest(releases, s->conf, o.prerelease || s->conf.channel == "prerelease", &s->best)) {
+  if (!Newest(releases, s->conf, FollowsPrereleases(s->conf, r.current, o.prerelease), &s->best)) {
     r.exit = Exit::kUpToDate;
     r.error = "no signed release found";
     return false;

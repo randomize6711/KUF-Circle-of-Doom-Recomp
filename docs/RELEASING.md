@@ -44,8 +44,9 @@ The manifest:
 ```
 
 **Versions:** `MAJOR.MINOR.PATCH`, optionally `-rc.N` / `-beta.N` (semver order; build metadata such as `+g1234` is
-not allowed in a release). Releases marked *pre-release* on GitHub are offered only to installs with
-`channel = prerelease` in update.conf. Never re-use a version number: an install refuses to "update" to its own or an
+not allowed in a release). Releases marked *pre-release* on GitHub are offered to installs with
+`channel = prerelease` in update.conf, and (from 0.9.0-rc.3's updaters) to installs without a channel line whose
+installed version is itself a pre-release; `channel = stable` opts out. Never re-use a version number: an install refuses to "update" to its own or an
 older version, and a package whose `VERSION` differs from its tag is refused.
 
 **Compatibility:** `min_installed` is the oldest installed version the release can update. An older install is told

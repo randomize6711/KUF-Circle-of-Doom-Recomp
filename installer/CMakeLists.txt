@@ -85,14 +85,14 @@ add_library(kuf_setup_core STATIC
     src/core/update/json.cpp
     src/core/update/zip.cpp
     src/core/update/updater.cpp
-    src/core/update/http_win.cpp)
+    src/core/update/http_win.cpp src/core/update/http_wininet.cpp)
 target_include_directories(kuf_setup_core PUBLIC src)
 # Vulkan's headers only (the loader is opened at run time): the SDK's pinned copy.
 target_include_directories(kuf_setup_core PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/rexglue-sdk/thirdparty/vulkan-headers/include")
 target_link_libraries(kuf_setup_core PUBLIC ${CMAKE_DL_LIBS})
 if(WIN32)
-    target_link_libraries(kuf_setup_core PUBLIC ole32 uuid shell32 winhttp)  # shell links, known folders; updates
+    target_link_libraries(kuf_setup_core PUBLIC ole32 uuid shell32 winhttp wininet)  # shell links, known folders; updates
 endif()
 # No glib in the core (M16: shared with the Windows setup and the portable launchers); the GTK window has it.
 target_compile_options(kuf_setup_core PRIVATE -Wall -Wextra)
