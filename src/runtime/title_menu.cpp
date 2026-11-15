@@ -111,6 +111,10 @@ bool g_extended = false;
 
 // Game thread state of the title list.
 uint32_t g_menu = 0;
+// g_menu's scene root, read while it was live (BeforeInput). After NEW GAME or CONTINUE the game frees the title list
+// but g_menu keeps its address: anything done later from OnTick (an updater result arriving, the labels of a new
+// list) first checks that the focused scene is this same list (FocusedTitleRoot), and never follows g_menu otherwise.
+uint32_t g_menu_root = 0;
 int g_extra = -1;  // the added row selected (-1: the game's own rows)
 // Quit Game (M7 UX fix 6): the game's message box (message 0x42205: text[1024], +1024 owner, +1028 kind (1: a
 // question), +1032 / +1036 the answers the owner gets for Yes / No), as the game asks its storage question.
@@ -552,8 +556,9 @@ void AskQuit(PPCContext& ctx, uint8_t* base, uint32_t menu) {
   REXLOG_INFO("[kuf-title] Quit Game: asking");
 }
 
-void ApplyLabels(PPCContext& ctx, uint8_t* base) {
-  if (!g_menu || !g_scratch) return;
+// root: the title list's scene root, only while that list is live (the caller checks); 0 keeps the labels for later.
+void ApplyLabels(PPCContext& ctx, uint8_t* base, uint32_t root) {
+  if (!g_menu || !g_scratch || !root) return;
   std::array<std::string, kRowCount> want;
   {
     std::lock_guard lock(g_mutex);
@@ -561,7 +566,7 @@ void ApplyLabels(PPCContext& ctx, uint8_t* base) {
   }
   for (int row = 0; row < kRowCount; ++row) {
     if (want[row].empty() || want[row] == g_shown[row]) continue;
-    const uint32_t button = AddedButton(ctx, base, g_menu, row);
+    const uint32_t button = Call(ctx, base, sub_82624570, root, kuf::ui::kTitleMainRowButton + uint32_t(row));
     if (!button) return;  // the list is not built (any more)
     const std::string text = "@(offsety=-2)" + want[row];
     const size_t n = std::min<size_t>(text.size(), kTextSize - 1);
@@ -618,6 +623,14 @@ uint32_t FocusedSceneId(const uint8_t* base) {
 // The message box's scene root while it has the focus (0 otherwise).
 uint32_t BoxRoot(const uint8_t* base) {
   if (FocusedSceneId(base) != kMessageBoxScene) return 0;
+  const uint32_t focus = Load32(base, kFocusedControl);
+  const uint32_t record = Load32(base, focus + 48);
+  const uint32_t root = record >= 0x10000 && record < 0xF0000000 ? Load32(base, record + 8) : 0;
+  return root >= 0x10000 && root < 0xF0000000 ? root : 0;
+}
+// The title list's scene root while it has the focus (0 otherwise).
+uint32_t FocusedTitleRoot(const uint8_t* base) {
+  if (FocusedSceneId(base) != kTitleListScene) return 0;
   const uint32_t focus = Load32(base, kFocusedControl);
   const uint32_t record = Load32(base, focus + 48);
   const uint32_t root = record >= 0x10000 && record < 0xF0000000 ? Load32(base, record + 8) : 0;
@@ -892,8 +905,11 @@ void OnUiUpdate(PPCContext& ctx, uint8_t* base) {
 }
 
 void OnTick(PPCContext& ctx, uint8_t* base) {
-  if (g_extended) ApplyLabels(ctx, base);
-  if (g_menu && !g_dialog_open && FocusedSceneId(base) == kTitleListScene) {  // an updater result to show
+  if (g_extended && g_menu_root) {
+    const uint32_t root = FocusedTitleRoot(base);  // the labels only on the live title list that g_menu is
+    ApplyLabels(ctx, base, root == g_menu_root ? root : 0);
+  }
+  if (g_menu && !g_dialog_open && g_menu_root && FocusedTitleRoot(base) == g_menu_root) {  // an updater result
     std::optional<kuf::updates::Dialog> dialog;
     {
       std::lock_guard lock(g_mutex);
@@ -956,6 +972,9 @@ bool BeforeInput(PPCContext& ctx, uint8_t* base) {
   }
   if (menu != g_menu) {  // a new title list: its labels as built
     g_menu = menu;
+    g_menu_root = Root(base, menu);
+    REXLOG_INFO("[kuf-title] title list {:08X} (scene root {:08X}; focused {:08X})", menu, g_menu_root,
+                FocusedTitleRoot(base));
     g_extra = -1;
     g_shown = {};
     std::lock_guard lock(g_mutex);
@@ -1003,7 +1022,7 @@ bool BeforeInput(PPCContext& ctx, uint8_t* base) {
       } else if (g_extra == kQuit) {
         AskQuit(ctx, base, menu);  // the game's own Yes / No message box (UX fix 6)
       }
-      ApplyLabels(ctx, base);
+      ApplyLabels(ctx, base, g_menu_root);  // menu is live: its own event
       break;
     case kCodeBack:
       // As from CREDITS: the game's own Back (the selection back on CREDITS first).

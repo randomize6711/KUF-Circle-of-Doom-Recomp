@@ -1,0 +1,38 @@
+# 0.9.0-rc.1 on Windows crashed on NEW GAME (src/runtime/title_menu.cpp): the title list's added rows were relabelled
+# through the title list after the game had freed it, when an update check finished after NEW GAME or when NEW GAME
+# was the list's first input. Check for Updates (tests/menu/slow_updater.sh answers 12 s later), straight up to NEW
+# GAME and into the game type screen before the answer: the answer must neither touch the freed list nor open the
+# update box there.
+
+[scenario]
+description = "Check for Updates, then NEW GAME before the answer: no crash, no update box"
+seconds = 90
+copy_in = ["tests/menu/slow_updater.sh"]
+args = ["--kuf_updater=/run-data/in/slow_updater.sh"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 mouse 640 605 1280 720
+1100 press Down
+1200 press Return
+1220 press Up
+1240 press Up
+1260 press Up
+1280 press Up
+1300 press Up
+1320 press Up
+1340 press Up
+1400 press Return
+1900 capture game_type
+"""
+capture_frames = []
+log_expect = [
+    "[kuf-title] update check started",
+    "the multiplayer menus' label and value columns",
+    "[kuf-title] update check: exit 0",
+]
+log_absent = [
+    "[kuf-title] update dialog",
+    "Unhandled guest access violation",
+]

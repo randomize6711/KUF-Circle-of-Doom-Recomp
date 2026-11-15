@@ -248,7 +248,7 @@ if(KUFCOD_SMOKE_TEST)
                          RESOURCE_LOCK game_gpu)
     # Menu navigation (M4): scripted keyboard/mouse/controller input through the title screen and menus,
     # checked by highlighted rows, log lines and local references (tools/menu_test.py, tests/menu/*.toml).
-    foreach(_kufcod_menu reach_menu keyboard_mouse controller character_select sdl_events pointer title_rows
+    foreach(_kufcod_menu reach_menu keyboard_mouse controller character_select sdl_events pointer title_rows title_update_then_new_game
                          prompts_keyboard sliders sliders_ultrawide settings_tour settings_tour_ingame ingame_mouse pointer_sdl
                          controller_settings controller_settings_game
                          quit_popup title_arrow game_type_mouse backspace_menus)
