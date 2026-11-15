@@ -779,10 +779,9 @@ def _run(args, report):
             source = DirectorySource(args.source_dir, args.source_rate)
         else:
             source = GitHubSource(install.conf["repo"], install.conf["api"])
-        # update.conf's channel ("prerelease" or "stable"); without one an installed pre-release (0.9.0-rc.1)
-        # follows the pre-releases and a stable version the stable releases (as the Windows updater).
-        channel = install.conf.get("channel", "")
-        allow_prerelease = args.prerelease or channel == "prerelease" or (not channel and "-" in (current or ""))
+        # One channel for every installation (the player's decision of 2026-11-15): every release is published as a
+        # pre-release and offered to every installation, whatever update.conf's old channel line says.
+        allow_prerelease = True
         best = newest_release(install, source, allow_prerelease)
         if best is None:
             return report(3, current=current, latest=None, message="no signed release found")

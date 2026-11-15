@@ -175,8 +175,12 @@ def main():
              lambda: refused("commit", "not built from the release's commit", source="f" * 40))
         case("a pre-release version on the stable channel is refused",
              lambda: refused("channel", "pre-release version", version="0.7.1-rc.1", channel="stable"))
-        case("a release version on the pre-release channel is refused",
-             lambda: refused("channel2", "release version", channel="prerelease"))
+        def release_as_prerelease():  # one channel (2026-11-15): every release is published as a pre-release
+            code, out = audit(new(channel="prerelease"), signers)
+            assert code == 0, out[-600:]
+        case("a release version on the pre-release channel passes (one channel)", release_as_prerelease)
+        case("a release version on an unknown channel is refused",
+             lambda: refused("channel2", "release version", channel="beta"))
         case("a package without the updater is refused", lambda: refused("updater", "no updater", drop=("kuf_update.py",)))
         case("an updater pointing elsewhere than GitHub's API is refused",
              lambda: refused("api", "not https://api.github.com", api='GITHUB_API = "http://127.0.0.1:8000"'))

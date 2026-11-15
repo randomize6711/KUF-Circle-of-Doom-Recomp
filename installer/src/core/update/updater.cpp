@@ -272,14 +272,9 @@ std::string ProgramFolder::CurrentVersion() const { return FirstLine(Runtime() /
 std::string ProgramFolder::PreviousVersion() const { return FirstLine(Previous() / "VERSION"); }
 std::string ProgramFolder::PendingVersion() const { return FirstLine(Pending()); }
 
-// The Windows packages bring their own update.conf (no channel line), so a channel written by hand does not survive
-// an update: the installed version decides then.
-bool FollowsPrereleases(const UpdateConfig& c, const std::string& installed, bool forced) {
-  if (forced || c.channel == "prerelease") return true;
-  if (!c.channel.empty()) return false;
-  const auto v = ParseVersion(installed);
-  return v ? !v->pre.empty() : installed.find('-') != std::string::npos;
-}
+// One channel for every installation (the player's decision of 2026-11-15): every release is published as a
+// pre-release and every installation is offered them, whatever update.conf's old channel line says.
+bool FollowsPrereleases(const UpdateConfig&, const std::string&, bool) { return true; }
 
 bool ReadUpdateConfig(const ProgramFolder& f, UpdateConfig* c, std::string* why) {
   std::string text;

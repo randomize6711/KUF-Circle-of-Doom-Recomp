@@ -42,8 +42,8 @@ done
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "--version: a release version (1.2.3 or 1.2.3-rc.1)" >&2; exit 2; }
 [[ -z "$KEY" || -f "$KEY" ]] || { echo "--key: no such file" >&2; exit 2; }
 [[ -f "$SUMMARY" ]] || { echo "--summary FILE: the in-game update summary (what changed)" >&2; exit 2; }
-# One authoritative version: the channel follows it (a pre-release version is never published as stable).
-[[ -z "$CHANNEL" ]] && { [[ "$VERSION" == *-* ]] && CHANNEL=prerelease || CHANNEL=stable; }
+# One channel (the player's decision of 2026-11-15): every release is a pre-release unless --channel stable is given.
+[[ -z "$CHANNEL" ]] && CHANNEL=prerelease
 [[ "$CHANNEL" == stable || "$CHANNEL" == prerelease ]] || { echo "--channel stable|prerelease" >&2; exit 2; }
 [[ -z "$SIGNERS" ]] && SIGNERS="$ROOT/tools/package/allowed_signers"
 [[ -f "$SIGNERS" ]] || { echo "no public key: --signers FILE or tools/package/allowed_signers" >&2; exit 2; }

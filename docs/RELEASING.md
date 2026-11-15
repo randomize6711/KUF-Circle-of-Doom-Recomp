@@ -44,9 +44,10 @@ The manifest:
 ```
 
 **Versions:** `MAJOR.MINOR.PATCH`, optionally `-rc.N` / `-beta.N` (semver order; build metadata such as `+g1234` is
-not allowed in a release). Releases marked *pre-release* on GitHub are offered to installs with
-`channel = prerelease` in update.conf, and (from 0.9.0-rc.3's updaters) to installs without a channel line whose
-installed version is itself a pre-release; `channel = stable` opts out. Never re-use a version number: an install refuses to "update" to its own or an
+not allowed in a release). **One channel** (the player's decision of 2026-11-15): every release is
+published as a *pre-release* on GitHub, and from 0.9.0-rc.3 the updaters offer them to every installation (an old
+`channel` line in update.conf is ignored). Installations of rc.1/rc.2 need `channel = prerelease` or one manual
+installation of rc.3 or later. Never re-use a version number: an install refuses to "update" to its own or an
 older version, and a package whose `VERSION` differs from its tag is refused.
 
 **Compatibility:** `min_installed` is the oldest installed version the release can update. An older install is told
@@ -160,7 +161,7 @@ the tag, the package, its VERSION, the manifest, the AppImage's name, the AppIma
 into the program; development version strings in the binaries; a program not built from the commit in the release's
 SOURCE; an AppImage whose package differs from the update package in any file; a missing updater, an updater or
 installer pointing anywhere but GitHub's API and the official repository, or an update.conf in either; a stable
-release with a pre-release version (make_release.sh picks the channel from the version); SHA256SUMS listing more or
+release with a pre-release version (make_release.sh publishes every release as a pre-release: one channel); SHA256SUMS listing more or
 less than the published assets; private keys, tokens, game data, personal paths; the portability rules above.
 `ctest -R tools.release_audit` tests each rule (19 cases).
 

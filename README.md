@@ -81,8 +81,7 @@ shows its version, date and notes, downloads it with progress (cancellable), ver
 running version, and offers a restart; `kuf-update rollback` returns to the previous version. Nothing is downloaded
 except over HTTPS from GitHub, and nothing from a release is executed before it is verified (docs/STEAM_DECK.md).
 Release packages contain no game code: an update makes the program again on your computer, from your files
-(docs/LOCAL_BUILD.md). A pre-release is offered to installations of a pre-release and to those with `channel = prerelease` in their
-`update.conf` (`channel = stable` opts out).
+(docs/LOCAL_BUILD.md). Every release is a pre-release, and every installation is offered them (one update channel).
 
 ## Running
 

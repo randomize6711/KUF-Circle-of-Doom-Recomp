@@ -421,8 +421,8 @@ def main():
     pre = "-" in version
     if pre and m_channel != "prerelease":
         problems.append(f"{version} is a pre-release version: its channel must be prerelease, not {m_channel!r}")
-    if not pre and m_channel != "stable":
-        problems.append(f"{version} is a release version: its channel must be stable, not {m_channel!r}")
+    if not pre and m_channel not in ("stable", "prerelease"):  # one channel: a release version may be a pre-release
+        problems.append(f"{version} is a release version: its channel must be prerelease or stable, not {m_channel!r}")
     signers_text = open(a.signers).read() if os.path.isfile(a.signers) else None
     with tempfile.TemporaryDirectory() as tmp:
         with tarfile.open(os.path.join(d, pkg)) as tar:

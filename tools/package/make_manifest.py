@@ -37,7 +37,7 @@ def main():
     ap.add_argument("--summary", help="a plain-text file: the in-game update summary (what changed)")
     ap.add_argument("--notes", help="legacy: notes only (without --summary)")
     ap.add_argument("--min-installed")
-    ap.add_argument("--channel", default="stable", choices=["stable", "prerelease"])
+    ap.add_argument("--channel", default="prerelease", choices=["stable", "prerelease"])
     ap.add_argument("--published", default=datetime.date.today().isoformat())
     ap.add_argument("--out")
     a = ap.parse_args()
