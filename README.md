@@ -4,11 +4,11 @@ A native PC port of **Kingdom Under Fire: Circle of Doom** (Xbox 360, 2007), bui
 game's PowerPC executable to C++ with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and replacing the
 console's services with a native runtime. Linux x86-64 today; Windows is a goal, not yet built.
 
-**You need your own copy of the game**, with an unencrypted `default.xex` (retail copies are encrypted, and this project
-contains no console decryption keys and no way to decrypt one). This repository and its current releases contain **no
-game files and no translated game code**: the setup generates and compiles the native program on your machine, from
-your own files (docs/LOCAL_BUILD.md). Nothing is uploaded. **Ordinary retail copies therefore do not work with it**:
-docs/RETAIL_FILES.md explains why.
+**You need your own copy of the game**: the game folder, an Xbox 360 disc image (`.iso`) or a retail dump. A retail
+copy's encrypted `default.xex` is decrypted on your machine by the setup or the portable launcher, as other
+recompilation projects' installers do (docs/RETAIL_FILES.md). This repository and its releases contain **no game files
+and no translated game code**: the setup generates and compiles the native program on your machine, from your own
+files (docs/LOCAL_BUILD.md). Nothing is uploaded.
 
 ## Status
 

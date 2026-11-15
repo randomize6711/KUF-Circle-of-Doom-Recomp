@@ -50,6 +50,13 @@ Mat4 LookAt(const Vec3& forward, const Vec3& position);
 // gameplay camera, larger for a rolled camera (some event cameras).
 double LookAtError(const Mat4& m);
 
+// A camera turned further around the point `pivot` it is aimed at (M15B, low latency mouse look): its azimuth by `yaw`
+// (+ = right), the eye's elevation above the pivot by `elevation_change`, limited to +/- max_elevation; the distance
+// stays. A matrix that is not a look-at, or an eye at the pivot, stays as it is.
+Mat4 TurnAroundPivot(const Mat4& m, const Vec3& pivot, double yaw, double elevation_change, double max_elevation);
+// The eye's elevation above the point on the view's line of sight nearest `pivot` (radians).
+double PivotElevation(const Mat4& m, const Vec3& pivot);
+
 // The camera between two ticks. With a pivot at both ticks (the modern camera: the point the view is aimed at) the
 // eye moves around the pivot: the pivot linearly, the eye's offset from it by azimuth, elevation and distance, and
 // the view is aimed at the pivot, as the camera itself places it every tick (a fast orbit or turn does not cut a

@@ -14,7 +14,9 @@ Checks:
   - no code of the game anywhere (docs/LOCAL_BUILD.md): no bin/kuf_cod and no generated source; no file defines a
     translated function except the project's own hand-written replacements, listed in its sources; with --image FILE
     (a local memory image, never published) no file holds a chunk of the game's image;
-  - no console keys: no file holds the Xbox retail key (compared by its SHA-256 only, so this audit does not carry it);
+  - console keys (compared by their SHA-256 only, so this audit does not carry them): the setup program holds the
+    retail XEX key, to decrypt the player's own default.xex (docs/RETAIL_FILES.md "Decision of 2026-11-08 (2)"), and
+    no other key; no other file holds any;
   - the setup AppImage: unpacked (--appimage-extract, in a temporary folder), its files against an allow-list, its
     embedded package identical to the release package (same MANIFEST.sha256 and files), its public key the same;
   - every byte of every file in both: no private keys (PEM / OpenSSH), no GitHub or other tokens, no game data (by
@@ -73,16 +75,42 @@ CONSOLE_KEYS = {"20": "a0bd3f5f56adf2b0238a2702c0c0cd8548fb34b3dc19345943dc01101
 TRANSLATED = re.compile(rb"\bsub_8[0-9A-Fa-f]{7}\b")
 
 
-def has_console_key(data):
-    """Whether a 16-byte window hashes to a key. The window's first byte narrows the search."""
+RETAIL_KEY = "20"  # the retail XEX key (the other is the XEX1 key)
+# Decision of 2026-11-08 (2), docs/RETAIL_FILES.md: the retail key is carried by the programs that decrypt the player's
+# own default.xex, and only by them; every other file (the game package, the runtime, the sources) still fails.
+KEY_CARRIERS = ("usr/bin/kuf-setup", "Play KUF", "Play KUF.exe")
+
+
+def console_keys(data):
+    """The keys whose 16 bytes the data holds (by their first byte, CONSOLE_KEYS)."""
+    found = set()
     for first, digest in CONSOLE_KEYS.items():
         byte = bytes.fromhex(first)
         at = data.find(byte)
         while at != -1:
             if hashlib.sha256(data[at:at + 16]).hexdigest() == digest:
-                return True
+                found.add(first)
+                break
             at = data.find(byte, at + 1)
-    return False
+    return found
+
+
+def has_console_key(data):
+    """Whether a 16-byte window hashes to a key."""
+    return bool(console_keys(data))
+
+
+def key_problem(rel, data):
+    """The key rule: None when fine, else the problem. A key carrier may hold the retail key (and must, for the
+    automatic retail import); nothing else may hold any key."""
+    keys = console_keys(data)
+    if rel in KEY_CARRIERS:
+        if keys - {RETAIL_KEY}:
+            return f"{rel} contains a console key other than the retail XEX key"
+        if RETAIL_KEY not in keys:
+            return f"{rel} lacks the retail XEX key: it cannot decrypt a retail default.xex"
+        return None
+    return f"{rel} contains a console key" if keys else None
 
 
 def own_hook_names():
@@ -122,8 +150,9 @@ def no_game_code(base, label, files, problems, lines, image=None):
     for rel in files:
         p = os.path.join(base, rel)
         data = open(p, "rb").read()
-        if has_console_key(data):
-            problems.append(f"{label}: {rel} contains the console key")
+        why = key_problem(rel, data)
+        if why:
+            problems.append(f"{label}: {why}")
         for c in chunks:
             if c in data:
                 hits += 1

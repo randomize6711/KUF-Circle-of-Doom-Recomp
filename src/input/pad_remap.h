@@ -25,6 +25,13 @@ std::optional<PadButton> ParsePadButton(std::string_view name);
 // The game's icon markup for the button ("@(A)", "@(L)", "@(L_Trigger)", "@(APad_L_Small)", ...).
 const char* PadButtonIcon(PadButton button);
 
+// A radial dead zone on a stick (M15B, the left stick's setting): inside `percent` of the travel exactly 0 (no drift);
+// outside, the distance is rescaled so that movement starts from 0 at its edge (no jump) and full travel stays full. The
+// direction is kept. 0 percent changes nothing.
+void ApplyRadialDeadzone(int16_t* x, int16_t* y, int percent);
+// A motor's speed at `percent` of its strength (100: unchanged).
+uint16_t ScaleVibration(uint16_t speed, int percent);
+
 // The analog trigger travel that counts as a press (XINPUT_GAMEPAD_TRIGGER_THRESHOLD).
 constexpr uint8_t kTriggerThreshold = 30;
 

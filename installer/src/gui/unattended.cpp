@@ -3,6 +3,8 @@
 // the release tests (tools/package/appimage_test.sh); a player uses the window.
 //
 //   kuf-setup --install-to FOLDER --game-dir FOLDER [--no-menu] [--desktop]   install, or repair an installation
+//     (--game-dir also takes an Xbox 360 disc image, --game-iso is the same; --executable FILE: a separate
+//     unencrypted default.xex for a dump whose own one is encrypted, docs/RETAIL_IMPORT_PLAN.md A4)
 //   kuf-setup --remove FOLDER [--keep-shortcuts] [--remove-user-data]         uninstall
 //   (an install takes --jobs N: the local build's parallel jobs; default: from this machine)
 //   kuf-setup --check-system                                                  what the window's first page checks
@@ -58,7 +60,7 @@ bool IsUnattended(int argc, char** argv) {
 }
 
 int RunUnattended(int argc, char** argv, const fs::path& exe) {
-  fs::path install_to, remove, game, assets_arg, payload_arg;
+  fs::path install_to, remove, game, executable, assets_arg, payload_arg;
   int jobs = 0;
   bool menu = true, desktop = false, keep_shortcuts = false, remove_data = false, check_only = false,
        ignore_graphics = false;
@@ -67,7 +69,8 @@ int RunUnattended(int argc, char** argv, const fs::path& exe) {
     auto value = [&]() -> std::string { return i + 1 < argc ? argv[++i] : std::string(); };
     if (a == "--install-to") install_to = Expand(value());
     else if (a == "--remove") remove = Expand(value());
-    else if (a == "--game-dir") game = Expand(value());
+    else if (a == "--game-dir" || a == "--game-iso") game = Expand(value());
+    else if (a == "--executable") executable = Expand(value());
     else if (a == "--assets") assets_arg = value();
     else if (a == "--payload") payload_arg = value();
     else if (a == "--no-menu") menu = false;
@@ -148,19 +151,18 @@ int RunUnattended(int argc, char** argv, const fs::path& exe) {
     std::fprintf(stderr, "kuf-setup: installing anyway (--ignore-graphics-check)\n");
   }
 
-  if (game.empty()) return Fail("--game-dir: the folder with your game files (default.xex) is needed");
+  if (game.empty()) return Fail("--game-dir: the folder with your game files (default.xex) or a disc image is needed");
   plan.game_source = FindGameRoot(game);
-  const GameCheck c = CheckGameFolder(plan.game_source, plan.manifest);
-  if (!c.folder_ok) return Fail("the game folder cannot be read: " + plan.game_source.string());
-  if (!c.executable_found) return Fail("no default.xex in " + plan.game_source.string());
-  if (c.executable_encrypted) {
-    return Fail("this default.xex is encrypted: this setup contains no console decryption keys and cannot decrypt it; "
-                "it can only use an unencrypted default.xex (docs/INSTALL_GUIDE.md)");
-  }
-  if (!c.executable_known) return Fail("unsupported game version (only the original Xbox 360 base version)");
-  if (!c.missing.empty() || !c.wrong_size.empty()) {
-    return Fail(std::to_string(c.missing.size()) + " game files missing, " + std::to_string(c.wrong_size.size()) +
-                " with the wrong size");
+  plan.executable = executable;
+  const GameCheck c = CheckGame(GameSource::Open(plan.game_source), plan.manifest, plan.executable);
+  std::printf("game files: %s%s%s\n", c.kind == GameSource::Kind::kIso ? "a disc image" : "a folder",
+              c.retail_layout ? ", a retail disc dump" : "",
+              c.decrypt ? " (encrypted default.xex: decrypted during the installation)"
+              : c.dump_verdict == Executable::kRetailEncrypted ? " (retail default.xex recognised, encrypted)" : "");
+  if (!c.Ok()) {
+    std::string why = GameCheckProblem(c, plan.manifest);
+    if (!c.separate && NeedsSeparateExecutable(c.dump_verdict)) why += " (--executable FILE)";
+    return Fail(why + " [" + plan.game_source.string() + "]");
   }
 
   plan.root = install_to;

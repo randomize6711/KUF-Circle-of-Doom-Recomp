@@ -50,7 +50,8 @@ def make_repo(base):
     write(os.path.join(repo, "tools/apply_sdk_patches.sh"),
           "#!/bin/sh\ngrep -q patched thirdparty/rexglue-sdk/a.txt\n", exe)
     write(os.path.join(repo, "tools/verify_game_dir.sh"),
-          '#!/bin/sh\n[ ! -e "$STUB_DIR/game_dir_changed" ]\n', exe)
+          '#!/bin/sh\n[ ! -e "$STUB_DIR/game_dir_changed" ] && [ ! -e "${KUF_GAME_DIR:-$STUB_DIR/none}/changed" ]\n',
+          exe)
     write(os.path.join(repo, "tools/check_tracked.py"),
           "import os, sys\nsys.exit(1 if os.path.exists(os.path.join(os.environ['STUB_DIR'], 'tracked_bad')) else 0)\n")
     write(os.path.join(repo, ".gitignore"), "build/\n")
@@ -96,11 +97,16 @@ CASES = [
         os.path.join(s, "ctest_side_effect"), "#!/bin/sh\necho x >> feature.txt\n", 0o755), False),
     ("game folder changed", lambda r, s: write(os.path.join(s, "game_dir_changed"), ""), False),
     ("game content tracked", lambda r, s: write(os.path.join(s, "tracked_bad"), ""), False),
+    # The original folder named apart from the tests' copy: its own check decides.
+    ("named original folder changed", lambda r, s: write(os.path.join(s, "original", "changed"), ""), False,
+     lambda s: {"KUF_ORIGINAL_GAME_DIR": os.path.join(s, "original")}),
+    ("named original folder unchanged", lambda r, s: os.makedirs(os.path.join(s, "original")), True,
+     lambda s: {"KUF_ORIGINAL_GAME_DIR": os.path.join(s, "original")}),
     ("every gate passes", lambda r, s: None, True),
 ]
 
 
-def run_case(name, setup, expect_merge):
+def run_case(name, setup, expect_merge, extra_env=None):
     with tempfile.TemporaryDirectory(prefix="safe-merge-test-") as base:
         repo = make_repo(base)
         stub_dir = os.path.join(base, "stubs")
@@ -112,6 +118,10 @@ def run_case(name, setup, expect_merge):
         branch_head = sh(repo, "git", "rev-parse", "m9/feature").stdout.strip()
         env = dict(os.environ, STUB_DIR=stub_dir, PATH=os.path.join(stub_dir, "bin") + os.pathsep + os.environ["PATH"],
                    GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="protocol.file.allow", GIT_CONFIG_VALUE_0="always")
+        env.pop("KUF_GAME_DIR", None)
+        env.pop("KUF_ORIGINAL_GAME_DIR", None)
+        if extra_env:
+            env.update(extra_env(stub_dir))
         p = subprocess.run(["bash", "tools/safe_merge.sh", "m9/feature"], cwd=repo, env=env, capture_output=True,
                            text=True, timeout=120)
         main_after = sh(repo, "git", "rev-parse", "main").stdout.strip()

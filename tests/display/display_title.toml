@@ -1,7 +1,7 @@
-# The display page in the title screen's SETTINGS (M6C), keyboard, on the simulated monitor: SETTINGS, PC
-# Settings, the categories, Down twice to Display, Return (M7 feature 3); Size is fixed for Borderless
-# (Left does nothing); Mode Right: Fullscreen (the desktop's mode, 3440x1440 at 100 Hz); Size Left: 3440x1440 at
-# 60 Hz; down to Apply (the last row since the M7 UI polish), Keep; Back to the categories, Back saves. The other rows, Change Storage Device and Restore Defaults are hidden on the page.
+# The Display page in the title screen's SETTINGS (M6C; route since K66, M15.1), keyboard, on the simulated monitor: Settings
+# opens on the categories, Return on Display; Size is fixed for Borderless (Left does nothing); Mode Right: Fullscreen (the
+# desktop's mode, 3440x1440 at 100 Hz); Size Left: 3440x1440 at 60 Hz; down to Apply (the last row), Keep; Back to the
+# categories, Back saves.
 
 [scenario]
 description = "Display page in the title SETTINGS: fullscreen mode and refresh rate, kept and saved"
@@ -12,18 +12,6 @@ script = """
 700 tap Escape
 800 press Down
 900 press Return
-1020 press Down
-1050 press Down
-1080 press Down
-1110 press Down
-1140 press Down
-1170 press Down
-1200 press Down
-1230 press Down
-1260 press Down
-1350 press Return
-1480 press Down
-1510 press Down
 1540 press Return
 1990 capture display_page
 2020 press Down
@@ -44,7 +32,8 @@ script = """
 2550 press Down
 2580 press Down
 2610 press Down
-2640 press Return
+2625 press Down
+2655 press Return
 2740 press Return
 2840 capture kept
 2870 press Escape

@@ -45,7 +45,10 @@ With --json: one JSON line with the result; `update` also prints progress lines 
 the latest release's version, date and notes (plain text, at most 2,000 characters).
 """
 import argparse
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows: the updater is Linux-only, but the release audits import this module there too
+    fcntl = None
 import hashlib
 import json
 import os

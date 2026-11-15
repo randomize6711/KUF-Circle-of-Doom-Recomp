@@ -35,6 +35,11 @@ struct CameraSettings {
   bool auto_recenter = false;       // ease the view back to the default height after a pause in camera input
   int distance = 100;               // orbit distance, percent of the game's own camera distance
   int field_of_view = 0;            // horizontal degrees at 16:9 (60..110 in steps of 5); 0 = the game's own
+  bool low_latency_mouse = false;   // M15B: frames between ticks show the mouse movement up to that moment
+  int stick_vertical = 65;          // M15B: the stick's vertical camera speed, percent of its horizontal (20..150)
+  bool stick_acceleration = false;  // M15B: the stick's camera speed grows while it is held at full deflection
+  int move_deadzone = 0;            // M15B: percent of the left stick's travel, 0..50; 0 = as the controller reports
+  int vibration = 100;              // M15B: percent of the game's vibration strength, 0..100
   bool operator==(const CameraSettings&) const = default;
 };
 
@@ -97,6 +102,8 @@ constexpr int kLevelMin = 1, kLevelMax = 20;
 constexpr int kLevelLinearMax = 10;  // levels up to here are evenly spaced; above, each is a fixed factor more
 constexpr int kDeadzoneMin = 0, kDeadzoneMax = 50, kDeadzoneStep = 5;
 constexpr int kVerticalRanges[] = {45, 60, 75, 85};
+constexpr int kStickVerticalMin = 20, kStickVerticalMax = 150, kStickVerticalStep = 5;
+constexpr int kVibrationMin = 0, kVibrationMax = 100, kVibrationStep = 10;
 constexpr int kDistanceMin = 50, kDistanceMax = 200, kDistanceStep = 10;
 constexpr int kFovOriginal = 0, kFovMin = 60, kFovMax = 110, kFovStep = 5;
 constexpr int kDisplaySizeMin = 640, kDisplaySizeMax = 16384;  // pixels, each side (0 = the desktop's size)
@@ -134,6 +141,8 @@ bool WriteFileAtomically(const std::filesystem::path& path, std::string_view tex
 void Init(const std::filesystem::path& user_data_dir);
 // A copy of the current settings (any thread).
 Settings Current();
+// Only the camera and controls (no allocation: for per-frame and per-poll callers).
+CameraSettings CurrentCamera();
 // Changes the settings in memory (the menu); they take effect at once.
 void Update(const Settings& settings);
 // The frame rate given on the command line for this run (frame_pacing.cpp): shown by the menu, not written to the file

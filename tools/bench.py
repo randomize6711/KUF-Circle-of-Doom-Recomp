@@ -170,11 +170,19 @@ class Sampler(threading.Thread):
 # --------------------------------------------------------------------------------------------------------------- run
 
 def config_args(res, fps, extra):
+    # The game takes --kuf_pc_settings once: settings from --game-arg join the bench's own.
+    settings = "display.render_scale=0"
+    others = []
+    for a in extra:
+        if a.startswith("--kuf_pc_settings="):
+            settings += "," + a.split("=", 1)[1]
+        else:
+            others.append(a)
     args = ["--kuf_profile=true", "--gpu_cp_stats=true", "--gpu_timestamp_stats=true", f"--kuf_display_size={res}",
-            "--kuf_pc_settings=display.render_scale=0"]
+            f"--kuf_pc_settings={settings}"]
     if fps != 30:
         args.append(f"--kuf_frame_rate={fps}")
-    return args + list(extra)
+    return args + others
 
 
 def run_one(scenario, run_prefix, res, fps, extra, cache_from, memory_max, cpu_quota, dry, preset):

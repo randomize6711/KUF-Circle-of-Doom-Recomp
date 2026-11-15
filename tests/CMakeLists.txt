@@ -91,11 +91,40 @@ add_executable(kuf_net_tests net/test_net.cpp net/test_lobby.cpp net/test_lobby_
                ${CMAKE_SOURCE_DIR}/src/coop/lobby_service.cpp ${CMAKE_SOURCE_DIR}/src/coop/steam_provider.cpp
                ${CMAKE_SOURCE_DIR}/src/coop/lobby_menu.cpp ${CMAKE_SOURCE_DIR}/src/coop/text_field.cpp
                ${CMAKE_SOURCE_DIR}/src/input/text_entry.cpp
-               ${CMAKE_SOURCE_DIR}/src/net/steam_backend.cpp)
+               ${CMAKE_SOURCE_DIR}/src/net/steam_backend.cpp ${CMAKE_SOURCE_DIR}/src/net/sock.cpp)
 target_include_directories(kuf_net_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 find_package(Threads REQUIRED)  # std::thread: libpthread before glibc 2.34 (the portable build)
 target_link_libraries(kuf_net_tests PRIVATE Catch2::Catch2WithMain Threads::Threads)
+if(WIN32)  # the same tests as a Windows program (M17F: run under Wine on the development machine)
+    target_link_libraries(kuf_net_tests PRIVATE ws2_32 iphlpapi bcrypt)
+endif()
 catch_discover_tests(kuf_net_tests TEST_PREFIX "net." DISCOVERY_MODE PRE_TEST PROPERTIES LABELS "net")
+
+# One side of a lobby as a program (M17F), for tests/net/cross_platform_lobby.sh: a Linux build and a Windows build
+# meet in one lobby. Opt-in ctest (KUFCOD_WINDOWS_LOBBY_PEER = the Windows kuf_lobby_peer.exe; needs wine).
+add_executable(kuf_lobby_peer net/lobby_peer.cpp ${CMAKE_SOURCE_DIR}/src/net/crypto.cpp
+               ${CMAKE_SOURCE_DIR}/src/net/protocol.cpp ${CMAKE_SOURCE_DIR}/src/net/session.cpp
+               ${CMAKE_SOURCE_DIR}/src/net/sock.cpp)
+target_include_directories(kuf_lobby_peer PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(kuf_lobby_peer PRIVATE Threads::Threads)
+if(WIN32)
+    target_link_libraries(kuf_lobby_peer PRIVATE ws2_32 bcrypt)
+    target_link_options(kuf_lobby_peer PRIVATE -static)
+endif()
+set(KUFCOD_WINDOWS_LOBBY_PEER "" CACHE FILEPATH "The Windows kuf_lobby_peer.exe for net.cross_platform_lobby")
+if(KUFCOD_WINDOWS_LOBBY_PEER AND NOT WIN32)
+    add_test(NAME net.cross_platform_lobby
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/net/cross_platform_lobby.sh $<TARGET_FILE:kuf_lobby_peer>
+                     ${KUFCOD_WINDOWS_LOBBY_PEER})
+    set_tests_properties(net.cross_platform_lobby PROPERTIES LABELS "net;wine" TIMEOUT 600)
+endif()
+# The Windows updater end to end under Wine (M17G): KUFCOD_WINDOWS_KUF_UPDATE = build/installer-mingw/kuf-update.exe.
+set(KUFCOD_WINDOWS_KUF_UPDATE "" CACHE FILEPATH "The Windows kuf-update.exe for updater.windows_wine")
+if(KUFCOD_WINDOWS_KUF_UPDATE AND NOT WIN32)
+    add_test(NAME updater.windows_wine
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/update/windows_update_wine.sh ${KUFCOD_WINDOWS_KUF_UPDATE})
+    set_tests_properties(updater.windows_wine PROPERTIES LABELS "updater;wine" TIMEOUT 600)
+endif()
 
 add_executable(kuf_ui_tests ui/test_ui_layout.cpp ui/test_menu_pointer.cpp ui/test_update_status.cpp
                ${CMAKE_SOURCE_DIR}/src/runtime/ui_layout.cpp ${CMAKE_SOURCE_DIR}/src/runtime/menu_pointer_math.cpp
@@ -203,6 +232,12 @@ if(KUFCOD_SMOKE_TEST)
              COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/smoke_test.py --seconds 300
                      --run-id ctest-smoke)
     set_tests_properties(smoke.title_loop_300s PROPERTIES LABELS smoke TIMEOUT 600 RESOURCE_LOCK game_gpu)
+    # No audio device at all (M17, SDK patch 0021): the game must run on silently, not crash (it did: a guest
+    # access violation at 0x3C on the audio thread).
+    add_test(NAME smoke.no_audio_device_60s
+             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/smoke_test.py --seconds 60 --no-audio-device
+                     --run-id ctest-smoke-no-audio)
+    set_tests_properties(smoke.no_audio_device_60s PROPERTIES LABELS smoke TIMEOUT 240 RESOURCE_LOCK game_gpu)
     # Screenshot regression (M3): boot logo and title-loop captures against tests/capture/title_v1.toml,
     # plus local reference images under build/references/ when present. Uses this build tree's binary.
     get_filename_component(_kufcod_preset "${CMAKE_BINARY_DIR}" NAME)
@@ -214,7 +249,9 @@ if(KUFCOD_SMOKE_TEST)
     # Menu navigation (M4): scripted keyboard/mouse/controller input through the title screen and menus,
     # checked by highlighted rows, log lines and local references (tools/menu_test.py, tests/menu/*.toml).
     foreach(_kufcod_menu reach_menu keyboard_mouse controller character_select sdl_events pointer title_rows
-                         prompts_keyboard sliders quit_popup title_arrow game_type_mouse)
+                         prompts_keyboard sliders sliders_ultrawide settings_tour settings_tour_ingame ingame_mouse pointer_sdl
+                         controller_settings controller_settings_game
+                         quit_popup title_arrow game_type_mouse backspace_menus)
         add_test(NAME menu.${_kufcod_menu}
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/menu_test.py --preset ${_kufcod_preset}
                          --run-prefix ctest-menu ${CMAKE_CURRENT_SOURCE_DIR}/menu/${_kufcod_menu}.toml)
@@ -223,6 +260,34 @@ if(KUFCOD_SMOKE_TEST)
     endforeach()
     # Gameplay (M5A): new game to free play, combat/loot/inventory, controller gameplay
     # (tools/menu_test.py, tests/gameplay/*.toml; anchored to the game's own state).
+    # M15C: keyboard movement, positions from the presentation trace (tests/gameplay/move_check.py).
+    add_test(NAME gameplay.keyboard_move
+             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/menu_test.py --preset ${_kufcod_preset}
+                     --run-prefix ctest-gameplay ${CMAKE_CURRENT_SOURCE_DIR}/gameplay/keyboard_move.toml)
+    set_tests_properties(gameplay.keyboard_move PROPERTIES LABELS "smoke;gameplay" TIMEOUT 300 RESOURCE_LOCK game_gpu)
+    add_test(NAME gameplay.keyboard_move_check
+             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/gameplay/move_check.py
+                     ${CMAKE_SOURCE_DIR}/build/runs/ctest-gameplay-keyboard_move w:w_end sd:sd_end opposite:opposite_end
+                     after_menu:after_menu_end focus:focus_lost_at focus_lost:focus_lost_end
+                     --expect w=500:700 --expect opposite=0:15 --expect after_menu=0:15 --expect focus=450:700
+                     --expect focus_lost=0:15 --ratio sd/w=0.9:1.1)
+    set_tests_properties(gameplay.keyboard_move_check PROPERTIES LABELS "gameplay" DEPENDS gameplay.keyboard_move)
+    # M15B: the mouse's delay in the view (tests/camera/late_look_check.py).
+    foreach(_kufcod_look off on)
+        add_test(NAME camera.late_look_${_kufcod_look}
+                 COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/menu_test.py --preset ${_kufcod_preset}
+                         --run-prefix ctest-camera ${CMAKE_CURRENT_SOURCE_DIR}/camera/late_look_${_kufcod_look}.toml)
+        set_tests_properties(camera.late_look_${_kufcod_look} PROPERTIES LABELS "smoke;camera" TIMEOUT 240
+                             RESOURCE_LOCK game_gpu)
+    endforeach()
+    add_test(NAME camera.late_look_check_off
+             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/camera/late_look_check.py
+                     ${CMAKE_SOURCE_DIR}/build/runs/ctest-camera-late_look_off --min-delay-ms 60)
+    add_test(NAME camera.late_look_check_on
+             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/camera/late_look_check.py
+                     ${CMAKE_SOURCE_DIR}/build/runs/ctest-camera-late_look_on --max-delay-ms 8)
+    set_tests_properties(camera.late_look_check_off PROPERTIES LABELS "camera" DEPENDS camera.late_look_off)
+    set_tests_properties(camera.late_look_check_on PROPERTIES LABELS "camera" DEPENDS camera.late_look_on)
     foreach(_kufcod_play new_game combat_loot controller_gameplay combat_loot_native)
         add_test(NAME gameplay.${_kufcod_play}
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/menu_test.py --preset ${_kufcod_preset}
@@ -486,6 +551,10 @@ if(KUFCOD_SMOKE_TEST)
             set(_kufcod_k44_name k44_${_kufcod_k44}${_kufcod_k44_kind})
             kuf_add_m6b_test(${_kufcod_k44_name} timing 300 FIXTURE celine-shadows-depths-1 SETUP ${_kufcod_k44_name})
             if(TEST timing.${_kufcod_k44_name})
+                # The run measures real-time frame steps (2 % late, 5 % busy at most): alone, not beside the suite's
+                # CPU-heavy checks, which once made 18 of 848 ticks late in one second (M17 merge run, 2026-11-11;
+                # the same run alone: 0 late, 4 of 4).
+                set_tests_properties(timing.${_kufcod_k44_name} PROPERTIES RUN_SERIAL TRUE)
                 set(_kufcod_k44_args "")
                 if(_kufcod_k44_kind)
                     set(_kufcod_k44_args --expect-plateau)
@@ -500,10 +569,39 @@ if(KUFCOD_SMOKE_TEST)
         endforeach()
     endforeach()
     kuf_add_m6b_test(k44_long_60 timing 480 SETUP k44_long_60)
+    set_tests_properties(timing.k44_long_60 PROPERTIES RUN_SERIAL TRUE)
     add_test(NAME timing.k44_long_60_check
              COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/timing/k44_check.py
                      ${CMAKE_SOURCE_DIR}/build/runs/ctest-timing-k44_long_60 --rate 60 --summary-only)
     set_tests_properties(timing.k44_long_60_check PROPERTIES LABELS "timing" FIXTURES_REQUIRED k44_long_60)
+    # M18 (docs/PERFORMANCE.md 12.3): after a late hand-off of the tick's frame the closer steps must still fit, at 120
+    # fps in 2560x1440 (the route's heavier areas): at most 2 % of the ticks drop a frame step as late.
+    kuf_add_m6b_test(late_steps_120 timing 480 FIXTURE celine-shadows-depths-1 SETUP late_steps_120)
+    if(TEST timing.late_steps_120)
+        set_tests_properties(timing.late_steps_120 PROPERTIES RUN_SERIAL TRUE)
+        add_test(NAME timing.late_steps_120_check
+                 COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/timing/k44_check.py
+                         ${CMAKE_SOURCE_DIR}/build/runs/ctest-timing-late_steps_120 --rate 120 --summary-only)
+        set_tests_properties(timing.late_steps_120_check PROPERTIES LABELS "timing" FIXTURES_REQUIRED late_steps_120)
+    endif()
+    # M18C (docs/PERFORMANCE.md 12.4): play from a damaged copy of the merged warm cache (where one exists).
+    set(_kufcod_warm_cache ${CMAKE_SOURCE_DIR}/build/warmcache/m12-union)
+    if(IS_DIRECTORY ${_kufcod_warm_cache}/shaders/shareable AND IS_DIRECTORY ${CMAKE_SOURCE_DIR}/build/m6-saves/celine-shadows-depths-1)
+        set(_kufcod_damaged_cache ${CMAKE_SOURCE_DIR}/build/runs/ctest-damaged-shader-cache)
+        add_test(NAME stability.damaged_shader_cache_prepare
+                 COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/stability/damage_shader_cache.py
+                         ${_kufcod_warm_cache} ${_kufcod_damaged_cache})
+        set_tests_properties(stability.damaged_shader_cache_prepare PROPERTIES LABELS "stability"
+                             FIXTURES_SETUP damaged_shader_cache)
+        add_test(NAME stability.damaged_shader_cache
+                 COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/menu_test.py --preset ${_kufcod_preset}
+                         --run-prefix ctest-stability --cache-from ${_kufcod_damaged_cache}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/stability/damaged_shader_cache.toml)
+        set_tests_properties(stability.damaged_shader_cache PROPERTIES LABELS "smoke;stability" TIMEOUT 300
+                             RESOURCE_LOCK game_gpu FIXTURES_REQUIRED damaged_shader_cache)
+    else()
+        message(STATUS "stability.damaged_shader_cache: not registered (no build/warmcache/m12-union)")
+    endif()
     # K34 (M6D D3b-0, tests/render/, SDK patch 0010): frames drawn without the HUD's draws (render-only frames with
     # --kuf_render_build_hud=false) on the host render target path and on the EDRAM-exact path; k34_check.py
     # requires the host path's frames to show the scene (they were black) and to match the exact path's.

@@ -9,9 +9,39 @@
 #include "net/steam_lobby.h"
 
 #if KUF_HAVE_STEAMWORKS
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 
 #include <steam/steam_api_flat.h>
+#endif
+
+#if KUF_HAVE_STEAMWORKS
+namespace {
+// Valve's library from the player's own Steamworks SDK: libsteam_api.so on Linux, steam_api64.dll on Windows.
+#if defined(_WIN32)
+void* LoadSteamLibrary(const std::string& path) {
+  const int n = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+  std::wstring wide(size_t(n > 0 ? n : 1), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wide.data(), n);
+  return reinterpret_cast<void*>(LoadLibraryW(wide.c_str()));
+}
+void* SteamSymbol(void* lib, const char* name) {
+  return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(lib), name));
+}
+void FreeSteamLibrary(void* lib) { FreeLibrary(reinterpret_cast<HMODULE>(lib)); }
+std::string LoadError() { return "Windows error " + std::to_string(GetLastError()); }
+void SetEnvironment(const char* name, const std::string& value) { _putenv_s(name, value.c_str()); }
+#else
+void* LoadSteamLibrary(const std::string& path) { return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL); }
+void* SteamSymbol(void* lib, const char* name) { return dlsym(lib, name); }
+void FreeSteamLibrary(void* lib) { dlclose(lib); }
+std::string LoadError() { const char* e = dlerror(); return e ? e : "unknown error"; }
+void SetEnvironment(const char* name, const std::string& value) { setenv(name, value.c_str(), 1); }
+#endif
+}  // namespace
 #endif
 
 namespace kuf::net::steam {
@@ -163,34 +193,34 @@ bool Start(uint32_t app_id, const std::string& library, std::string* error) {
     return false;
   }
   if (library.empty()) {
-    *error = "No Steam API library configured (--kuf_steam_api_library: libsteam_api.so from your Steamworks SDK).";
+    *error = "No Steam API library configured (--kuf_steam_api_library: libsteam_api.so or steam_api64.dll from your Steamworks SDK).";
     return false;
   }
-  g_library = dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
+  g_library = LoadSteamLibrary(library);
   if (!g_library) {
-    *error = std::string("The Steam API library could not be loaded: ") + dlerror();
+    *error = "The Steam API library could not be loaded: " + LoadError();
     return false;
   }
   bool complete = true;
 #define KUF_LOAD(name)                                                         \
-  g_api.name = reinterpret_cast<decltype(g_api.name)>(dlsym(g_library, #name)); \
+  g_api.name = reinterpret_cast<decltype(g_api.name)>(SteamSymbol(g_library, #name)); \
   complete &= g_api.name != nullptr;
   KUF_STEAM_FUNCTIONS(KUF_LOAD)
 #undef KUF_LOAD
   if (!complete) {
     *error = "The Steam API library is not the version this game was built against (SDK 1.65).";
-    dlclose(g_library);
+    FreeSteamLibrary(g_library);
     g_library = nullptr;
     return false;
   }
   // Steam takes the application from the environment (no steam_appid.txt is written anywhere).
   const std::string id = std::to_string(app_id);
-  setenv("SteamAppId", id.c_str(), 1);
-  setenv("SteamGameId", id.c_str(), 1);
+  SetEnvironment("SteamAppId", id);
+  SetEnvironment("SteamGameId", id);
   SteamErrMsg message = {};
   if (g_api.SteamAPI_InitFlat(&message) != k_ESteamAPIInitResult_OK) {
     *error = std::string("Steam did not start (is the Steam client running and signed in?): ") + message;
-    dlclose(g_library);
+    FreeSteamLibrary(g_library);
     g_library = nullptr;
     return false;
   }

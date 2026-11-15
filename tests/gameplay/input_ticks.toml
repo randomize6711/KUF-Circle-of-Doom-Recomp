@@ -1,0 +1,36 @@
+# M15C: gameplay input across frame rates: the same presses on the same game ticks (weapon A, weapon X, Dash, pick up, an
+# item, two simultaneous keys), the game's own input events traced. Run at 30, 60, 120 and uncapped; tests/gameplay/
+# input_ticks_check.py compares the events tick by tick. No gameplay rule is measured here: only that input registers alike.
+
+[scenario]
+description = "Gameplay presses reach the game on the same ticks (frame rate from the command line)"
+seconds = 85
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+expect_saves_unchanged = true
+args = ["--kuf_trace_game_input=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+200 log mark inputs
+@gameplay+220 press MouseLeft
+@gameplay+280 tap MouseLeft
+@gameplay+340 press MouseRight
+@gameplay+400 press Space
+@gameplay+460 press E
+@gameplay+520 down W
+@gameplay+521 press Space
+@gameplay+560 press MouseLeft
+@gameplay+600 up W
+@gameplay+640 press Q
+@gameplay+700 log mark inputs_end
+@gameplay+720 capture done
+"""
+capture_frames = []
+
+[format]
+width = 1280
+height = 720

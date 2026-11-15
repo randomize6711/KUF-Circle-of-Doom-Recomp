@@ -495,6 +495,33 @@ std::optional<std::vector<uint8_t>> MoveControls(std::span<const uint8_t> data, 
   return Serialize(*layout);
 }
 
+std::optional<std::vector<uint8_t>> PlaceControls(std::span<const uint8_t> data, uint32_t scene_id,
+                                                  const std::vector<ControlBox>& boxes, std::string* error) {
+  std::optional<Layout> layout = Parse(data, error);
+  if (!layout) {
+    return std::nullopt;
+  }
+  auto scene = std::find_if(layout->scenes.begin(), layout->scenes.end(),
+                            [&](const Scene& s) { return s.id() == scene_id; });
+  if (scene == layout->scenes.end()) {
+    *error = "no such scene";
+    return std::nullopt;
+  }
+  for (const ControlBox& box : boxes) {
+    size_t i = 0;
+    while (i < scene->placements.size() && scene->placements[i].id != box.id) ++i;
+    if (i == scene->placements.size()) {
+      char hex[16];
+      std::snprintf(hex, sizeof(hex), "%08X", box.id);
+      *error = std::string("no control ") + hex;
+      return std::nullopt;
+    }
+    if (box.x != kKeepBox) scene->placements[i].x = box.x;
+    if (box.w != kKeepBox) Put32(scene->controls[i].bytes, 8, uint32_t(box.w));
+  }
+  return Serialize(*layout);
+}
+
 std::optional<std::vector<uint8_t>> AddLobbyColumns(std::span<const uint8_t> data, std::string* error) {
   std::optional<Layout> layout = Parse(data, error);
   if (!layout) return std::nullopt;

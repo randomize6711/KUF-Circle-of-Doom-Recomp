@@ -27,6 +27,13 @@
           "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } },
         { "name": "linux-amd64-audit", "inherits": "linux-base",
           "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "KUFCOD_IMPORT_AUDIT": "ON" } },
+        { "name": "mingw-amd64-relwithdebinfo", "generator": "Ninja", "binaryDir": "${sourceDir}/build/${presetName}",
+          "toolchainFile": "${sourceDir}/cmake/llvm-mingw-x86_64.cmake",
+          "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "CMAKE_C_FLAGS": "-march=x86-64-v2",
+                              "CMAKE_CXX_FLAGS": "-march=x86-64-v2",
+                              "REXSDK_DIR": "${sourceDir}/thirdparty/rexglue-sdk",
+                              "REXGLUE_USE_VULKAN": "ON", "REXGLUE_USE_D3D12": "OFF",
+                              "REXGLUE_HOST_REXGLUE": "${sourceDir}/build/linux-amd64-relwithdebinfo/bin/rexgluerd" } },
         { "name": "win-amd64-debug", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
         { "name": "win-amd64-relwithdebinfo", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } },
         { "name": "win-amd64-release", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } }
@@ -37,6 +44,7 @@
         { "name": "linux-amd64-release", "configurePreset": "linux-amd64-release" },
         { "name": "linux-amd64-portable", "configurePreset": "linux-amd64-portable" },
         { "name": "linux-amd64-audit", "configurePreset": "linux-amd64-audit" },
+        { "name": "mingw-amd64-relwithdebinfo", "configurePreset": "mingw-amd64-relwithdebinfo" },
         { "name": "win-amd64-debug", "configurePreset": "win-amd64-debug" },
         { "name": "win-amd64-relwithdebinfo", "configurePreset": "win-amd64-relwithdebinfo" },
         { "name": "win-amd64-release", "configurePreset": "win-amd64-release" }

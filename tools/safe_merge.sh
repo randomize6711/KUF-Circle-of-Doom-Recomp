@@ -10,7 +10,8 @@
 #   3. both build trees build (relwithdebinfo for ctest, audit for the game runs);
 #   4. the full ctest suite passes: every test, no "failed" or "not run"; the test count is printed;
 #   5. the commit under test is still HEAD and the tree is still clean (nothing changed during the tests);
-#   6. the original game folder is unchanged (tools/verify_game_dir.sh);
+#   6. the original game folder is unchanged (tools/verify_game_dir.sh; KUF_ORIGINAL_GAME_DIR names it when the
+#      tests run on a test copy);
 #   7. no game-derived content is tracked (tools/check_tracked.py).
 # Only then: `git merge --ff-only` into main (never a merge commit, never a history rewrite), and optionally
 # create the next milestone branch. The log of the whole procedure goes to build/logs/merge-<branch>.log.
@@ -81,7 +82,14 @@ step "5. nothing changed during the tests"
 clean_tree || fail "working tree changed during the tests"
 
 step "6. original game folder"
-tools/verify_game_dir.sh v1 || fail "game folder changed"
+# The tests may run on a test copy (.game_dir, e.g. build/game-plain, which differs from the manifest by design);
+# KUF_ORIGINAL_GAME_DIR then names the original folder, checked here in full against the same manifest.
+if [ -n "${KUF_ORIGINAL_GAME_DIR:-}" ]; then
+  echo "original folder: $KUF_ORIGINAL_GAME_DIR"
+  KUF_GAME_DIR="$KUF_ORIGINAL_GAME_DIR" tools/verify_game_dir.sh v1 || fail "game folder changed"
+else
+  tools/verify_game_dir.sh v1 || fail "game folder changed"
+fi
 
 step "7. tracked content"
 python3 -I tools/check_tracked.py HEAD || fail "suspicious tracked content"

@@ -241,3 +241,73 @@ collision's distance ratio; tools/menu_test.py `log_value` checks):
   (rate modes with their small limits); the mouse drives them as a stick.
 - After cut scenes the view starts again from the game's own camera (as the original does).
 - Mouse movement is taken as SDL's relative motion (raw, without system acceleration where SDL provides it).
+
+## 9. Low latency mouse look (M15B; `mouse.low_latency`, Camera > Low Latency, default Off)
+
+What was measured (`tests/camera/late_look_*.toml`, `late_look_check.py`; a synthetic mouse turning one way for a second and
+back, every frame's view compared with the counts sent, `--kuf_test_look_rate`; no physical mouse):
+
+| Frames per second | Off: view behind the mouse | On |
+|---|---|---|
+| 30 | 124 ms | 34 ms (the game's next tick) |
+| 60 | 138 ms | 0 ms |
+| 120 | 130 ms | 0 ms |
+| 240 | 130 ms | 0 ms |
+| uncapped | 128 ms | 0 ms |
+
+(The moment the frame is built: the GPU and the display come after it, as in every mode. Residual with On: 0.000 degrees
+at 60 and above, 0.076 at 30: the view is the counts; with Off 1.1 degrees: a low-pass, the view keeps turning the old way
+after the mouse reverses.)
+
+**Cause of the 130 ms.** Interpolation is the smaller part (one tick). The larger part is the game's camera position
+smoothing (`sub_8252B8A0`, kept by M6B around the target, SmoothAround): it exists for the camera trailing the character, but
+the player's own mouse turn went through it too and was spread over several ticks. That is why earlier tests, reading the
+angle after the turn had settled ("900 counts = 90.00 degrees, at once"), did not show it.
+
+**What On does.** (1) The smoothed eye turns with the mouse before the smoothing (`modern_camera.cpp`, `frame_mouse_yaw`): the
+turn is shown at once and only the trailing is smoothed, at every frame rate. (2) With frames between ticks, each frame's
+presented camera is turned further around the pivot (`presentation.cpp LowLatencyLook`, `TurnAroundPivot`) by what the
+interpolation still holds back of the tick's mouse movement and by the movement not taken yet; the next tick takes that in,
+so the turn is continuous. Render-only frames build their scene from the presented camera, so culling and shadows follow.
+
+**What stays.** The game's own camera and everything it simulates: only the view's yaw is exempted from smoothing and only
+the player's mouse. Stick turns, the position's trailing, collision, recentring and event cameras are as before. Pitch is
+limited to Vertical Range; near an obstacle the collision still decides (no late pitch while the collision pulls the camera
+in). `camera.camera_mouse`, `camera_orbit` and `camera_stick` pass with it on and off.
+
+**Ahead of the collision (K78, M15.1).** The game's collision runs at the ticks; the frames between them are turned past what
+it last checked, so a frame can place the eye where the next tick will pull it out from. `tests/camera/lead_check.py` compares
+each frame's eye distance with the collision's boundary at that azimuth, mapped by a slow turn with Off (`--kuf_trace_camera_lead`;
+standing at the Shadow Depths spawn, a synthetic mouse). Frames with the eye over 100 units past the boundary:
+
+| Turn | Off | On, unlimited | On, limited to 3 degrees |
+|---|---|---|---|
+| 45 degrees per second, 120 fps | not measured (the boundary run) | 6 of 2,721 | 2 of 2,727 |
+| 360 degrees per second, 60 fps | 0 | 21 of 761 | 0 of 765 |
+| 360 degrees per second, 120 fps | 0 | 32 of 1,505 | 6 of 1,522 |
+| 720 degrees per second, 120 fps | 0 | 68 of 1,509 | 9 of 1,529 |
+
+The eye inside the wall showed: without the limit two of 60 sampled frames at a wall were nearly black (mean brightness 7, the
+darkest with Off 19). With it the darkest of 60 is 16.5 and of 240 consecutive frames 14.4, trees in front of the camera, and
+that second run had none over 100 units. So the late turn is limited to 3 degrees (`kMaxLateTurn`) in each axis, one tick's turn
+at 90 degrees per second. Up to that speed nothing changes (`camera.late_look_on`: 0 ms). Faster, the
+rest waits for the tick: at 360 degrees per second the view is 30 ms behind the mouse (Off 116 ms; residual 1.5 degrees, Off 7.9).
+What remains: at a sharp corner, where the boundary jumps from 288 to 639 units within a degree, any lead crosses it for a frame
+or so, so it is reduced and not gone. `camera_mouse`, `camera_orbit`, `camera_stick` and `camera_recenter` pass with On. This is
+one place at one spot with synthetic turning; whether the camera feels right with a real mouse is for the player's test.
+
+**Why Off by default.** The earlier feel is the approved one and this changes how turning feels; the player decides after
+playing (docs/KNOWN_ISSUES.md K78).
+
+## 10. Mouse input path, verified (M15B)
+
+Relative counts go from the window event to a double in `KeyboardPad` to the camera's tick, with nothing in between: no
+acceleration, no smoothing of its own, no dependence on the poll rate. `input.mouse look at 125 to 8000 Hz`: simulated events
+at 125, 500, 1000, 4000 and 8000 Hz and ticks at 30, 60 and 120 per second give the same total turn (1e-6 counts), linear in
+time. An event costs well under a microsecond (`input.mouse look: an event costs ...`), under 0.8 % of a core at 8000 Hz.
+Synthetic: no physical mouse at those rates was used. Menu pointer movement is the system cursor and never passes here, so
+the gameplay sensitivity and the menu cursor are independent (no separate menu sensitivity is needed).
+
+**Collision and recentring (M15B):** `camera.camera_orbit` and `camera_recenter` pass unchanged; no reproducible problem was
+found in a scripted run, so nothing was changed (Recentering stays the optional row it was). Large enemies obstructing the view
+were not reproduced by a script: a manual test is needed.

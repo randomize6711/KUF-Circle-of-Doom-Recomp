@@ -53,7 +53,8 @@ if [[ -f "$OUT/CMakeCache.txt" ]] && ! grep -q '^KUFCOD_SNIPER_SYSROOT:' "$OUT/C
   rm -rf "$OUT/CMakeCache.txt" "$OUT/CMakeFiles"  # configured for this machine before (a toolchain applies only fresh)
 fi
 cmake -S "$ROOT/installer" -B "$OUT" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DCMAKE_TOOLCHAIN_FILE="$ROOT/cmake/steamrt3-sniper.cmake" -DKUFCOD_STATIC_LIBSTDCXX=ON >/dev/null
+  -DCMAKE_TOOLCHAIN_FILE="$ROOT/cmake/steamrt3-sniper.cmake" -DKUFCOD_STATIC_LIBSTDCXX=ON \
+  -DKUF_SETUP_RETAIL_DECRYPTION=ON >/dev/null  # the setup and launcher decrypt (docs/RETAIL_FILES.md)
 ninja -C "$OUT" kuf-setup kuf_setup_tests >/dev/null
 "$OUT/kuf_setup_tests" | grep -E "passed|failed"
 

@@ -1,0 +1,56 @@
+# M15B: the controller's settings with the mouse (title SETTINGS): Controller > Stick Settings: Stick Vertical and Move
+# Dead Zone by clicks at the middle of their tracks, Acceleration by a click; back, Strength steps from 100 % to 0 %
+# (a click wraps). Camera: Low Latency on. pc_settings.toml holds them afterwards (persistence: controller_settings_game).
+
+[scenario]
+description = "Stick Settings page, vibration strength and Low Latency with the mouse; saved"
+seconds = 110
+args = ["--kuf_trace_menu_pointer=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 mouse 640 519 1280 720
+1120 press MouseLeft
+1250 mouse 300 332 1280 720
+1290 tap MouseLeft
+1370 capture controller_page
+1400 mouse 300 150 1280 720
+1440 tap MouseLeft
+1520 capture stick_page
+1550 mouse 630 196 1280 720
+1580 tap MouseLeft
+1640 mouse 630 288 1280 720
+1670 tap MouseLeft
+1730 mouse 300 335 1280 720
+1760 tap MouseLeft
+1830 capture stick_page_set
+1860 press Escape
+1930 capture controller_again
+1960 mouse 300 335 1280 720
+1990 tap MouseLeft
+2050 press Escape
+2120 mouse 300 194 1280 720
+2160 tap MouseLeft
+2230 mouse 300 381 1280 720
+2270 tap MouseLeft
+2340 capture camera_page
+2370 press Escape
+2430 press Escape
+2530 capture title
+"""
+capture_frames = []
+pc_settings_expect = { "controller.camera_vertical_percent" = 85, "controller.move_deadzone_percent" = 25, "controller.camera_acceleration" = true, "controller.vibration_percent" = 0, "mouse.low_latency" = true }
+log_sequence = [
+    "[kuf-pc-menu] controller page",
+    "[kuf-pc-menu] stick settings page",
+    "[kuf-pc-menu] slider 1 (stick settings): set from the pointer",
+    "[kuf-pc-menu] slider 3 (stick settings): set from the pointer",
+    "[kuf-pc-menu] controller page",
+    "[kuf-pc-menu] camera page",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+]
+
+[format]
+width = 1280
+height = 720

@@ -1,12 +1,5 @@
 #include "core/localbuild.h"
 
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/prctl.h>
-#include <sys/resource.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -17,6 +10,7 @@
 #include <vector>
 
 #include "core/game_data.h"
+#include "core/platform.h"
 
 namespace kuf::setup {
 
@@ -42,6 +36,7 @@ bool ReadRecipe(const fs::path& path, Recipe* recipe) {
   std::istringstream in(text);
   std::string line;
   while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();  // a list with Windows line ends
     if (line.empty() || line[0] == '#') continue;
     const size_t space = line.find(' ');
     if (space == std::string::npos) return false;
@@ -50,78 +45,39 @@ bool ReadRecipe(const fs::path& path, Recipe* recipe) {
   return !recipe->One("generation_id").empty() && !recipe->All("compile").empty() && !recipe->All("link").empty();
 }
 
+#if defined(_WIN32)
+constexpr const char* kExe = ".exe";
+#else
+constexpr const char* kExe = "";
+#endif
+
+std::string U(const fs::path& p) { return PathUtf8(p); }
+
 struct Child {
-  pid_t pid = -1;
+  ChildProcess process;
   std::string name;
 };
 
-// Starts a program in its own process group, at low priority, its output appended to `log`. Everything the child uses
-// is made before the fork (the setup has threads).
-pid_t Spawn(const std::vector<std::string>& argv, const fs::path& cwd, const fs::path& log,
-            const std::vector<std::string>& env) {
-  std::vector<char*> args;
-  for (const std::string& a : argv) args.push_back(const_cast<char*>(a.c_str()));
-  args.push_back(nullptr);
-  std::vector<char*> envp;
-  for (const std::string& e : env) envp.push_back(const_cast<char*>(e.c_str()));
-  for (char** e = environ; *e; ++e) {
-    const bool replaced = std::any_of(env.begin(), env.end(), [&](const std::string& mine) {
-      return std::string_view(*e).substr(0, mine.find('=') + 1) == std::string_view(mine).substr(0, mine.find('=') + 1);
-    });
-    if (!replaced) envp.push_back(*e);
-  }
-  envp.push_back(nullptr);
-  const std::string program = argv[0], where = cwd.string(), log_path = log.string();
-  const pid_t pid = fork();
-  if (pid != 0) return pid;
-  setpgid(0, 0);
-  prctl(PR_SET_PDEATHSIG, SIGKILL);  // it does not outlive a killed setup
-  setpriority(PRIO_PROCESS, 0, 5);  // the desktop stays responsive
-  const int fd = open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
-  if (fd >= 0) {
-    dup2(fd, 1);
-    dup2(fd, 2);
-  }
-  if (!where.empty() && chdir(where.c_str()) != 0) _exit(126);
-  execve(program.c_str(), args.data(), envp.data());
-  _exit(127);
-}
-
 void KillAll(std::vector<Child>& running) {
-  for (const Child& c : running) kill(-c.pid, SIGKILL);
-  for (const Child& c : running) waitpid(c.pid, nullptr, 0);
+  for (Child& c : running) KillProcess(&c.process);
   running.clear();
 }
 
 // Runs one program to its end; 0, its exit status, or -1 when cancelled.
 int RunOne(const std::vector<std::string>& argv, const fs::path& cwd, const fs::path& log,
            const std::vector<std::string>& env, const std::atomic<bool>& cancel) {
-  const pid_t pid = Spawn(argv, cwd, log, env);
-  if (pid < 0) return 1;
+  ChildProcess child;
+  if (!StartProcess(argv, cwd, log, env, &child)) return 1;
   for (;;) {
-    int status = 0;
-    const pid_t r = waitpid(pid, &status, WNOHANG);
-    if (r == pid) return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
-    if (r < 0) return 1;
+    int code = 0;
+    bool oom = false;
+    if (PollProcess(&child, &code, &oom)) return code;
     if (cancel) {
-      kill(-pid, SIGKILL);
-      waitpid(pid, nullptr, 0);
+      KillProcess(&child);
       return -1;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
-}
-
-uint64_t AvailableMemory() {
-  std::ifstream in("/proc/meminfo");
-  std::string key;
-  uint64_t kib = 0;
-  std::string unit;
-  while (in >> key >> kib) {
-    std::getline(in, unit);
-    if (key == "MemAvailable:") return kib << 10;
-  }
-  return uint64_t(4) << 30;
 }
 
 // The last lines of the build log, for the error shown to the player.
@@ -141,7 +97,10 @@ int DefaultBuildJobs(unsigned processors, uint64_t available_memory) {
 }
 
 std::string ExpandRecipe(std::string text, const fs::path& builder, const fs::path& work) {
-  for (const auto& [from, to] : {std::pair<std::string, std::string>{"@B@", builder.string()}, {"@W@", work.string()}}) {
+  // Forward slashes on every system: the compiler reads them on Windows too, and a backslash is an escape character
+  // in its response files.
+  const std::string b = PathUtf8(builder.generic_u8string()), w = PathUtf8(work.generic_u8string());
+  for (const auto& [from, to] : {std::pair<std::string, std::string>{"@B@", b}, {"@W@", w}}) {
     for (size_t pos = 0; (pos = text.find(from, pos)) != std::string::npos; pos += to.size()) {
       text.replace(pos, from.size(), to);
     }
@@ -149,8 +108,12 @@ std::string ExpandRecipe(std::string text, const fs::path& builder, const fs::pa
   return text;
 }
 
-bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, const std::atomic<bool>& cancel,
-                std::string* error, BuildStats* stats) {
+namespace {
+
+// One build. *stale_cache: it linked from objects an earlier build had finished (the cache's stamp) and the link
+// found them missing or unusable (a disk that lost files, a crash that damaged them, a broken copy of the folder).
+bool LocalBuildOnce(const BuildRequest& request, const BuildProgress& progress, const std::atomic<bool>& cancel,
+                    std::string* error, BuildStats* stats, bool* stale_cache) {
   std::error_code ec;
   const fs::path builder = fs::absolute(request.package / "builder", ec);
   Recipe recipe;
@@ -160,7 +123,7 @@ bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, cons
   }
   const XexInfo xex = InspectXex(request.xex);
   if (xex.status != XexStatus::kOk) {
-    *error = "The game's default.xex cannot be used for the build (" + request.xex.string() + ").";
+    *error = "The game's default.xex cannot be used for the build (" + U(request.xex) + ").";
     return false;
   }
   // What the objects depend on: the package's generator, compiler, flags and headers, and the player's game version.
@@ -169,14 +132,14 @@ bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, cons
   const fs::path work = slot / "work", objects = slot / "obj", log = fs::absolute(request.cache, ec) / "build.log";
   fs::create_directories(objects, ec);
   if (ec) {
-    *error = "Could not create the build folder " + objects.string() + ".";
+    *error = "Could not create the build folder " + U(objects) + ".";
     return false;
   }
   // A cache of another generation can never be used again.
   for (const auto& e : fs::directory_iterator(request.cache, ec)) {
     if (e.is_directory(ec) && e.path().filename() != id) fs::remove_all(e.path(), ec);
   }
-  std::ofstream(log, std::ios::trunc) << "build " << id << "\n";
+  std::ofstream(log, std::ios::binary | std::ios::trunc) << "build " << id << "\n";
   BuildStats local;
   BuildStats& s = stats ? *stats : local;
   s.generation_id = id;
@@ -185,23 +148,36 @@ bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, cons
     return false;
   };
   const auto failed = [&](const std::string& what) {
-    *error = what + " The details are in " + log.string() + ".\n" + LogTail(log);
+    *error = what + " The details are in " + U(log) + ".\n" + LogTail(log);
     return false;
   };
 
+#if defined(_WIN32)
+  const std::vector<std::string> env;  // the programs find their DLLs beside them
+#else
   const std::vector<std::string> env = {
-      "LD_LIBRARY_PATH=" + (request.package / "bin").string() + ":" + (request.package / "bin" / "compat").string()};
+      "LD_LIBRARY_PATH=" + U(request.package / "bin") + ":" + U(request.package / "bin" / "compat")};
+#endif
 
-  // The tools by name (the compiler is one program that acts by the name it is started under).
+  // The compiler: the recipe's (Windows: llvm-mingw's clang, which finds its linker beside it), else the Linux
+  // compiler, one program that acts by the name it is started under (clang++, ld.lld).
   const fs::path tools = work / "tools";
-  fs::create_directories(tools, ec);
-  for (const char* name : {"clang++", "ld.lld"}) {
-    fs::remove(tools / name, ec);
-    fs::create_symlink(builder / "toolchain" / "llvm", tools / name, ec);
-    if (ec) {
-      *error = "Could not prepare the compiler in " + tools.string() + ".";
-      return false;
+  std::string compiler;
+  std::vector<std::string> link_tool_flags;
+  if (!recipe.One("compiler").empty()) {
+    compiler = ExpandRecipe(recipe.One("compiler"), builder, work);
+  } else {
+    fs::create_directories(tools, ec);
+    for (const char* name : {"clang++", "ld.lld"}) {
+      fs::remove(tools / name, ec);
+      fs::create_symlink(builder / "toolchain" / "llvm", tools / name, ec);
+      if (ec) {
+        *error = "Could not prepare the compiler in " + U(tools) + ".";
+        return false;
+      }
     }
+    compiler = U(tools / "clang++");
+    link_tool_flags.push_back("--ld-path=" + U(tools / "ld.lld"));
   }
   const auto expand = [&](const std::string& line) {
     std::vector<std::string> out;
@@ -233,11 +209,11 @@ bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, cons
       *error = "Could not prepare the code generator's folder.";
       return false;
     }
-    const int rc = RunOne({(request.package / "bin" / "rexgluerd").string(), "codegen", "kuf_cod_manifest.toml"}, work,
-                          log, env, cancel);
+    const int rc = RunOne({U(request.package / "bin" / (std::string("rexgluerd") + kExe)), "codegen",
+                           "kuf_cod_manifest.toml"}, work, log, env, cancel);
     if (rc < 0) return cancelled();
     if (rc != 0) return failed("The code generator failed.");
-    std::ofstream(work / "generated.done") << "ok\n";
+    std::ofstream(work / "generated.done", std::ios::binary) << "ok\n";
   }
   s.generate_seconds = Since(start);
   if (progress) progress(BuildPhase::kGenerate, 1, "");
@@ -262,16 +238,16 @@ bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, cons
     // from, and an interrupted installation continues from another staging folder.
     std::string pch_builder;
     ReadFile(work / "pch.done", &pch_builder);
-    if (pch_builder != builder.string()) {
-      std::vector<std::string> argv = {(tools / "clang++").string()};
+    if (pch_builder != U(builder)) {
+      std::vector<std::string> argv = {compiler};
       for (const std::string& a : expand(recipe.One("pch"))) argv.push_back(a);
       for (const std::string& a : flags) argv.push_back(a);
-      argv.insert(argv.end(), {"-Xclang", "-emit-pch", "-x", "c++-header", "-o", pch.string(), "-c",
-                               (generated / "kuf_cod_pch.h").string()});
+      argv.insert(argv.end(), {"-Xclang", "-emit-pch", "-x", "c++-header", "-o", U(pch), "-c",
+                               U(generated / "kuf_cod_pch.h")});
       const int rc = RunOne(argv, work, log, env, cancel);
       if (rc < 0) return cancelled();
       if (rc != 0) return failed("Preparing the compiler failed.");
-      std::ofstream(work / "pch.done") << builder.string();
+      std::ofstream(work / "pch.done", std::ios::binary) << U(builder);
     }
 
     std::vector<fs::path> todo;
@@ -286,7 +262,7 @@ bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, cons
     s.jobs = jobs;
     size_t next = 0, finished = 0;
     std::vector<Child> running;
-    std::map<pid_t, fs::path> sources_of;
+
     int killed_retries = 0;
     while (next < todo.size() || !running.empty()) {
       if (cancel) {
@@ -296,51 +272,49 @@ bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, cons
       while (next < todo.size() && int(running.size()) < jobs) {
         const fs::path& source = todo[next++];
         const fs::path out = objects / (source.filename().string() + ".o");
-        std::vector<std::string> argv = {(tools / "clang++").string()};
+        std::vector<std::string> argv = {compiler};
         for (const std::string& a : flags) argv.push_back(a);
-        argv.insert(argv.end(), {"-Xclang", "-include-pch", "-Xclang", pch.string(), "-c", source.string(), "-o",
-                                 out.string() + ".part"});
-        const pid_t pid = Spawn(argv, work, log, env);
-        if (pid < 0) {
+        argv.insert(argv.end(), {"-Xclang", "-include-pch", "-Xclang", U(pch), "-c", U(source), "-o",
+                                 U(out) + ".part"});
+        Child c;
+        c.name = U(source);
+        if (!StartProcess(argv, work, log, env, &c.process)) {
           KillAll(running);
           return failed("The compiler could not be started.");
         }
-        running.push_back({pid, source.filename().string()});
-        sources_of[pid] = source;
+        running.push_back(std::move(c));
       }
       // Only its own children: the setup may have others.
-      int status = 0;
-      pid_t r = 0;
+      int code = 0;
+      bool oom = false;
       auto it = running.begin();
       for (; it != running.end(); ++it) {
-        r = waitpid(it->pid, &status, WNOHANG);
-        if (r == it->pid) break;
+        if (PollProcess(&it->process, &code, &oom)) break;
       }
       if (it == running.end()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         continue;
       }
-      const fs::path source = sources_of[r];
+      const fs::path source = PathFromUtf8(it->name);
       running.erase(it);
-      sources_of.erase(r);
       const fs::path out = objects / (source.filename().string() + ".o");
-      if (WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL && killed_retries < 3) {
+      if (oom && killed_retries < 3) {
         // The system ran out of memory: again, with fewer at once.
         ++killed_retries;
         jobs = std::max(1, jobs / 2);
         s.jobs = jobs;
-        fs::remove(out.string() + ".part", ec);
+        fs::remove(PathFromUtf8(U(out) + ".part"), ec);
         todo.push_back(source);
         continue;
       }
-      if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+      if (code != 0) {
         KillAll(running);
         return failed("Compiling " + source.filename().string() + " failed.");
       }
-      fs::rename(out.string() + ".part", out, ec);
+      fs::rename(PathFromUtf8(U(out) + ".part"), out, ec);
       if (ec) {
         KillAll(running);
-        return failed("Could not store " + out.string() + ".");
+        return failed("Could not store " + U(out) + ".");
       }
       ++finished;
       ++s.compiled;
@@ -349,15 +323,16 @@ bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, cons
                  source.filename().string());
       }
     }
-    // The list of objects, in order, for the link and for later links without the generated files.
-    std::ofstream list(slot / "objects.txt.part", std::ios::trunc);
+    // The list of objects, in order, for the link and for later links without the generated files. Binary: in text
+    // mode Windows ends the lines with "\r\n" (the first Windows run read back "kuf_cod_init.cpp.o\r").
+    std::ofstream list(slot / "objects.txt.part", std::ios::binary | std::ios::trunc);
     for (const fs::path& source : sources) list << source.filename().string() << ".o\n";
     list.close();
     fs::rename(slot / "objects.txt.part", slot / "objects.txt", ec);
-    std::ofstream(done_stamp) << "ok\n";
+    std::ofstream(done_stamp, std::ios::binary) << "ok\n";
   } else {
-    s.reused = int(std::count(std::istreambuf_iterator<char>(std::ifstream(slot / "objects.txt").rdbuf()),
-                              std::istreambuf_iterator<char>(), '\n'));
+    std::ifstream listed(slot / "objects.txt", std::ios::binary);
+    s.reused = int(std::count(std::istreambuf_iterator<char>(listed.rdbuf()), std::istreambuf_iterator<char>(), '\n'));
   }
   s.compile_seconds = Since(start);
   if (progress) progress(BuildPhase::kCompile, 1, "");
@@ -367,21 +342,28 @@ bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, cons
   if (progress) progress(BuildPhase::kLink, 0, "Linking the game");
   std::string list_text;
   if (!ReadFile(slot / "objects.txt", &list_text)) return failed("The object list is missing.");
-  std::ofstream rsp(work / "objects.rsp", std::ios::trunc);
+  std::ofstream rsp(work / "objects.rsp", std::ios::binary | std::ios::trunc);
   std::istringstream names(list_text);
   std::string name;
   while (std::getline(names, name)) {
-    if (!fs::exists(objects / name, ec)) return failed("The object " + name + " is missing from the cache.");
-    rsp << '"' << (objects / name).string() << "\"\n";
+    if (!name.empty() && name.back() == '\r') name.pop_back();  // a list written with Windows line ends
+    if (name.empty()) continue;
+    if (!fs::exists(objects / name, ec)) {
+      *stale_cache = have_objects;
+      return failed("The object " + name + " is missing from the cache.");
+    }
+    rsp << '"' << PathUtf8((objects / name).generic_u8string()) << "\"\n";
   }
   rsp.close();
   fs::create_directories(request.output.parent_path(), ec);
   const fs::path output = fs::absolute(request.output, ec);
-  const fs::path temp = output.string() + ".part";
-  std::vector<std::string> argv = {(tools / "clang++").string(), "--ld-path=" + (tools / "ld.lld").string()};
+  fs::path temp = output;
+  temp += ".part";
+  std::vector<std::string> argv = {compiler};
+  for (const std::string& a : link_tool_flags) argv.push_back(a);
   for (const std::string& a : expand(recipe.One("link"))) argv.push_back(a);
-  argv.insert(argv.end(), {"@" + (work / "objects.rsp").string(), "-o", temp.string(),
-                           "-L" + fs::absolute(request.package / "bin", ec).string()});
+  argv.insert(argv.end(), {"@" + PathUtf8((work / "objects.rsp").generic_u8string()), "-o", U(temp),
+                           "-L" + U(fs::absolute(request.package / "bin", ec))});
   for (const std::string& a : expand(recipe.One("link_libraries"))) argv.push_back(a);
   const int rc = RunOne(argv, work, log, env, cancel);
   if (rc < 0) {
@@ -390,17 +372,39 @@ bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, cons
   }
   if (rc != 0) {
     fs::remove(temp, ec);
+    *stale_cache = have_objects;
     return failed("Linking the game failed.");
   }
   fs::permissions(temp, fs::perms(0755), ec);
   fs::rename(temp, output, ec);
-  if (ec) return failed("Could not write " + output.string() + ".");
+  if (ec) return failed("Could not write " + U(output) + ".");
   s.link_seconds = Since(start);
 
   // The generated C++ and the temporary files are no longer needed; the objects stay for updates.
   fs::remove_all(work, ec);
   if (progress) progress(BuildPhase::kLink, 1, "");
   return true;
+}
+
+}  // namespace
+
+bool LocalBuild(const BuildRequest& request, const BuildProgress& progress, const std::atomic<bool>& cancel,
+                std::string* error, BuildStats* stats) {
+  bool stale = false;
+  if (LocalBuildOnce(request, progress, cancel, error, stats, &stale)) return true;
+  if (!stale || cancel) return false;
+  // The cached objects were unusable: they are built again once, from nothing (a failure then is a real one).
+  std::error_code ec;
+  const std::string first_error = *error;
+  for (const auto& e : fs::directory_iterator(fs::absolute(request.cache, ec), ec)) {
+    if (e.is_directory(ec)) fs::remove_all(e.path(), ec);
+  }
+  bool again = false;
+  error->clear();
+  if (LocalBuildOnce(request, progress, cancel, error, stats, &again)) return true;
+  *error = "The game could not be prepared, also after building it again from nothing. " + *error +
+           "\n(The first attempt, from the cached objects: " + first_error.substr(0, first_error.find('\n')) + ")";
+  return false;
 }
 
 }  // namespace kuf::setup

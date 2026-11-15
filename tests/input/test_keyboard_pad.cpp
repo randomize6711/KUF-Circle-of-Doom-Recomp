@@ -3,6 +3,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <cmath>
+
 #include <map>
 #include <string>
 #include <vector>
@@ -354,6 +357,23 @@ TEST_CASE("bindings: custom lists, multiple controls per key, unknown names reje
   CHECK(bindings.ControlsFor(Context::kStartPrompt, K("K")) == (1u << static_cast<int>(Control::kStart)));
 }
 
+TEST_CASE("WindowToGuestClamped: outside the image the nearest edge (a slider's drag on a side bar)", "[input][mouse]") {
+  GuestPoint p;
+  // 2560x1080: the 1920x1080 image at x 320.
+  REQUIRE(WindowToGuestClamped(2560, 1080, 10, 500, 1280, 720, &p));
+  CHECK(p.x == 0);
+  CHECK(p.y == 333);
+  REQUIRE(WindowToGuestClamped(2560, 1080, 2550, 500, 1280, 720, &p));
+  CHECK(p.x == 1279);
+  // Inside, the same as WindowToGuest.
+  GuestPoint q;
+  REQUIRE(WindowToGuestClamped(2560, 1080, 1280, 540, 1280, 720, &p));
+  REQUIRE(WindowToGuest(2560, 1080, 1280, 540, 1280, 720, &q));
+  CHECK(p.x == q.x);
+  CHECK(p.y == q.y);
+  CHECK_FALSE(WindowToGuestClamped(0, 0, 1, 1, 1280, 720, &p));
+}
+
 TEST_CASE("WindowToGuest: exact fit, pillarbox, letterbox, resized windows", "[input][mouse][resize]") {
   GuestPoint p;
   REQUIRE(WindowToGuest(1280, 720, 640, 360, 1280, 720, &p));
@@ -607,4 +627,76 @@ TEST_CASE("a context change starts the camera from rest and drops queued wheel s
   pad.Look(10, 0);
   pad.set_context(Context::kGameplay);
   CHECK(pad.Poll().thumb_rx > 0);
+}
+
+TEST_CASE("mouse look at 125 to 8000 Hz: the same turn, linear, independent of the game's ticks", "[input][mouse]") {
+  // Synthetic events (no physical mouse): a second of steady movement, 3000 counts, taken by ticks at 30 per second.
+  for (const int hz : {125, 500, 1000, 4000, 8000}) {
+    for (const int ticks : {30, 60, 120}) {
+      KeyboardPad pad;
+      pad.set_context(Context::kGameplay);
+      LookSettings look;
+      look.direct = true;
+      pad.set_look_settings(look);
+      double total = 0, first_half = 0;
+      int taken = 0;
+      for (int i = 1; i <= hz; ++i) {
+        pad.Look(3000.0 / hz, -1500.0 / hz);
+        while (taken < i * ticks / hz) {
+          double dx, dy;
+          pad.TakeLook(&dx, &dy);
+          total += dx;
+          if (++taken <= ticks / 2) first_half += dx;
+          CHECK(dx >= 0);
+        }
+      }
+      double dx, dy;
+      pad.TakeLook(&dx, &dy);
+      total += dx;
+      CHECK(std::abs(total - 3000.0) < 1e-6);
+      CHECK(std::abs(first_half - 1500.0) < 3000.0 / hz + 1e-6);  // linear: half the time, half the turn
+      // The movement never reaches the right stick: no acceleration or dead zone of the stick's.
+      pad.Look(100, 0);
+      CHECK(pad.Poll().thumb_rx == 0);
+    }
+  }
+}
+
+TEST_CASE("mouse look: an event costs well under a microsecond at any polling rate", "[input][mouse]") {
+  KeyboardPad pad;
+  pad.set_context(Context::kGameplay);
+  LookSettings look;
+  look.direct = true;
+  pad.set_look_settings(look);
+  constexpr int kEvents = 1000000;
+  const auto start = std::chrono::steady_clock::now();
+  for (int i = 0; i < kEvents; ++i) {
+    pad.Look(0.5, -0.25);
+    if ((i & 0xFF) == 0) {
+      double dx, dy;
+      pad.TakeLook(&dx, &dy);
+    }
+  }
+  const double ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - start).count() / kEvents;
+  INFO("ns per event: " << ns);
+  CHECK(ns < 1000);  // 8000 events a second: under 0.8 % of a core
+}
+
+TEST_CASE("mouse look: focus loss and a menu drop pending movement, so nothing arrives afterwards", "[input][mouse]") {
+  KeyboardPad pad;
+  pad.set_context(Context::kGameplay);
+  LookSettings look;
+  look.direct = true;
+  pad.set_look_settings(look);
+  pad.Look(500, 500);
+  pad.SetFocused(false);
+  pad.SetFocused(true);
+  double dx, dy;
+  pad.PeekLook(&dx, &dy);
+  CHECK(dx == 0);
+  pad.Look(500, 0);
+  pad.PeekLook(&dx, &dy);
+  CHECK(dx == 500);  // a peek leaves it
+  pad.TakeLook(&dx, &dy);
+  CHECK(dx == 500);
 }

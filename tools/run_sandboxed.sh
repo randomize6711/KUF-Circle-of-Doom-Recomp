@@ -10,6 +10,7 @@
 #   - audio: the SDK builds SDL without the dummy driver, so SDL uses ALSA with a sandbox-local ~/.asoundrc
 #     whose default PCM is ALSA's `null` sink (the host's audio setup is never touched). The null sink does
 #     not pace playback, so these runs pass --kuf_audio_pace=true (KNOWN_ISSUES K14)
+#   - --no-audio-device: no audio device at all (no .asoundrc null sink): the game must run on silently (M17)
 #   - --audio (opt-in): real sound through the session's PulseAudio-compatible socket
 #     ($XDG_RUNTIME_DIR/pulse/native, served by PipeWire) and nothing else; no autospawn, no host config
 #   - --pad <dev> (opt-in): one game controller. <dev> must be a /dev/input/by-id/*-event-joystick link that
@@ -54,6 +55,7 @@ GPU=""
 GDB_SCRIPT=""
 WINDOW=""
 AUDIO=""
+NO_AUDIO_DEVICE=""
 PAD=""
 SAVES_FROM=""
 SAVE_DIR=""
@@ -72,6 +74,7 @@ while [ $# -gt 0 ]; do
     --gpu) GPU="--gpu_plugin=xenos"; shift ;;
     --window) WINDOW=1; shift ;;
     --audio) AUDIO=1; shift ;;
+    --no-audio-device) NO_AUDIO_DEVICE=1; shift ;;
     --pad) PAD="$2"; shift 2 ;;
     --gdb) GDB_SCRIPT="$(realpath "$2")"; shift 2 ;;
     --saves-from) SAVES_FROM="$(realpath -e "$2")"; shift 2 ;;
@@ -205,10 +208,12 @@ if [ -n "$INPUT_SCRIPT" ]; then
   cp "$INPUT_SCRIPT" "$RUN/input-script.txt"
   SCRIPT_ARGS=(--kuf_input_script_file=/run-data/input-script.txt)
 fi
+if [ -z "$NO_AUDIO_DEVICE" ]; then
 cat > "$RUN/home/.asoundrc" <<'ASOUND'
 pcm.!default { type null }
 ctl.!default { type hw card 0 }
 ASOUND
+fi
 
 LAUNCH=(/app/kuf_cod)
 GDB_BIND=()
@@ -235,6 +240,8 @@ fi
 
 AUDIO_ARGS=(--setenv SDL_AUDIO_DRIVER alsa)
 GAME_AUDIO_ARGS=(--kuf_audio_pace=true)
+[ -n "$NO_AUDIO_DEVICE" ] && [ -n "$AUDIO" ] && { echo "--audio and --no-audio-device exclude each other" >&2; exit 2; }
+[ -n "$NO_AUDIO_DEVICE" ] && GAME_AUDIO_ARGS=()
 if [ -n "$AUDIO" ]; then
   PULSE_SOCK="${XDG_RUNTIME_DIR:-}/pulse/native"
   [ -S "$PULSE_SOCK" ] || { echo "--audio needs the session's PulseAudio socket ($PULSE_SOCK)" >&2; exit 1; }

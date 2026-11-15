@@ -381,16 +381,20 @@ b = "status_after"
 rect = [570, 152, 760, 184]
 min_mean_diff = 3.0
 
-# Loot: the Gold number changed (glyph pixels only; measured 0.09 unchanged, >= 2.9 for 100 -> 109), or items
-# are listed. Either alone is legitimate: gold may not drop, and potions picked up can be used up by the Q
-# presses during the fight (seen in a run: Gold 100 -> 109, inventory empty).
+# Loot: the Gold number changed (glyph pixels only), or items are listed. Either alone is legitimate: gold may not
+# drop, and potions picked up can be used up by the Q presses during the fight (seen in a run: Gold 100 -> 109,
+# inventory empty). edge_tolerance_px = 1 (2026-11-09): glyph pixels appearing or vanishing beside the other
+# capture's glyphs are anti-aliased edges crossing the threshold when the scene behind the panel changes brightness;
+# without it an unchanged "Gold: 100" measured up to 1.51 and once passed the old 1.0 in a run with every drop
+# skipped. Over 170 stored runs with the tolerance: unchanged 0.00, changed >= 0.80.
 [[region_diff]]
 name = "gold picked up"
 a = "status_before"
 b = "status_after"
 rect = [910, 152, 1000, 184]
 metric = "text"
-min_mean_diff = 1.0
+edge_tolerance_px = 1
+min_mean_diff = 0.4
 any_of = "loot"
 
 [[region]]

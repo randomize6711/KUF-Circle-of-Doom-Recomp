@@ -1,15 +1,20 @@
-# The selection arrow beside every title list row (M7 UI polish, src/runtime/title_menu.cpp --kuf_title_arrow). The
-# game's own seven rows carry state bit 0x80, which keeps the toolkit's selection arrow off them (in the original only
-# the port's added rows had it: the player's screenshots arrow1/arrow2); the port clears it while the list shows, so
-# the arrow follows the selection on every row. NEW GAME at start, Down (SETTINGS: CONTINUE and LEADERBOARD are greyed
-# without saves and skipped), the pointer to CREDITS, to QUIT GAME, Up with the keyboard (CHECK FOR UPDATES).
-# The check: the arrow's column (x 345-385, left of the rows) is brightest beside the selected row.
+# The selection arrow in the title list, by the device in use (src/runtime/menu_pointer.cpp, sub_82612DE0; K67). With the
+# keyboard and mouse there is no arrow: the highlight shows the selection, also with a controller connected but not yet
+# used (it flashed before the M7 UI follow-up). With a controller the arrow is beside every row, also the game's seven,
+# which carry state bit 0x80 and had none in the original. Moving the mouse takes it away again.
+# NEW GAME at start, Down (SETTINGS: CONTINUE and LEADERBOARD are greyed without saves and skipped), the pointer to
+# CREDITS, to QUIT GAME, Up with the keyboard (CHECK FOR UPDATES); then the pad: Down (QUIT GAME), Up three times
+# (PROLOGUE); then a real mouse movement to LANGUAGE (an SDL event: the window is 1024x768, y 539 is guest y 554; the
+# script's `mouse` verb goes straight to the pointer and does not count as using the mouse).
+# The checks: the highlight's glow on the selected row; the arrow's column (x 345-385, left of the rows) empty for the
+# keyboard and mouse and brightest beside the selected row for the controller.
 
 [scenario]
-description = "Title list: the selection arrow beside every row (keyboard, mouse, the added rows)"
-seconds = 45
-args = ["--kuf_storage_prompt=auto"]
+description = "Title list: no selection arrow with keyboard and mouse, the arrow beside every row with a controller"
+seconds = 70
+args = ["--kuf_storage_prompt=auto", "--kuf_input_script_pad=xbox360"]
 script = """
+100 pad connect
 500 tap Return
 700 capture new_game
 750 press Down
@@ -20,6 +25,16 @@ script = """
 1150 capture quit_hover
 1200 press Up
 1300 capture updates_up
+1350 pad press down
+1450 capture pad_quit
+1500 pad press up
+1560 capture pad_updates
+1600 pad press up
+1660 capture pad_credits
+1700 pad press up
+1760 capture pad_prologue
+1800 sdl motion 512 539
+1860 capture pointer_language
 """
 capture_frames = []
 
@@ -28,10 +43,55 @@ width = 1280
 height = 720
 
 [[highlight]]
-name = "arrow beside the selected row"
+name = "the selected row's glow"
+metric = "red_minus_blue"
+x = [440, 840]
+rows = [442, 470, 498, 526, 554, 582, 610, 638, 666]
+half_height = [12, 14]
+min_margin = 8.0
+expect = { "700" = 0, "850" = 3, "1000" = 6, "1150" = 8, "1300" = 7, "1450" = 8, "1560" = 7, "1660" = 6, "1760" = 5, "1860" = 4 }
+
+[[highlight]]
+name = "the arrow with a controller"
 metric = "luma"
 x = [345, 385]
 rows = [442, 470, 498, 526, 554, 582, 610, 638, 666]
 half_height = [10, 12]
 min_margin = 8.0
-expect = { "700" = 0, "850" = 3, "1000" = 6, "1150" = 8, "1300" = 7 }
+expect = { "1450" = 8, "1560" = 7, "1660" = 6, "1760" = 5 }
+
+[[region]]
+name = "no arrow: keyboard, a controller connected but not used"
+capture = "new_game"
+rect = [345, 430, 385, 680]
+mean = [0.0, 1.0]
+
+[[region]]
+name = "no arrow: keyboard"
+capture = "settings"
+rect = [345, 430, 385, 680]
+mean = [0.0, 1.0]
+
+[[region]]
+name = "no arrow: mouse"
+capture = "credits_hover"
+rect = [345, 430, 385, 680]
+mean = [0.0, 1.0]
+
+[[region]]
+name = "no arrow: mouse on an added row"
+capture = "quit_hover"
+rect = [345, 430, 385, 680]
+mean = [0.0, 1.0]
+
+[[region]]
+name = "no arrow: back on the keyboard"
+capture = "updates_up"
+rect = [345, 430, 385, 680]
+mean = [0.0, 1.0]
+
+[[region]]
+name = "no arrow: the mouse after the controller"
+capture = "pointer_language"
+rect = [345, 430, 385, 680]
+mean = [0.0, 1.0]

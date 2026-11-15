@@ -5,8 +5,11 @@
 #include <csignal>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "core/localbuild.h"
+#include "core/platform.h"
+
 
 namespace {
 std::atomic<bool> g_cancel{false};
@@ -15,13 +18,15 @@ void OnSignal(int) { g_cancel = true; }
 
 int main(int argc, char** argv) {
   kuf::setup::BuildRequest request;
-  for (int i = 1; i + 1 < argc; i += 2) {
-    const std::string a = argv[i];
-    if (a == "--package") request.package = argv[i + 1];
-    else if (a == "--xex") request.xex = argv[i + 1];
-    else if (a == "--cache") request.cache = argv[i + 1];
-    else if (a == "--output") request.output = argv[i + 1];
-    else if (a == "--jobs") request.jobs = std::atoi(argv[i + 1]);
+  const std::vector<std::string> args = kuf::setup::Utf8Arguments(argc, argv);
+  for (size_t i = 1; i + 1 < args.size(); i += 2) {
+    const std::string& a = args[i];
+    const auto path = [&] { return kuf::setup::PathFromUtf8(args[i + 1]); };
+    if (a == "--package") request.package = path();
+    else if (a == "--xex") request.xex = path();
+    else if (a == "--cache") request.cache = path();
+    else if (a == "--output") request.output = path();
+    else if (a == "--jobs") request.jobs = std::atoi(args[i + 1].c_str());
     else return 2;
   }
   if (request.package.empty() || request.xex.empty() || request.cache.empty() || request.output.empty()) {

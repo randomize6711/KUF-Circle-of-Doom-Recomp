@@ -1,0 +1,43 @@
+KUF port (M18C): with a damaged or partly deleted shader storage (.xsh) every stored pipeline whose shaders were lost
+logged an error while loading (98 in a test with the file cut in half), although it is handled: the pipeline is not
+created from storage and is created again when the game draws with it. Such pipelines are now skipped before the
+lookup and counted in one info line. Translation failures of shaders that are present still log their errors.
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -591,6 +591,7 @@
+   // Create the pipelines.
+   std::vector<PipelineCreationArguments> pipeline_creations;
+   pipeline_creations.reserve(pipeline_stored_descriptions.size());
++  size_t pipeline_storage_skipped_no_shader_count = 0;
+   for (const PipelineStoredDescription& pipeline_stored_description :
+        pipeline_stored_descriptions) {
+     const PipelineDescription& pipeline_description = pipeline_stored_description.description;
+@@ -599,6 +600,14 @@
+     if (find_it != pipelines_.end()) {
+       continue;
+     }
++    // A stored pipeline whose shaders are not in the shader storage (a damaged or partly deleted .xsh) is skipped
++    // without an error per pipeline: it is created again when the game draws with it.
++    if (shaders_.find(pipeline_description.vertex_shader_hash) == shaders_.end() ||
++        (pipeline_description.pixel_shader_hash &&
++         shaders_.find(pipeline_description.pixel_shader_hash) == shaders_.end())) {
++      ++pipeline_storage_skipped_no_shader_count;
++      continue;
++    }
+     auto& pipeline = *pipelines_.emplace(pipeline_description, Pipeline()).first;
+     PipelineCreationArguments creation_arguments;
+     if (!TryGetPipelineCreationArgumentsForDescription(pipeline_description, &pipeline,
+@@ -623,6 +632,12 @@
+         bound_rts, shader_writes_color_targets, shader_writes_depth);
+     pipeline_creations.push_back(creation_arguments);
+   }
++  if (pipeline_storage_skipped_no_shader_count) {
++    REXGPU_INFO(
++        "VulkanPipelineCache: Skipped {} stored pipelines whose shaders are not in the shader "
++        "storage (created again on first use)",
++        pipeline_storage_skipped_no_shader_count);
++  }
+ 
+   if (!pipeline_creations.empty()) {
+     {

@@ -34,12 +34,20 @@
 #include <string>
 #include <thread>
 
+#include <filesystem>
+#include <fstream>
+#if defined(_WIN32)
+#include "runtime/win32.h"
+#else
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
+#if !defined(_WIN32)
 #include <fcntl.h>
+#endif
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -80,7 +88,9 @@ REX_EXTERN(sub_82622400);         // the toolkit's SetFocus (control)
 REX_EXTERN(sub_825D5560);         // the game's message post (message, data, 0, 0, 0)
 REX_EXTERN(__imp__sub_826259C8);  // the buttons' input handler (control, event; hooked below: the update box)
 
+#if !defined(_WIN32)
 extern char** environ;
+#endif
 
 namespace {
 
@@ -118,7 +128,11 @@ Update g_update = Update::kIdle;
 kuf::updates::Reply g_reply;                  // the last check or install result (g_mutex)
 std::optional<kuf::updates::Dialog> g_dialog_pending;  // to show when the title list has the focus (g_mutex)
 std::optional<kuf::updates::Dialog> g_dialog_open;     // the one on screen (game thread)
+#if defined(_WIN32)
+HANDLE g_update_process = nullptr;            // the running updater (g_mutex): Cancel ends it
+#else
 pid_t g_update_pid = 0;                       // the running updater (g_mutex): Cancel sends it SIGTERM
+#endif
 constexpr uint32_t kUpdateYes = 0x7E53, kUpdateNo = 0x7E54;  // the update box's answers (not used by the game)
 std::array<std::string, kRowCount> g_want;   // the label wanted (g_mutex)
 std::array<std::string, kRowCount> g_shown;  // the label set (game thread)
@@ -174,6 +188,66 @@ std::string UpdaterCommand() {
 // (each JSON line to `on_line`); its process ID is kept while it runs (Cancel). Returns its exit status (-1: not run).
 int RunUpdater(const std::string& cmd, const std::string& args,
                const std::function<void(const kuf::updates::Reply&)>& on_line, kuf::updates::Reply* result) {
+#if defined(_WIN32)
+  // Windows: the updater is a program (no shell); its standard output through a pipe.
+  std::wstring line = L"\"" + std::filesystem::path(reinterpret_cast<const char8_t*>(cmd.c_str())).wstring() +
+                      L"\" --json " + std::filesystem::path(reinterpret_cast<const char8_t*>(args.c_str())).wstring();
+  SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+  HANDLE read_end = nullptr, write_end = nullptr;
+  if (!::CreatePipe(&read_end, &write_end, &sa, 0)) return -1;
+  ::SetHandleInformation(read_end, HANDLE_FLAG_INHERIT, 0);
+  HANDLE null_in = ::CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = null_in;
+  si.hStdOutput = write_end;
+  si.hStdError = null_in;
+  PROCESS_INFORMATION pi{};
+  const BOOL started = ::CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
+                                        nullptr, &si, &pi);
+  ::CloseHandle(write_end);
+  if (null_in != INVALID_HANDLE_VALUE) ::CloseHandle(null_in);
+  if (!started) {
+    ::CloseHandle(read_end);
+    return -1;
+  }
+  ::CloseHandle(pi.hThread);
+  {
+    std::lock_guard lock(g_mutex);
+    g_update_process = pi.hProcess;
+  }
+  std::string pending;
+  char buf[8192];
+  DWORD got = 0;
+  const auto take = [&](const std::string& text) {
+    if (const auto reply = kuf::updates::ParseLine(text)) {
+      if (reply->exit >= 0) {
+        *result = *reply;
+      } else if (on_line) {
+        on_line(*reply);
+      }
+    }
+  };
+  while (::ReadFile(read_end, buf, sizeof(buf), &got, nullptr) && got > 0) {
+    pending.append(buf, got);
+    for (size_t nl; (nl = pending.find('\n')) != std::string::npos;) {
+      take(pending.substr(0, nl + 1));
+      pending.erase(0, nl + 1);
+    }
+  }
+  if (!pending.empty()) take(pending);
+  ::CloseHandle(read_end);
+  ::WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD code = DWORD(-1);
+  ::GetExitCodeProcess(pi.hProcess, &code);
+  {
+    std::lock_guard lock(g_mutex);
+    g_update_process = nullptr;
+  }
+  ::CloseHandle(pi.hProcess);
+  return int(code);
+#else
   std::string quoted = "exec '";
   for (char c : cmd) quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
   quoted += "' --json " + args + " 2>/dev/null";
@@ -216,6 +290,7 @@ int RunUpdater(const std::string& cmd, const std::string& args,
     g_update_pid = 0;
   }
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
 }
 
 // The launcher's restart file (--kuf_restart_file, else $KUF_RESTART_FILE); empty: no restart offered.
@@ -312,8 +387,13 @@ void StartInstall() {
 
 void CancelInstall() {
   std::lock_guard lock(g_mutex);
+#if defined(_WIN32)
+  if (g_update == Update::kDownloading && g_update_process) {
+    ::TerminateProcess(g_update_process, 5);  // before it switches anything; its next run removes the download
+#else
   if (g_update == Update::kDownloading && g_update_pid > 0) {
     kill(g_update_pid, SIGTERM);  // the updater stops before it switches anything (exit 5)
+#endif
     REXLOG_INFO("[kuf-title] update download: cancelling");
   }
 }
@@ -379,12 +459,50 @@ void AskUpdate(PPCContext& ctx, uint8_t* base, uint32_t menu, kuf::updates::Dial
   REXLOG_INFO("[kuf-title] update dialog {}", int(dialog));
 }
 
+// The portable edition's and the Windows installation's launcher (M17G: $KUF_LAUNCHER, set by it): started with
+// --after-restart <this process> before the game quits; it waits for the game to end, puts the staged update in place
+// and starts the game again. The Linux installation's launcher script restarts the game itself (no $KUF_LAUNCHER).
+bool StartLauncherForRestart() {
+  const char* launcher = std::getenv("KUF_LAUNCHER");
+  if (!launcher || !*launcher) return true;
+#if defined(_WIN32)
+  std::wstring line = L"\"" + std::filesystem::path(reinterpret_cast<const char8_t*>(launcher)).wstring() +
+                      L"\" --after-restart " + std::to_wstring(::GetCurrentProcessId());
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  if (!::CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS, nullptr, nullptr, &si, &pi)) {
+    REXLOG_ERROR("[kuf-title] the launcher could not be started for the restart ({})", ::GetLastError());
+    return false;
+  }
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+  return true;
+#else
+  const std::string pid = std::to_string(::getpid());
+  char* argv[] = {const_cast<char*>(launcher), const_cast<char*>("--after-restart"), const_cast<char*>(pid.c_str()),
+                  nullptr};
+  pid_t child = 0;
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+  const int rc = posix_spawn(&child, launcher, nullptr, &attr, argv, environ);
+  posix_spawnattr_destroy(&attr);
+  if (rc != 0) {
+    REXLOG_ERROR("[kuf-title] the launcher could not be started for the restart ({})", rc);
+    return false;
+  }
+  return true;
+#endif
+}
+
 void RestartGame() {
   const std::string marker = RestartFile();
   if (marker.empty()) return;
-  if (FILE* f = std::fopen(marker.c_str(), "w")) {
-    std::fputs("restart after update\n", f);
-    std::fclose(f);
+  if (std::ofstream f{std::filesystem::path(reinterpret_cast<const char8_t*>(marker.c_str()))}) {  // UTF-8 path
+    f << "restart after update\n";
+    f.close();
+    if (!StartLauncherForRestart()) return;  // the game keeps running; the update is applied at the next start
     REXLOG_INFO("[kuf-title] restarting for the update");
     g_quit_pending = true;  // as Quit Game: once no save is in progress, PC settings written, then the launcher
   }
@@ -599,6 +717,13 @@ void OpenReleasePage() {
   const std::string url = g_ub_page;
   REXLOG_INFO("[kuf-title] update box: opening {}", url);
   std::thread([url] {
+#if defined(_WIN32)
+    const std::wstring wide = std::filesystem::path(reinterpret_cast<const char8_t*>(url.c_str())).wstring();
+    const bool ok = reinterpret_cast<INT_PTR>(::ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr,
+                                                              SW_SHOWNORMAL)) > 32;
+    g_ub_browser = ok ? 2 : 3;
+    REXLOG_INFO("[kuf-title] update box: browser {}", ok ? "opened" : "failed");
+#else
     pid_t pid = 0;
     const char* argv[] = {"xdg-open", url.c_str(), nullptr};
     posix_spawn_file_actions_t actions;
@@ -612,6 +737,7 @@ void OpenReleasePage() {
     const bool ok = err == 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
     g_ub_browser = ok ? 2 : 3;
     REXLOG_INFO("[kuf-title] update box: xdg-open {} ({})", ok ? "done" : "failed", err ? std::strerror(err) : "exit");
+#endif
   }).detach();
 }
 

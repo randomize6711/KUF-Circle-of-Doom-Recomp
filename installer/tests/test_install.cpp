@@ -8,6 +8,8 @@
 #include "core/install.h"
 #include "core/localbuild.h"
 #include "sandbox.h"
+#include "xiso_builder.h"
+#include "xex_builder.h"
 
 using namespace kuf::setup;
 using kuf::setup::test::Sandbox;
@@ -114,6 +116,89 @@ TEST_CASE("a new installation: the updater's layout, the game data, the menu ent
   }
   // The player's folder is unchanged.
   CHECK(fs::exists(f.plan.game_source / "$SystemUpdate/su.bin"));
+}
+
+TEST_CASE("a retail disc image with a separate unencrypted executable installs; without it, nothing is written",
+          "[install][retail]") {
+  Fixture f;
+  const fs::path plain = f.plan.game_source / "default.xex";
+  std::string xwb;
+  REQUIRE(ReadFile(f.plan.game_source / "Data/Sound/a.xwb", &xwb));
+  const std::string retail = Sandbox::Xex("SCRAMBLED", 1);
+  test::Xiso x;
+  x.partition = 0x2080000;  // XGD3
+  x.files = {{"Default.xex", retail}, {"Data/Sound/a.xwb", xwb}, {"$SystemUpdate/su20076000_00000000", "dashboard"}};
+  const fs::path iso = f.s.dir / "My Disc.iso";
+  x.Build(iso);
+  f.plan.manifest.retail_xex_sha256 = InspectXexData(retail).file_sha256;
+  f.plan.game_source = iso;
+  Result r = Install(f.plan, nullptr, g_no_cancel);
+  CHECK_FALSE(r.ok);
+  CHECK(r.error.find("retail copy of the supported version was recognised") != std::string::npos);
+  CHECK_FALSE(fs::exists(f.plan.root));
+  f.plan.executable = f.s.dir / "absent.xex";
+  r = Install(f.plan, nullptr, g_no_cancel);
+  CHECK(r.error == "The separate default.xex was not found.");
+  CHECK_FALSE(fs::exists(f.plan.root));
+  f.plan.executable = plain;
+  r = Install(f.plan, nullptr, g_no_cancel);
+  REQUIRE(r.ok);
+  CHECK(Sha256File(f.plan.root / "game/default.xex") == Sha256File(plain));
+  CHECK(Sha256File(f.plan.root / "game/Data/Sound/a.xwb") == Sha256File(f.plan.game_source.parent_path() / "my game/Data/Sound/a.xwb"));
+  CHECK_FALSE(fs::exists(f.plan.root / "game/$SystemUpdate"));
+  CHECK_FALSE(fs::exists(f.plan.root / "game/Default.xex"));
+  CHECK((fs::status(f.plan.root / "game/default.xex").permissions() & fs::perms(0777)) == fs::perms(0644));
+  // A repair from the same image keeps the copies that are still right.
+  r = Install(f.plan, nullptr, g_no_cancel);
+  CHECK(r.ok);
+}
+
+TEST_CASE("a retail disc image installs on its own: default.xex decrypted into the installation", "[install][retail]") {
+  if (!kXexDecryptionBuilt) {
+    SUCCEED("no XEX decryption in this build: skipped");
+    return;
+  }
+  Fixture f;
+  const AesKey master = test::KeyFromHex("f00dfacecafebeef0123456789abcdef");
+  test::TestKey key(master);
+  const std::string plain = test::EncryptableXex(test::kImage80, nullptr);
+  const std::string enc = test::EncryptableXex(test::kImage80, &master);
+  std::string xwb;
+  REQUIRE(ReadFile(f.plan.game_source / "Data/Sound/a.xwb", &xwb));
+  test::Xiso x;
+  x.partition = 0xFD90000;  // XGD2
+  x.files = {{"default.xex", enc}, {"Data/Sound/a.xwb", xwb}};
+  const fs::path iso = f.s.dir / "disc.iso";
+  x.Build(iso);
+  f.plan.manifest.files[0].sha256 = InspectXexData(plain).image_sha256;  // the list's default.xex: this image
+  f.plan.game_source = iso;
+  Result r = Install(f.plan, nullptr, g_no_cancel);
+  REQUIRE(r.ok);
+  std::string installed;
+  REQUIRE(ReadFile(f.plan.root / "game/default.xex", &installed));
+  CHECK(InspectXexData(installed).status == XexStatus::kOk);
+  CHECK(InspectXexData(installed).image_sha256 == InspectXexData(plain).image_sha256);
+  CHECK((fs::status(f.plan.root / "game/default.xex").permissions() & fs::perms(0777)) == fs::perms(0644));
+  for (const auto& e : fs::recursive_directory_iterator(f.plan.root)) {  // no temporary file left
+    CHECK(e.path().string().find("kuf-setup-tmp") == std::string::npos);
+    CHECK(e.path().extension() != ".part");
+  }
+  // A repair keeps the decrypted copy (its image is the supported one).
+  CHECK(Install(f.plan, nullptr, g_no_cancel).ok);
+  // An image that decrypts to something else is refused before anything is written.
+  Fixture g;
+  test::TestKey key2(master);
+  x.files["default.xex"] = test::EncryptableXex(std::string(80, 'Z'), &master);
+  x.chunks.clear();
+  x.entry_at.clear();
+  x.next = 33;
+  x.Build(g.s.dir / "bad.iso");
+  g.plan.manifest.files[0].sha256 = InspectXexData(plain).image_sha256;
+  g.plan.game_source = g.s.dir / "bad.iso";
+  r = Install(g.plan, nullptr, g_no_cancel);
+  CHECK_FALSE(r.ok);
+  CHECK(r.error.find("was decrypted, but") != std::string::npos);
+  CHECK_FALSE(fs::exists(g.plan.root));
 }
 
 TEST_CASE("desktop shortcut and Steam shortcut, recorded and removed again", "[install]") {

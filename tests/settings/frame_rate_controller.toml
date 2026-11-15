@@ -3,6 +3,8 @@
 # Display, A, D-pad down five times to FPS (M7 categories, UX fix 3). D-pad right three times: 120; D-pad down, A: Interpolation Off (A steps the value);
 # D-pad down, A: World Objects Off. B four times saves and returns to the game, which draws up to 120 frames
 # per second, each a copy of its tick.
+# M15.1: Settings opens directly on the categories: Display, Camera, Audio, Mouse & Keyboard, Controller, Gameplay,
+# Restore Defaults (K66). What this route checks is unchanged; where the text above names older rows, these replace them.
 
 [scenario]
 description = "Frame-rate page with a controller: D-pad, A and B"
@@ -23,17 +25,6 @@ script = """
 @gameplay+500 pad press down
 @gameplay+550 pad press down
 @gameplay+650 pad press a
-@gameplay+800 pad press down
-@gameplay+830 pad press down
-@gameplay+860 pad press down
-@gameplay+890 pad press down
-@gameplay+920 pad press down
-@gameplay+950 pad press down
-@gameplay+980 pad press down
-@gameplay+1010 pad press down
-@gameplay+1110 pad press a
-@gameplay+1260 pad press down
-@gameplay+1290 pad press down
 @gameplay+1320 pad press a
 @gameplay+1420 pad press down
 @gameplay+1450 pad press down
@@ -52,7 +43,6 @@ script = """
 @gameplay+2330 pad press b
 @gameplay+2430 pad press b
 @gameplay+2530 pad press b
-@gameplay+2630 pad press b
 @gameplay+2830 log mark play_a
 @gameplay+3130 log mark play_b
 """

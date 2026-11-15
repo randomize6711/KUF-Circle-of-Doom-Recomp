@@ -1,72 +1,110 @@
-# Sliders with the mouse (M7 UX fix 2, src/runtime/pc_settings_menu.cpp PointerSlider). Title SETTINGS: a click on
-# the SFX Volume track sets it there; the Music Volume knob dragged left and right and released. PC Settings with the
-# pointer, Controls: a click at the end of Mouse Horizontal (20), Mouse Vertical dragged to the middle (10), a click
-# on Stick Dead Zone at a fifth (10 %). Back, Camera: clicks at the ends of Distance (200 %) and Field of View (110).
-# Back twice saves. Tracks: x 470-1074 (layout space), rows y 150, 197, 243, 336.
+# Sliders and the pointer (M15A, src/runtime/pc_settings_menu.cpp PointerSlider, RowPointerX; the Settings pages' two
+# columns). Title SETTINGS, the mouse alone after the title prompt: Audio: a click on the SFX track, the Music knob
+# dragged left and past the panel's right edge, released away from the slider over another row (nothing else acts).
+# Mouse & Keyboard: a click at the end of Mouse Horizontal (20), Mouse Vertical dragged to the middle (10); hovering a
+# slider and a row's empty part shows that row's description; a click on the empty part of Mouse Y-Axis steps it.
+# A drag interrupted by losing the focus ends: moving the pointer later changes nothing, and it does not start again.
+# Key Bindings is not opened by a release over it. Camera: clicks at the ends of Distance (200 %) and Field of View
+# (110). Display: the wheel moves three rows and back; the scrollbar's track and thumb. Tracks: x 470-790 (layout
+# space), rows y 150, 196, 242, 288.
 
 [scenario]
-description = "Sliders with the mouse: click on a track, drag a knob (game and PC Settings sliders)"
-seconds = 105
+description = "Sliders and rows with the mouse: click, drag, release, hover, wheel, scrollbar (title SETTINGS)"
+seconds = 150
 args = ["--kuf_trace_menu_pointer=true"]
 script = """
 500 tap Return
-700 tap Escape
-800 press Down
-900 press Return
-1000 mouse 700 150 1280 720
-1050 tap MouseLeft
-1100 capture sfx_clicked
-1150 mouse 1010 197 1280 720
-1180 down MouseLeft
-1220 mouse 600 197 1280 720
-1270 capture music_dragged_left
-1300 mouse 900 197 1280 720
-1350 capture music_dragged_right
-1380 up MouseLeft
-1450 mouse 300 564 1280 720
-1500 tap MouseLeft
-1600 mouse 300 150 1280 720
-1650 tap MouseLeft
-1750 capture controls
-1800 mouse 1072 150 1280 720
-1830 tap MouseLeft
-1900 mouse 1010 197 1280 720
-1930 down MouseLeft
-1970 mouse 771 197 1280 720
-2020 up MouseLeft
-2080 mouse 590 336 1280 720
-2110 tap MouseLeft
-2180 capture controls_set
-2230 press Escape
-2300 mouse 300 197 1280 720
-2350 tap MouseLeft
-2420 mouse 1072 150 1280 720
-2450 tap MouseLeft
-2500 mouse 1072 197 1280 720
-2530 tap MouseLeft
-2600 capture camera_set
-2630 press Escape
-2700 press Escape
-2800 capture settings_again
+700 press Return
+850 press Return
+1000 mouse 640 519 1280 720
+1120 press MouseLeft
+1250 mouse 300 240 1280 720
+1290 tap MouseLeft
+1370 capture audio_page
+1400 mouse 630 150 1280 720
+1420 tap MouseLeft
+1470 capture sfx_clicked
+1500 mouse 700 196 1280 720
+1530 down MouseLeft
+1560 mouse 500 196 1280 720
+1590 capture music_dragged_left
+1620 mouse 1250 196 1280 720
+1650 capture music_past_the_end
+1680 mouse 300 288 1280 720
+1700 up MouseLeft
+1760 press Escape
+1820 mouse 300 286 1280 720
+1860 tap MouseLeft
+1930 capture mouse_page
+1960 mouse 789 150 1280 720
+1990 tap MouseLeft
+2040 mouse 700 196 1280 720
+2070 down MouseLeft
+2100 mouse 630 196 1280 720
+2130 up MouseLeft
+2190 mouse 700 242 1280 720
+2240 capture hover_empty_part
+2270 tap MouseLeft
+2330 mouse 785 150 1280 720
+2360 down MouseLeft
+2390 mouse 630 150 1280 720
+2450 focus off
+2480 focus on
+2510 mouse 700 150 1280 720
+2540 up MouseLeft
+2600 press Escape
+2660 mouse 300 194 1280 720
+2700 tap MouseLeft
+2770 mouse 789 150 1280 720
+2800 tap MouseLeft
+2860 mouse 789 196 1280 720
+2890 tap MouseLeft
+2950 capture camera_set
+2980 press Escape
+3040 mouse 300 148 1280 720
+3080 tap MouseLeft
+3160 capture display_page
+3190 wheel -3
+3250 capture display_wheel_down
+3280 wheel 3
+3340 mouse 820 470 1280 720
+3370 tap MouseLeft
+3430 capture display_scrolled
+3460 mouse 820 400 1280 720
+3490 down MouseLeft
+3520 mouse 820 150 1280 720
+3550 up MouseLeft
+3610 press Escape
+3670 press Escape
+3770 capture title_list
 """
 capture_frames = []
-pc_settings_expect = { "mouse.sensitivity_horizontal" = 20, "mouse.sensitivity_vertical" = 10, "controller.camera_deadzone_percent" = 10, "camera.distance_percent" = 200, "camera.field_of_view_degrees" = 110 }
+pc_settings_expect = { "mouse.sensitivity_horizontal" = 10, "mouse.sensitivity_vertical" = 10, "mouse.invert_y" = true, "camera.distance_percent" = 200, "camera.field_of_view_degrees" = 110 }
 log_sequence = [
-    "[kuf-pc-menu] slider 0 (Settings): set from the pointer",
-    "[kuf-pc-menu] slider 1 (Settings): set from the pointer",
-    "[kuf-pc-menu] slider 1: released",
     "[kuf-pc-menu] PC Settings opened (title SETTINGS)",
-    "[kuf-pc-menu] description (",
-    "[kuf-pc-menu] controls page",
-    "[kuf-pc-menu] slider 0 (controls): set from the pointer",
-    "[kuf-pc-menu] slider 1 (controls): set from the pointer",
+    "[kuf-pc-menu] audio page",
+    "[kuf-pc-menu] slider 0 (audio): set from the pointer",
+    "[kuf-pc-menu] slider 1 (audio): set from the pointer",
     "[kuf-pc-menu] slider 1: released",
-    "[kuf-pc-menu] slider 3 (controls): set from the pointer",
+    "[kuf-pc-menu] mouse and keyboard page",
+    "[kuf-pc-menu] slider 0 (mouse and keyboard): set from the pointer",
+    "How far the camera turns per mouse movement, up and down.",
+    "[kuf-pc-menu] slider 1 (mouse and keyboard): set from the pointer",
+    "[kuf-pc-menu] slider 1: released",
+    "Inverts the mouse's vertical axis",
+    "[kuf-pc-menu] slider 0 (mouse and keyboard): set from the pointer",
+    "[kuf-pc-menu] slider 0: released",
     "[kuf-pc-menu] camera page",
     "[kuf-pc-menu] slider 0 (camera): set from the pointer",
     "[kuf-pc-menu] slider 1 (camera): set from the pointer",
+    "[kuf-pc-menu] display page",
+    "[kuf-pointer] wheel -3: 3 direct step(s)",
+    "[kuf-pointer] wheel 3: 3 direct step(s)",
+    "[kuf-pc-menu] scrollbar (display): track",
+    "[kuf-pc-menu] scrollbar (display): thumb",
     "[kuf-settings] saved /run-data/user/pc_settings.toml",
 ]
+log_absent = ["key bindings page"]
 
 [format]
 width = 1280

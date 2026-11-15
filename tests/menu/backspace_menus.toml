@@ -1,0 +1,74 @@
+# M15.1: Backspace is never a menu control (docs/INPUT.md; the text fields it does delete in are the multiplayer menus' lobby
+# name, password and invite code, unit-tested in tests/input/test_text_entry.cpp). Backspace on the title list, on the Settings
+# categories, on a Settings page and in the Quit Game question: each stays where it is. Escape then goes back, as normal.
+
+[scenario]
+description = "Backspace does nothing in the menus and in a question; Escape goes back"
+seconds = 75
+args = ["--kuf_storage_prompt=auto"]
+script = """
+500 tap Return
+700 capture title
+720 press Backspace
+800 capture title_after
+850 press Down
+950 press Return
+1050 capture categories
+1080 log mark on_categories
+1100 press Backspace
+1180 capture categories_after
+1200 press Return
+1290 capture display_page
+1300 log mark on_display
+1320 press Backspace
+1400 capture display_after
+1420 log mark escape
+1430 press Escape
+1520 press Escape
+1620 mouse 640 666 1280 720
+1700 press MouseLeft
+1800 capture question
+1830 press Backspace
+1910 capture question_after
+1940 press Escape
+2040 capture title_again
+"""
+capture_frames = []
+log_sequence = [
+    "[kuf-pc-menu] PC Settings opened (title SETTINGS)",
+    "[kuf-pc-menu] categories page",
+    "log mark on_categories",
+    "[kuf-pc-menu] display page",
+    "log mark on_display",
+    "log mark escape",
+    "[kuf-pc-menu] categories page",
+    "[kuf-pc-menu] PC Settings closed",
+]
+
+[format]
+width = 1280
+height = 720
+
+[[region_diff]]
+name = "the title list stays"
+a = "title"
+b = "title_after"
+rect = [440, 430, 840, 680]
+metric = "text"
+max_mean_diff = 3.0
+
+[[region_diff]]
+name = "the Display page stays"
+a = "display_page"
+b = "display_after"
+rect = [176, 130, 803, 620]
+metric = "text"
+max_mean_diff = 3.0
+
+[[region_diff]]
+name = "the question stays"
+a = "question"
+b = "question_after"
+rect = [290, 254, 990, 492]
+metric = "text"
+max_mean_diff = 3.0

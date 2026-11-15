@@ -1315,3 +1315,183 @@ time with the replacements in place is unchanged.
 - Tags: m14-b0 (baseline), m14-tr4k (trace), m14-u2 / m14-u2b, m14-r1 / m14-r1b, m14-c3 / m14-c0 (P3 cold),
   m14-val-u2, m14-fval-warm / -cold, m14-fm13 / m14-fm14, m14-fc13 / m14-fc14, m14-fk13 / m14-fk14, m14-prof-*.
   Equivalence: run prefixes m14-eq* (round 1) and m14-feq* (final).
+
+## M15: the cost of the input and camera changes (2026-11-06)
+
+`tools/bench.py`, `bench_explore`, 2560x1440, cap 120, rotated order on a shared desktop. Averages with the range; M14 is the frozen
+`build/m14-cand`, whose optimisations M15 keeps (`git diff` of `patches` and `config` against it is empty).
+
+| | M14 (5 runs) | M15, Low Latency off (5) | M15, Low Latency on (3) |
+|---|---|---|---|
+| Average fps | 110.6 (108.1-112.3) | 110.6 (106.1-116.3) | 111.4 (110.6-112.1) |
+| Median frame ms | 8.5 (8.5-8.6) | 8.5 (8.4-8.8) | 8.5 (8.5-8.5) |
+| p95 frame ms | 13.7 (12.9-14.6) | 13.2 (10.4-14.4) | 13.4 (13.2-13.8) |
+| p99 frame ms | 15.6 (15.3-15.9) | 16.3 (15.0-19.3) | 15.4 (15.4-15.5) |
+| 1% low fps | 48.8 (47.5-50.0) | 47.3 (41.8-50.5) | 48.0 (45.7-49.9) |
+| Frames over twice the median | 60.8 (50-71) | 105.8 (48-258) | 58.7 (50-64) |
+| CPU % (one core = 100) | 142.2 (140.5-145.3) | 141.2 (132.3-148.2) | 141.0 (140.2-141.4) |
+| GPU ms per frame | 4.2 (4.2-4.3) | 4.3 (4.2-4.3) | 4.2 (4.2-4.3) |
+
+The ranges overlap: no cost is shown at this size of sample. One Low Latency off run had 258 slow frames and a p99 of 19.3 ms; the
+other four did not, and the cause was not established. Only this scene and resolution were measured.
+
+## M15.1: release validation A/B (2026-11-07)
+
+Same scenario and settings as M15, on an idle desktop (no other game), 5 runs each interleaved in rotated order (tags m151-m14,
+m151-off, m151-on; scripts build/m151-scratch/perf3.sh, perf4.sh). 0 invalid runs.
+
+| | M14 (`build/m14-cand`) | M15.1, Low Latency off | M15.1, Low Latency on |
+|---|---|---|---|
+| Average fps | 109.6 (101.3-113.3) | 111.3 (105.9-115.4) | 109.5 (102.7-112.7) |
+| Median frame ms | 8.7 (8.4-9.4) | 8.5 (8.4-8.9) | 8.6 (8.4-9.2) |
+| p95 frame ms | 13.4 (12.4-14.4) | 12.6 (10.9-14.3) | 13.8 (13.0-14.8) |
+| p99 frame ms | 15.5 (15.2-16.2) | 15.4 (15.0-15.7) | 15.6 (15.3-16.1) |
+| 1% low fps | 49.0 (45.9-50.7) | 49.8 (47.8-53.0) | 48.3 (45.5-50.5) |
+| 0.1% low fps | 23.9 (23.0-24.8) | 24.0 (23.5-24.6) | 23.4 (22.3-24.3) |
+| Frames over twice the median | 57.0 (47-66) | 53.8 (42-64) | 54.0 (45-72) |
+| CPU % (one core = 100) | 143.7 (134.6-156.9) | 137.6 (128.2-149.6) | 138.7 (135.4-147.4) |
+| GPU ms per frame | 4.4 (4.3-4.6) | 4.4 (4.4-4.5) | 4.4 (4.4-4.5) |
+
+The ranges overlap: no cost of M15 against M14 is shown. The first two runs per build alone suggested M14 ahead by 4 %; the next
+three reversed it, so two runs are not enough at 1440p. The slow-frame outlier of the M15 table (258) did not recur. Note: `bench.py
+report --compare` labels "better/worse" from the compared tag's side; read the values.
+
+## 12. M18: Linux performance and stability (2026-11-12, branch `m18/linux-performance` from main cf40bfe)
+
+### 12.1 Baseline (build/m18-base = main cf40bfe; tag m18-b0)
+
+`tools/bench.py`, `bench_explore` (Shadow Depths walk and camera turns, 140 s window), 240 cap, Render Native, the merged
+warm pipeline cache (build/warmcache/m12-union), 3 runs per size, sizes rotated per run, idle desktop. At Render Native
+1920x1080 and 2560x1440 draw the same 2560x1440 frame (2x2 of 1280x720; 7.3), 3840x2160 draws 3x3.
+
+| | 1920x1080 | 2560x1440 | 3840x2160 |
+|---|---|---|---|
+| avg fps | 161.7 (152.4-170.0) | 158.4 (155.4-160.0) | 131.1 (124.7-138.3) |
+| 1 % low fps | 61.0 (60.2-61.6) | 59.2 (53.6-62.0) | 61.2 (58.3-64.8) |
+| 0.1 % low fps | 45.5 | 43.8 | 46.3 |
+| p95 / p99 frame ms | 10.7 / 15.0 | 11.1 / 14.9 | 13.3 / 15.0 |
+| frame time stdev ms | 2.4 | 2.5 | 3.2 |
+| CPU % (one core = 100): all / guest / GPU command thread | 176 / 102 / 71 | 176 / 102 / 70 | 171 / 107 / 60 |
+| GPU busy %, GPU ms per frame | 75, 4.1 | 74, 4.1 | 94, 6.7 |
+| pipelines created, presentations skipped (warm) | 0, 0 | 0, 0 | 0, 0 |
+| peak RSS MB, VRAM over idle MB | 1546, 2456 | 1548, 2473 | 1547, 3497 |
+
+Commands per frame at 1080p (`--gpu_timestamp_stats`): 139 draws (564 indexed), 43 render passes, 260 pipeline binds,
+1041 descriptor set binds, 80 pipeline barriers, 39 dispatches, 193 dynamic state commands.
+
+**Where the frame time goes.** 4K is GPU-bound (94 % busy). Below 4K the GPU is idle a quarter of the time and the
+1 % lows (about 60 fps, p99 15 ms) are the same at every size: the slow frames come once per game tick at a fixed
+phase (1080p: spacing exactly one tick for most frames over 10 ms). A frame-clock trace (`--kuf_trace_frame_clock`,
+tag m18-trace) shows why: the tick's own frame reaches the render thread after the tick's scene build (3-7 ms of guest
+code on the game thread, by area), the guest render thread then takes about 6-9 ms per frame, so of the 240 cap's
+steps two of three are "render busy" and the last step before the next tick is "late" (it would delay the tick);
+the gap from the last frame of one tick to the next tick's frame is about 16 ms. The game thread's work, the
+render thread's draw submission and the GPU command thread (70 % of a core, idle 40 % of the time, `--gpu_cp_stats`)
+are all the original engine's work through the recompiled code; the sample profile (tag m18-prof, 1080p) is flat: no
+guest function above 3.7 % of all samples (the D3D frame wait sub_82160C90), on the GPU command thread
+`UpdateBindings` 1.8 %.
+
+### 12.2 Experiments
+
+| # | Change | Result | Decision |
+|---|---|---|---|
+| X1 | The command processor writes the ring's read pointer back every N dwords read (`--gpu_cp_read_pointer_update_dwords`), not only after the whole batch: the game's ring is 32 KB (log: block size log2 6), so its render thread could wait for space while a batch executes | Same binary, off vs N=64, 1080p and 1440p (same frame) pooled, 5 runs each: avg fps 159.5 (150.9-167.4) vs 163.1 (151.8-170.8); frames over twice the median 1208 vs 1072; at 1080p alone better, at 1440p worse; N=16 the same. Ranges overlap | **rejected** (no measurable gain): patches/rejected/m18-x1-progressive-ring-read-pointer.diff |
+| X2 | The whole build at `-O3` instead of `-O2` (build/m18-o3: the game and the SDK, generated code included) | Interleaved with the -O2 baseline, 240 cap (tags m18-o3, m18-o2): 1080p 3 runs each, avg fps 161.3 (156.0-168.2) vs -O2 169.6 (165.5-172.5), p99 14.1 vs 13.1 ms, the same CPU % (176) and GPU ms (4.1); 4K 2 runs each, 137.2 vs 135.9 fps, 1 % low 64.3 both. No gain beyond the run-to-run spread, worse at 1080p, and a larger binary | **rejected**: `-O2 -march=x86-64-v2` stays |
+
+### 12.3 P1: the first frame step after a late hand-off (fixed)
+
+**Bottleneck.** With `kuf_present_clock_from_handoff` (7.4.2, HIGH_FPS.md 24.1: the tick's frame is presented from when the render thread
+gets it, not from when the tick began) the remaining render-only frames of the tick are spread over what is left of
+the tick: `step = (end - handoff) / (render_only + 1)`, smaller than the frame period when the hand-off is late (the
+tick's scene build is 3-7 ms on this route). `AfterTick` still advanced the presentation clock by the full frame
+period for the tick's own frame and only used `step` for the frames after it, so every later step was pushed back
+by `period - step`, and the last step of the tick then failed the late rule (`max(at, now) + cost > due`) and was
+dropped. At 120 fps in 2560x1440 that was the last frame of 19-31 % of all ticks (`[kuf-clock]` trace and
+`k44_check.py --summary-only`: 1301 of 6801 and 2083 of 6804 ticks late), so a tick drew three frames instead of
+four and the frame times alternated between one and two steps.
+
+**Change** (`src/runtime/frame_pacing.cpp`, `AfterTick`): the first step after the tick's frame is `step` too when
+the clock runs from the hand-off (`first = step`; unchanged otherwise). No change to the tick, the simulation or which
+frames are built: only when the already-built render-only frames are presented.
+
+**Measured** (bench_explore, warm cache, interleaved, the same session; tags m18-p0 = build/m18-base, m18-p1 = the
+fix):
+
+| | 2560x1440, 120 cap, 3 runs each: before | after | 3840x2160, 120 cap, 1 run: before | after | 1920x1080, 60 cap, 1 run: before | after |
+|---|---|---|---|---|---|---|
+| avg fps | 108.5 (105.0-111.6) | **116.4** (116.1-116.9) | 109.2 | **113.5** | 59.9 | 59.9 |
+| 1 % low fps | 60.1 | 60.1 | 60.1 | 57.6 | 52.4 | 52.6 |
+| p95 / p99 frame ms | 14.4 / 15.6 | **10.4 / 14.7** | 14.2 (p95) | **12.5** (p95) | unchanged | unchanged |
+| frame time stdev / jitter ms | 2.1 / 2.2 | **1.6 / 1.6** | | | | |
+| frame steps dropped late / render busy | 1594 / 12 | 11 / 464 | | | | |
+
+At 120 fps the frame rate is now near the cap at 1440p with a narrower frame-time distribution (p95 4 ms lower);
+the remaining drops are "render busy" (the render thread had not finished the previous frame: the real limit, 12.1),
+not the scheduler's own mistake. The 1 % lows are set by the tick's own frame (the scene build, 12.1) and do not
+change. At 60 fps the clock rarely runs from a late hand-off and nothing changes (0.1 % low 23.5 -> 29.3 fps in one run each: not significant). At 240 (the 12.1 cap) the render
+thread is the limit and the effect is inside the run-to-run spread. The longest frames in the fixed runs were boot and
+load frames; a 90 ms frame inside the window was seen once in the baseline too (K76 cold pipelines are not involved:
+warm cache, 0 created).
+
+**Regression test** `timing.late_steps_120` + `timing.late_steps_120_check` (RUN_SERIAL, 225 s, cold cache): the
+route at 120 fps in 2560x1440, `k44_check.py --summary-only` allows 2 % late ticks. Fixed build 63 of 6818 (0.9 %),
+PASS; the baseline build 1101 of 6817 (16 %), FAIL. The timing, presentation and render labels (73 tests) pass with
+the fix.
+
+**Decision: kept.**
+
+### 12.4 M18C pipeline stutter and caches; M18G validation
+
+**Cold cache (K76), re-measured** (bench_explore without a cache, 240 cap, 2 interleaved runs per build and size; tags
+m18-cold-b0 = build/m18-base, m18-cold-c1 = P1 + patch 0022):
+
+| | 2560x1440: base | current | 3840x2160: base | current |
+|---|---|---|---|---|
+| avg fps | 161.1 | 165.2 | 130.5 | 125.0 |
+| 1 % / 0.1 % low fps | 53.2 / 24.7 | 51.4 / 24.2 | 47.4 / 22.3 | 49.6 / 22.3 |
+| longest frame ms | 58.1 (53.1-63.1) | 70.7 (49.2-92.2) | 59.4 | 63.5 |
+| pipelines created in the window, presentations skipped | 176, 29 | 214, 37 | 209, 33 | 191, 32 |
+
+The same within the run-to-run spread (the number of pipelines met differs per run), and as M14 left it (11.3: cold
+1440p 0.1 % low 25.2 fps). Each pipeline still costs one held frame on its first use per installation; the remaining
+options were measured and rejected in M13/M14 (pipeline libraries; presenting incomplete frames is excluded by the
+player). Warm runs create none.
+
+**Caches.** Deleting the cache is safe: every game test starts without one. Loading the merged warm cache (236
+pipelines) takes about 1 s on the GPU thread during the boot logos (boot to the start prompt 10.6 s warm, 9.8 s
+cold): no long mandatory delay; nothing is precompiled before play. A damaged cache (stability.damaged_shader_cache:
+both storage files cut mid-record; also by hand: pipeline file cut, shader file cut, both replaced by random bytes)
+loads what is intact and plays. With the shader file cut, every stored pipeline that lost its shaders logged an error
+(98); SDK patch 0022 skips them in one info line (they are created again on first use).
+
+**Vulkan validation** (bench_explore at 1280x800, the Steam Deck's size, `--vulkan_validation_enabled=true`): the K75
+IDs (08608, 08914, 08917, 06179; 20 each) and K77 (08865, 8), the same as M12-M14, nothing new. K77's cause found: at
+16:10 Render Native draws at a 1x2 scale (1280x1440), so a cube map the game renders into (32x32 per face, a scaled
+resolve) gets a 32x64 image; not a game texture (a diagnostic in the texture path stayed silent for unscaled keys).
+Not changed (KNOWN_ISSUES K77).
+
+### 12.5 M18B 4K GPU; M18F Steam Deck build checks
+
+**4K GPU** (bench_explore 3840x2160, warm, `--gpu_timestamp_sections`, tag m18-sec4k, 1 run): GPU busy 92 %, 7.0 ms
+per frame: draws 2.7, transfers 1.4, resolves 1.2, texture loads 1.4 ms, the same split as M14 (11.4). Each is either
+the game's own passes or the emulated EDRAM's copies (render target ping-pong, resolves and their reloads at the 3x
+scale); M14 measured the contained options (R1 resolve skipping, U2 unchanged uploads) and found the rest needs a
+render target / texture cache redesign. No change in M18: none had evidence of a gain without that redesign.
+
+**Steam Deck (M18F), what was checked here** (no physical Deck test):
+- The release package built as for a release (`make_release.sh --strip`, local, throwaway key, not published:
+  build/releases-local/m18): the audit is clean; portable to glibc 2.30 (baseline 2.31, SteamOS), libstdc++ bundled.
+- 1280x800 on this PC (RADV, the Deck's driver family): the bench route plays; Vulkan validation as 12.4 (K75, K77).
+- Frame pacing at the Deck's likely caps is covered by the timing tests (30/60 fps paths unchanged by P1, 12.3).
+Not checked: the Deck's GPU speed, its gamescope session, controller and suspend behaviour (docs/MANUAL_TEST_STEAM_DECK.md).
+
+### 12.6 M18 stability and regression
+
+- **Stability** (tools/stability.py --tag m18 --preset m18-c1, build/stability/m18): 21 of 21 passed. Peak RSS 1542
+  MB; unload_reload grew 211 MB (M14 210); the 32-minute long run 0.25 MB per minute (M9-M14: 0.13-0.29).
+- **Tests without game runs of their own** (ctest -LE smoke, with the game fixtures they need): 1952 of 1952.
+- **Timing, presentation, render** with P1: 73 of 73; the new tests timing.late_steps_120(+_check) and
+  stability.damaged_shader_cache(+_prepare) pass. The full suite (about 7 h) runs as tools/safe_merge.sh's gate when
+  the merge is approved.
+- **Windows**: the game, launcher and installer cross-build after each shared change; the portable package's audit is
+  clean (not run on Windows: K8).

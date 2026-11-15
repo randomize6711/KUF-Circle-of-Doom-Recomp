@@ -24,11 +24,17 @@ struct TickView {
                              // way round the target (M6B SmoothAround), so the view turned less than half a circle
   bool snapped = false;      // the game moved its camera at once: its own turn taken (the right-stick centring,
                              // a camera change), or its position smoothing off
+  double mouse_yaw = 0, mouse_pitch = 0;  // the mouse movement this view took in (radians, + = right, up)
   bool pulled_in = false;    // the collision moved the eye towards the character at once (beyond the eased
                              // correction in use, or the game's own camera's correction grew)
 };
 
 // The latest view handed to the renderer (game thread).
 const TickView& LatestTickView();
+// The mouse movement the next tick will take in, as angles (radians, + = right, up); it stays pending (M15B).
+void PendingMouseLook(double* yaw, double* pitch);
+// M15B test (--kuf_test_look_rate): a synthetic mouse, a step per frame, and the logged view; false when off.
+bool TestMouseStep();
+void TestMouseLog(double azimuth);
 
 }  // namespace kuf::camera

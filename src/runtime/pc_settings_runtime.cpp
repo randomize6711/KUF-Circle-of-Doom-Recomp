@@ -87,6 +87,9 @@ void Init(const std::filesystem::path& user_data_dir) {
               c.modern, c.vertical_range, c.auto_recenter, c.mouse_horizontal, c.mouse_vertical, c.invert_mouse_y,
               c.stick_sensitivity, c.stick_deadzone, c.distance,
               c.field_of_view == kFovOriginal ? std::string("original") : std::to_string(c.field_of_view));
+  REXLOG_INFO("[kuf-settings] controls: low latency mouse {} stick vertical {}% acceleration {} move dead zone {}% "
+              "vibration {}%",
+              c.low_latency_mouse, c.stick_vertical, c.stick_acceleration, c.move_deadzone, c.vibration);
   const auto& d = g_current.display;
   REXLOG_INFO("[kuf-settings] display: {} {} refresh {} monitor {} widescreen {} render {}", DisplayModeName(d.mode),
               d.width ? std::to_string(d.width) + "x" + std::to_string(d.height) : std::string("desktop size"),
@@ -104,6 +107,11 @@ void Init(const std::filesystem::path& user_data_dir) {
 Settings Current() {
   std::lock_guard lock(g_mutex);
   return g_current;
+}
+
+CameraSettings CurrentCamera() {
+  std::lock_guard lock(g_mutex);
+  return g_current.camera;
 }
 
 void Update(const Settings& settings) {

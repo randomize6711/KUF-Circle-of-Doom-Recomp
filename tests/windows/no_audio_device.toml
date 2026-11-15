@@ -1,0 +1,19 @@
+# Windows acceptance (M17, docs/WINDOWS_TEST.md E2, automated part): SDL's audio cannot start (SDL_AUDIO_DRIVER names
+# no driver), as on a PC with every output disabled: the game runs silently to the title menu instead of crashing
+# (SDK patch 0021; the Linux test is ctest smoke.no_audio_device_60s). Disabling the outputs in Windows' Sound
+# settings stays the manual check.
+
+[scenario]
+description = "Windows: no usable audio: the game runs without sound"
+seconds = 60
+script = """
+500 tap Return
+700 press Return
+1500 capture title
+"""
+capture_frames = []
+expect_errors = ["SDL_InitSubSystem\\(SDL_INIT_AUDIO\\) failed"]
+log_expect = ["No audio device could be opened (the error above): the game runs without sound"]
+
+[windows]
+env = { SDL_AUDIO_DRIVER = "kuf-none" }

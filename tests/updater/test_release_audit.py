@@ -274,6 +274,26 @@ def main():
             assert len(keep) >= 2, keep
         case("a console key is found, by its hash", console_key)
 
+        def key_carriers():
+            sys.path.insert(0, os.path.join(ROOT, "tools", "package"))
+            import audit_release as ar
+            retail, other = os.urandom(16), os.urandom(16)
+            keep = ar.CONSOLE_KEYS, ar.RETAIL_KEY
+            ar.CONSOLE_KEYS = {retail[:1].hex(): hashlib.sha256(retail).hexdigest(),
+                               other[:1].hex(): hashlib.sha256(other).hexdigest()}
+            ar.RETAIL_KEY = retail[:1].hex()
+            try:
+                assert ar.key_problem("usr/bin/kuf-setup", b"x" + retail) is None
+                assert ar.key_problem("Play KUF.exe", b"x" + retail) is None
+                assert "lacks" in ar.key_problem("Play KUF", b"no key")
+                assert "other than" in ar.key_problem("usr/bin/kuf-setup", retail + other)
+                assert ar.key_problem("bin/librexruntimerd.so", b"x" + retail)
+                assert ar.key_problem("builder/x", other)
+                assert ar.key_problem("bin/kuf-localbuild", b"clean") is None
+            finally:
+                ar.CONSOLE_KEYS, ar.RETAIL_KEY = keep
+        case("the retail key only in the setup and the launcher, and there required", key_carriers)
+
         def no_sums():
             d = new()
             os.unlink(os.path.join(d, "SHA256SUMS"))

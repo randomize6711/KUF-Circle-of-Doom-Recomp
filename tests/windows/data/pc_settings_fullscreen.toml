@@ -1,0 +1,9 @@
+# The Windows Alt+Tab test in exclusive fullscreen (focus_native_fullscreen.toml): the monitor's own mode (0 = the
+# desktop's size), everything else the defaults.
+version = 1
+
+[display]
+mode = 'fullscreen'
+width = 0
+height = 0
+refresh_millihertz = 0

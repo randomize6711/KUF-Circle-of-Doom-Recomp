@@ -2,6 +2,8 @@
 # copy), 120 fps set in the menu, gameplay, the game's Quit save (options > Quit > save and return to the Title
 # Screen > Yes), the title, CONTINUE (the save just written), gameplay (its third entry: closing the menu was the second): still 120 frames per second, the game
 # loaded, no crash (the render-only frames' kept data released through the save's object releases, K46).
+# M15.1: Settings opens directly on the categories: Display, Camera, Audio, Mouse & Keyboard, Controller, Gameplay,
+# Restore Defaults (K66). What this route checks is unchanged; where the text above names older rows, these replace them.
 
 [scenario]
 description = "120 fps set in the menu, Quit save, title, CONTINUE: the frame rate kept, the save loads"
@@ -21,17 +23,6 @@ script = """
 @gameplay+500 press Down
 @gameplay+550 press Down
 @gameplay+650 press Return
-@gameplay+800 press Down
-@gameplay+830 press Down
-@gameplay+860 press Down
-@gameplay+890 press Down
-@gameplay+920 press Down
-@gameplay+950 press Down
-@gameplay+980 press Down
-@gameplay+1010 press Down
-@gameplay+1110 press Return
-@gameplay+1260 press Down
-@gameplay+1290 press Down
 @gameplay+1320 press Return
 @gameplay+1420 press Down
 @gameplay+1450 press Down
@@ -45,7 +36,6 @@ script = """
 @gameplay+1760 press Escape
 @gameplay+1860 press Escape
 @gameplay+1960 press Escape
-@gameplay+2060 press Escape
 @gameplay+2260 log mark play_a
 @gameplay+2270 down W
 @gameplay+2570 log mark play_b

@@ -51,12 +51,16 @@ def main():
     ap.add_argument("--seconds", type=int, default=300)
     ap.add_argument("--run-id", default="smoke-" + time.strftime("%Y%m%d-%H%M%S"))
     ap.add_argument("--capture-every", type=int, default=300, help="capture every N frames (0 = no image check)")
+    ap.add_argument("--no-audio-device", action="store_true",
+                    help="run without any audio device (run_sandboxed.sh --no-audio-device): the game must keep running "
+                         "silently; the device's own open errors are expected, the 'without sound' warning required")
     ap.add_argument("extra", nargs="*", help="extra kuf_cod arguments (after --), e.g. for negative controls")
     args = ap.parse_args()
 
     run_dir = os.path.join(ROOT, "build", "runs", args.run_id)
     cmd = [os.path.join(ROOT, "tools", "run_sandboxed.sh"), "-p", args.preset, "-t", str(args.seconds + 60),
-           "-n", args.run_id, "--gpu", "--", f"--kuf_exit_after_seconds={args.seconds}", *args.extra]
+           "-n", args.run_id, "--gpu", *(["--no-audio-device"] if args.no_audio_device else []), "--",
+           f"--kuf_exit_after_seconds={args.seconds}", *args.extra]
     if args.capture_every > 0:
         cmd.append(f"--kuf_capture_every={args.capture_every}")
     subprocess.run(cmd, check=False)
@@ -106,6 +110,13 @@ def main():
                     key = re.sub(r"[0-9A-Fa-f]{6,}|\d+", "N", m.group(1))[:120]
                     gpu_warnings[key] = gpu_warnings.get(key, 0) + 1
     errors, known = known_errors.classify(log_lines)
+    if args.no_audio_device:
+        # Only the device's own failures (the first open and the stereo retry) are expected here.
+        device = [e for e in errors if re.search(r"\[apu\].*SDL_OpenAudioDeviceStream\(\)( stereo fallback)? failed", e)]
+        errors = [e for e in errors if e not in device]
+        silent = any("the game runs without sound" in l for l in log_lines)
+        check("audio", device and silent,
+              f"no device: {len(device)} expected device errors, silent driver {'used' if silent else 'NOT used'}")
     check("log", not errors and size < 64 * 1024 * 1024,
           f"run_dir={size / 1e6:.1f} MB (without captures) errors={errors[:5]}"
           + (f" known={known}" if known else ""))

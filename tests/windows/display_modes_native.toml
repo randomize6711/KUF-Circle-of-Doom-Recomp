@@ -1,0 +1,108 @@
+# Windows acceptance (M17, docs/WINDOWS_TEST.md B3): the Display page in the title SETTINGS on the real monitor (no
+# simulated modes, no simulated output size): Fullscreen (exclusive, a mode of the monitor's), Apply, Keep; Windowed,
+# Apply, Keep; Borderless, Apply, Keep; Back saves. Run by tools/windows/acceptance on Windows only (the real display
+# modes); checked on Linux with tools/menu_test.py --verify-only. Apply is twelve Downs from Mode (the route of
+# tests/display/display_revert.toml); each mode gets 300 ticks after Apply before Keep.
+
+[scenario]
+description = "Windows: fullscreen, windowed and borderless on the real monitor, each applied and kept; saved"
+seconds = 210
+script = """
+500 tap Return
+700 tap Escape
+800 press Down
+900 press Return
+1540 press Return
+1990 capture display_page
+2020 press Right
+2050 press Down
+2065 press Down
+2080 press Down
+2095 press Down
+2110 press Down
+2125 press Down
+2140 press Down
+2155 press Down
+2170 press Down
+2185 press Down
+2200 press Down
+2215 press Down
+2300 press Return
+2600 capture fullscreen
+2650 press Return
+2750 press Up
+2765 press Up
+2780 press Up
+2795 press Up
+2810 press Up
+2825 press Up
+2840 press Up
+2855 press Up
+2870 press Up
+2885 press Up
+2900 press Up
+2915 press Up
+2950 press Left
+2980 press Left
+3010 press Down
+3025 press Down
+3040 press Down
+3055 press Down
+3070 press Down
+3085 press Down
+3100 press Down
+3115 press Down
+3130 press Down
+3145 press Down
+3160 press Down
+3175 press Down
+3250 press Return
+3550 capture windowed
+3600 press Return
+3700 press Up
+3715 press Up
+3730 press Up
+3745 press Up
+3760 press Up
+3775 press Up
+3790 press Up
+3805 press Up
+3820 press Up
+3835 press Up
+3850 press Up
+3865 press Up
+3900 press Right
+3930 press Down
+3945 press Down
+3960 press Down
+3975 press Down
+3990 press Down
+4005 press Down
+4020 press Down
+4035 press Down
+4050 press Down
+4065 press Down
+4080 press Down
+4095 press Down
+4170 press Return
+4470 capture borderless
+4520 press Return
+4620 press Escape
+4670 press Escape
+4770 capture settings_again
+"""
+capture_frames = []
+pc_settings_expect = { "display.mode" = "borderless" }
+log_sequence = [
+    "[kuf-pc-menu] display page",
+    "[kuf-display] display: fullscreen",
+    "[kuf-pc-menu] display kept: fullscreen",
+    "[kuf-display] display: windowed",
+    "[kuf-pc-menu] display kept: windowed",
+    "[kuf-display] display: borderless",
+    "[kuf-pc-menu] display kept: borderless",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+]
+
+[windows]
+display = "native"

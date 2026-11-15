@@ -4,11 +4,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
+#include "net/sock.h"
+#if defined(_WIN32)
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
+#endif
 
 #include <chrono>
 #include <random>
@@ -274,21 +276,23 @@ TEST_CASE("sessions: wrong versions, silent and malformed connections are droppe
   Host host;
   std::string error;
   REQUIRE(host.Start(LocalConfig(), &error));
+  namespace sock = kuf::net::sock;
   auto raw = [&] {
-    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sock::Socket fd = sock::Open(SOCK_STREAM);
     sockaddr_in a{};
     a.sin_family = AF_INET;
     a.sin_port = htons(host.Port());
     inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
     REQUIRE(connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
+    sock::SetNonBlocking(fd);
     return fd;
   };
-  auto read_reject = [](int fd) -> std::optional<RejectReason> {
+  auto read_reject = [](sock::Socket fd) -> std::optional<RejectReason> {
     Bytes in;
-    pollfd p{fd, POLLIN, 0};
-    for (int i = 0; i < 50 && poll(&p, 1, 100) >= 0; ++i) {
+    sock::PollFd p{fd, POLLIN, 0};
+    for (int i = 0; i < 50 && sock::Poll(&p, 1, 100) >= 0; ++i) {
       uint8_t buf[256];
-      const ssize_t n = recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
+      const long n = sock::Receive(fd, buf, sizeof(buf));
       if (n > 0) in.insert(in.end(), buf, buf + n);
       std::vector<Message> m;
       if (TakeFrames(&in, &m)) {
@@ -301,24 +305,24 @@ TEST_CASE("sessions: wrong versions, silent and malformed connections are droppe
     return std::nullopt;
   };
   // Another protocol version.
-  int fd = raw();
+  sock::Socket fd = raw();
   Hello h;
   h.version = kProtocolVersion + 1;
   Bytes b = EncodeHello(h);
-  send(fd, b.data(), b.size(), 0);
+  sock::Send(fd, b.data(), b.size());
   CHECK(read_reject(fd) == RejectReason::kVersion);
-  close(fd);
+  sock::Close(fd);
   // Garbage.
   fd = raw();
   const uint8_t junk[] = {0, 0, 0, 3, 77, 1, 2};
-  send(fd, junk, sizeof(junk), 0);
+  sock::Send(fd, junk, sizeof(junk));
   CHECK(read_reject(fd) == RejectReason::kMalformed);
-  close(fd);
+  sock::Close(fd);
   // Silence past the handshake timeout.
   fd = raw();
   std::this_thread::sleep_for(2000ms);
   CHECK(read_reject(fd) == RejectReason::kTimeout);
-  close(fd);
+  sock::Close(fd);
   // A member sees the host close the lobby.
   Guest g;
   g.Join(To(host), "Guest", "");
@@ -497,12 +501,14 @@ kuf::coop::SessionAd TestAd(const char* ip, uint8_t id, std::vector<uint8_t> qos
 }
 }  // namespace
 
-TEST_CASE("co-op sockets: Winsock conventions on Linux", "[net][coop]") {
+TEST_CASE("co-op sockets: Winsock conventions", "[net][coop]") {
   namespace co = kuf::coop;
+#if !defined(_WIN32)  // Linux errors as the console's (on Windows they are the console's own)
   CHECK(co::WsaErrorOf(EAGAIN) == co::kWsaEWouldBlock);
   CHECK(co::WsaErrorOf(EINPROGRESS) == co::kWsaEWouldBlock);  // Winsock: a connect in progress
   CHECK(co::WsaErrorOf(ECONNREFUSED) == co::kWsaEConnRefused);
   CHECK(co::WsaErrorOf(EPIPE) == co::kWsaEShutdown);
+#endif
   CHECK(co::MapSockOpt(0xFFFF, 0x0004).kind == co::SockOpt::kInt);   // SO_REUSEADDR
   CHECK(co::MapSockOpt(0xFFFF, 0x0080).kind == co::SockOpt::kLinger);
   CHECK(co::MapSockOpt(0xFFFF, 0x1006).kind == co::SockOpt::kTimeout);
@@ -627,16 +633,17 @@ TEST_CASE("co-op on one machine: distinct loopback addresses, the advertisement 
   host.Stop();
 
   // A game-port listener on the host's address; the guest's socket bound to its own address first.
-  const int ls = socket(AF_INET, SOCK_STREAM, 0), cs = socket(AF_INET, SOCK_STREAM, 0);
-  REQUIRE(ls >= 0);
-  REQUIRE(cs >= 0);
+  namespace sock = kuf::net::sock;
+  sock::Socket ls = sock::Open(SOCK_STREAM), cs = sock::Open(SOCK_STREAM);
+  REQUIRE(ls != sock::kInvalid);
+  REQUIRE(cs != sock::kInvalid);
   sockaddr_in a{};
   a.sin_family = AF_INET;
   a.sin_addr.s_addr = htonl(*co::ParseIpv4("127.0.0.10"));
   a.sin_port = 0;
   REQUIRE(bind(ls, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
   REQUIRE(listen(ls, 5) == 0);
-  socklen_t len = sizeof(a);
+  sock::AddrLen len = sizeof(a);
   getsockname(ls, reinterpret_cast<sockaddr*>(&a), &len);
   sockaddr_in own{};
   own.sin_family = AF_INET;
@@ -645,10 +652,10 @@ TEST_CASE("co-op on one machine: distinct loopback addresses, the advertisement 
   REQUIRE(connect(cs, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
   sockaddr_in from{};
   len = sizeof(from);
-  const int as = accept(ls, reinterpret_cast<sockaddr*>(&from), &len);
-  REQUIRE(as >= 0);
+  sock::Socket as = accept(ls, reinterpret_cast<sockaddr*>(&from), &len);
+  REQUIRE(as != sock::kInvalid);
   CHECK(ntohl(from.sin_addr.s_addr) == *co::ParseIpv4("127.0.0.11"));  // the host sees the guest's own address
-  close(as);
-  close(cs);
-  close(ls);
+  sock::Close(as);
+  sock::Close(cs);
+  sock::Close(ls);
 }

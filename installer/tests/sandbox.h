@@ -43,6 +43,16 @@ struct Sandbox {
     std::filesystem::remove_all(dir, ec);
   }
   std::filesystem::path Home() const { return dir / "home"; }
+  // Sets a variable for this test; the destructor restores it.
+  void SetEnv(const char* k, const char* v) {
+    bool known = false;
+    for (const auto& [name, value] : saved) known |= name == k;
+    if (!known) {
+      const char* old = std::getenv(k);
+      saved.push_back({k, old ? old : ""});
+    }
+    setenv(k, v, 1);
+  }
   // A minimal XEX2: no code, the fields the setup reads. encryption 0 none, 1 normal; compression 0 none, 1 basic
   // (one block: the image and 16 zero bytes), 2 LZX.
   static std::string Xex(const std::string& image, int encryption = 0, int compression = 0) {
@@ -58,6 +68,21 @@ struct Sandbox {
     x += be32(0) + be32(image_size);
     x += be32(format_size) + be16(uint32_t(encryption)) + be16(uint32_t(compression));
     if (basic) x += be32(uint32_t(image.size())) + be32(16);
+    return x + image;
+  }
+  // The same with an execution info header (title, media, version) and module flags (0x20: a full title-update patch).
+  static std::string XexIdentified(const std::string& image, int encryption, uint32_t title, uint32_t media,
+                                   uint32_t version, uint32_t flags = 1) {
+    const auto be32 = [](uint32_t v) {
+      return std::string{char(v >> 24), char(v >> 16), char(v >> 8), char(v)};
+    };
+    const auto be16 = [](uint32_t v) { return std::string{char(v >> 8), char(v)}; };
+    const uint32_t security = 40, format = 48, execution = 56, payload = 80;
+    std::string x = "XEX2" + be32(flags) + be32(payload) + be32(0) + be32(security) + be32(2);
+    x += be32(0x3FF) + be32(format) + be32(0x40006) + be32(execution);
+    x += be32(0) + be32(uint32_t(image.size()));
+    x += be32(8) + be16(uint32_t(encryption)) + be16(0);
+    x += be32(media) + be32(version) + be32(version) + be32(title) + std::string{0, 0, 1, 1} + be32(0);
     return x + image;
   }
   static void Write(const std::filesystem::path& p, const std::string& text) {

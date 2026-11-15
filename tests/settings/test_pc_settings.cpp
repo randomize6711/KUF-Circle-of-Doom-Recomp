@@ -561,3 +561,34 @@ TEST_CASE("Steam Deck (M11): recognised by its board, not by its GPU; SteamOS an
   CHECK(kuf::platform::Summary(i) == "Arch Linux");
   fs::remove_all(root);
 }
+
+TEST_CASE("M15B controls: defaults keep the earlier behaviour, values round-trip, invalid ones fall back") {
+  std::vector<std::string> warnings;
+  auto d = Parse("version = 1\n[controller]\ncamera_sensitivity = 7\n", &warnings);
+  REQUIRE(d);
+  CHECK(d->camera.stick_sensitivity == 7);  // a file from before M15 keeps its values
+  CHECK_FALSE(d->camera.low_latency_mouse);
+  CHECK(d->camera.stick_vertical == 65);
+  CHECK_FALSE(d->camera.stick_acceleration);
+  CHECK(d->camera.move_deadzone == 0);
+  CHECK(d->camera.vibration == 100);
+  Settings in;
+  in.camera.low_latency_mouse = true;
+  in.camera.stick_vertical = 100;
+  in.camera.stick_acceleration = true;
+  in.camera.move_deadzone = 15;
+  in.camera.vibration = 40;
+  auto out = Parse(Serialize(in, ""), &warnings);
+  REQUIRE(out);
+  CHECK(*out == in);
+  warnings.clear();
+  auto bad = Parse("[controller]\ncamera_vertical_percent = 7\nmove_deadzone_percent = 33\nvibration_percent = 55\n"
+                   "camera_acceleration = 3\n[mouse]\nlow_latency = 1\n", &warnings);
+  REQUIRE(bad);
+  CHECK(bad->camera.stick_vertical == 65);
+  CHECK(bad->camera.move_deadzone == 0);
+  CHECK(bad->camera.vibration == 100);
+  CHECK_FALSE(bad->camera.stick_acceleration);
+  CHECK_FALSE(bad->camera.low_latency_mouse);
+  CHECK(warnings.size() == 5);
+}

@@ -1517,3 +1517,39 @@ routes. Report: docs/PERFORMANCE.md section 8.
 | Game folder, saves, tracked files | VERIFIED unchanged / clean |
 
 Commits: ca5de18 .. HEAD on m9/deep-optimization.
+
+## M15 — Gameplay and controls polish (2026-11-06, branch m15/gameplay-controls-polish from 7bcfc44; not merged, nothing published)
+
+Stages: M15A menus and mouse (3c3ca7e), M15B camera and controller (6bc2bff), M15C combat input and movement (e614caa). What was done and
+measured: docs/SETTINGS.md (top of "In the game" and "M15B rows"), docs/CAMERA.md 9 and 10, docs/INPUT.md "Combat input and
+movement". Gameplay rules, the simulation rate, SDK patches and config/ are unchanged. Open: K78 (Low Latency's feel and default).
+
+## M15.1 — Test cleanup and release validation (2026-11-06, same branch; not merged, nothing published)
+
+K66 resolved: the older routes rewritten for the current menus, no game regression behind them (docs/KNOWN_ISSUES.md). They found
+K79, Restore Defaults' description cut off by M15A, fixed. The 284, 217 and 75 ms input delays are start-up, loading and first use,
+none in ordinary play, documented without a change (docs/INPUT.md "Gaps between input polls"). K78: Low Latency's frames could
+show black at a wall in a fast turn, reproduced, limited to 3 degrees of late turn; a few frames at sharp corners remain
+(docs/CAMERA.md 9). Low Latency stays Off by default. Checklists: docs/MANUAL_TEST_PC.md, docs/MANUAL_TEST_STEAM_DECK.md.
+
+Validation (2026-11-07): the timing tests that failed beside a running game pass on an idle machine; a 5-run interleaved A/B shows
+no cost against M14 (docs/PERFORMANCE.md "M15.1"). M15.1 is at its gate.
+
+## M15.2 — Retail import, Stage A (2026-11-07, branch m15.2/retail-import from 4f5152c; not merged, nothing published)
+
+Research (docs/RETAIL_IMPORT_RESEARCH.md): GTA V Recomp, Splatterhouse-PC and Saw2Recomp all distribute the retail XEX key
+(in a binary or in source); none uses a player-supplied key. Plan (docs/RETAIL_IMPORT_PLAN.md): Stage A without decryption,
+implemented; Stage B (player-supplied key, decryption) planned in full and blocked by the legal gate in docs/RETAIL_FILES.md.
+Stage A: executables identified without a key (title, media, version, title-update flags; the retail file by its SHA-256 in
+`@` lines of game_v1.tsv); one message per verdict in the window, the unattended mode and the install step; folders matched
+ignoring case; Xbox 360 disc images read by the setup's own XDVDFS reader (four partition offsets, bounds and loop checks);
+a retail folder or image installs with a separate unencrypted default.xex (`--executable`). Setup unit tests 221 -> 556
+assertions; the real retail folder recognised and accepted with the unencrypted executable (read only, unchanged).
+No game runs, no benchmarks; the release audit is unchanged.
+
+### M15.2, built-in retail decryption (2026-11-07; the player's decision, option 2 of three: docs/RETAIL_FILES.md)
+The setup decrypts a retail default.xex itself (own AES-128, FIPS-197 / SP 800-38A vectors): the key only in `kuf-setup`
+(src/retail_key.cpp), read at build time from the pinned SDK's git history, never in this repository; the runtime, code
+generator, patch 0019 and the deleted SDK tables unchanged; kuf-localbuild holds no key; the audit allows the retail key in
+usr/bin/kuf-setup only. The real retail default.xex decrypts byte for byte to the executable all testing used
+(build/game-plain, c859e4d1). Setup tests 699 assertions with the real files. All setup pages fit the Steam Deck's screen.

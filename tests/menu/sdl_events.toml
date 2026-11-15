@@ -37,7 +37,7 @@ script = """
 1100 sdl wheel -1 640 600
 1160 sdl wheel -1 640 600
 1220 sdl wheel 1 640 600
-1250 sdl click left 640 600
+1250 sdl click left 640 732
 1340 sdl click right 640 600
 """
 capture_frames = [790, 870, 990, 1150, 1210, 1320, 1420, 1600]
@@ -63,7 +63,9 @@ half_height = [12, 14]
 min_margin = 8.0
 # 790 Escape answered the prompt; 870 Down with three OS repeat events: one step; 990 Up, focus lost before
 # its key-up: one step, nothing stuck; 1150 wheel down to SETTINGS; 1210 wheel down to LANGUAGE; then
-# wheel up to SETTINGS and a left click opens it (1320); 1420 right click came back to SETTINGS.
+# wheel up to SETTINGS and a left click on it opens it (1320; window y 732 is guest y 580, this row. Since the M7
+# UI follow-up a click beside a menu's rows does nothing, so the click has to be on the row); 1420 right click came
+# back to SETTINGS.
 expect = { "790" = 0, "870" = 3, "990" = 0, "1150" = 3, "1210" = 4, "1420" = 3 }
 
 [[highlight]]

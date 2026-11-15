@@ -69,7 +69,14 @@ bool Readable(uint32_t address, uint32_t size) {
   auto* heap = g_memory->LookupHeap(address);
   if (!heap) return false;
   const auto access = heap->QueryRangeAccess(address, address + size - 1);
-  return (uint32_t(access) & uint32_t(rex::memory::PageAccess::kReadOnly)) != 0;
+  if ((uint32_t(access) & uint32_t(rex::memory::PageAccess::kReadOnly)) == 0) return false;
+  // Committed too: a page the game only reserved keeps its protection in the page table but has no host memory, and on
+  // Windows reading it faults (the in-game Settings crash: a field holding 0x01000000 taken for a scene pointer).
+  for (const uint32_t at : {address, address + size - 1}) {
+    rex::memory::HeapAllocationInfo info{};
+    if (!heap->QueryRegionInfo(at, &info) || !(info.state & rex::memory::kMemoryAllocationCommit)) return false;
+  }
+  return true;
 }
 
 uint32_t Load32(uint32_t address) {
@@ -248,6 +255,24 @@ void OnTick(PPCContext& ctx, uint8_t* base) {
   }
   auto* driver = kuf::input::KufInputDriver::Instance();
   if (!driver || !g_memory) return;
+  if (int wheel = driver->TakeWheelSteps(); wheel != 0 && !kuf::lobby_screen::Editing()) {
+    // Each notch through the focused control's handler, as the pointer's steps (its bounds, paging and sound). One that
+    // moved nothing is given back as virtual presses: a menu that reads its input elsewhere still gets them.
+    const uint32_t code = wheel > 0 ? kCodeUp : kCodeDown;
+    int moved = 0;
+    for (int left = std::abs(wheel); left > 0; --left) {
+      const uint32_t before = FocusPosition();
+      const std::string before_text = FocusText();
+      if (!Dispatch(ctx, base, code) || (FocusPosition() == before && FocusText() == before_text)) {
+        driver->WheelAsPresses(wheel > 0 ? left : -left);
+        break;
+      }
+      ++moved;
+    }
+    if (REXCVAR_GET(kuf_trace_menu_pointer)) {
+      REXLOG_INFO("[kuf-pointer] wheel {}: {} direct step(s)", wheel, moved);
+    }
+  }
   const auto w = driver->TakePointerWork();
   if (!w.active) {
     kuf::pc_menu::PointerSlider(ctx, base, 0, 0, false, false);  // ends a drag
@@ -275,7 +300,10 @@ void OnTick(PPCContext& ctx, uint8_t* base) {
     return;
   }
   int direct = 0, pressed = 0;
-  Step plan = PlanAt(w.at.x, w.at.y);
+  // A Settings row counts over its whole width: hovering its slider or the empty part selects it (and shows its
+  // description), a click on the empty part acts as on its label.
+  const int32_t plan_x = kuf::pc_menu::RowPointerX(ctx, base, w.at.x, w.at.y);
+  Step plan = PlanAt(plan_x, w.at.y);
   for (int i = 0; i < kMaxSteps && plan.over_row && plan.available && !plan.on_selected && (plan.dx || plan.dy); ++i) {
     const uint32_t code = plan.dy < 0 ? kCodeUp : plan.dy > 0 ? kCodeDown : plan.dx < 0 ? kCodeLeft : kCodeRight;
     const uint32_t before = FocusPosition();
@@ -290,7 +318,7 @@ void OnTick(PPCContext& ctx, uint8_t* base) {
       break;
     }
     ++direct;
-    plan = PlanAt(w.at.x, w.at.y);
+    plan = PlanAt(plan_x, w.at.y);
   }
   const bool confirm = w.click || g_confirm;
   if (pressed && g_goal_ticks < kMaxSteps) {

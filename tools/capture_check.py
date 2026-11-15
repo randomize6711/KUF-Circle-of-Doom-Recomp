@@ -34,6 +34,9 @@ Validations (`check`):
              align_x = "right" at their last one, and keep_px = N then compares only the last N columns,
              e.g. the maximum of "HP: 6/78" against "HP: 78/78"); metric "text_rel" = pixels brighter than the
              rectangle's median by text_delta (default 40), for list rows (dimmer text, highlighted rows).
+             edge_tolerance_px = N (text metrics) ignores glyph pixels that appear or vanish within N px of the
+             other capture's glyphs: anti-aliased edges crossing the threshold when the scene behind the panel
+             changes brightness, not a changed character.
              An unchanged-text rule (max_mean_diff) fails when neither capture has min_glyph_px (20) glyph
              pixels in the rectangle, unless allow_empty = true (an empty slot)
   region_diff [[region_diff]] a rectangle changed (min_mean_diff) or stayed (max_mean_diff) between two
@@ -227,6 +230,17 @@ def region_values(img, rect, metric="luma", text_threshold=150.0, text_delta=40.
         # text is dimmer than the status values, on a plain or a highlighted (selected) row.
         return np.where(luma > np.median(luma) + text_delta, 255.0, 0.0).astype(np.float32)
     return 0.2126 * band[:, :, 0] + 0.7152 * band[:, :, 1] + 0.0722 * band[:, :, 2]
+
+
+def dilate(mask, px):
+    """A boolean mask grown by px pixels in every direction (a (2px+1)-square neighbourhood)."""
+    h, w = mask.shape
+    pad = np.pad(mask, px)
+    out = np.zeros_like(mask)
+    for dy in range(2 * px + 1):
+        for dx in range(2 * px + 1):
+            out |= pad[dy:dy + h, dx:dx + w]
+    return out
 
 
 def align_left(mask):
@@ -530,7 +544,15 @@ def cmd_check(cap_dir, expectations_path, prev_dir=None):
             va, vb = align_right(va, rd.get("keep_px")), align_right(vb, rd.get("keep_px"))
         elif rd.get("align_x"):
             va, vb = align_left(va), align_left(vb)
-        d = float(np.abs(va - vb).mean())
+        tol = int(rd.get("edge_tolerance_px", 0))
+        if tol and metric in ("text", "text_rel"):
+            # A glyph pixel that appears or vanishes within tol px of the other capture's glyphs is an
+            # anti-aliased edge crossing the threshold (the scene behind a translucent panel got brighter or
+            # darker), not a changed character: only the rest counts.
+            ma, mb = va > 0, vb > 0
+            d = float(((ma & ~dilate(mb, tol)) | (mb & ~dilate(ma, tol))).mean() * 255.0)
+        else:
+            d = float(np.abs(va - vb).mean())
         ok = d >= rd.get("min_mean_diff", -1) and d <= rd.get("max_mean_diff", 1e9)
         report.add(f"region_diff[{rd['name']}]", ok,
                    f"{rd['a']} -> {rd['b']} {rd['rect']}: mean difference {d:.2f} "

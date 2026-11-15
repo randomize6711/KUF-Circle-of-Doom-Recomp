@@ -286,6 +286,11 @@ void KeyboardPad::TakeLook(double* dx, double* dy) {
   look_dx_ = look_dy_ = 0;
 }
 
+void KeyboardPad::PeekLook(double* dx, double* dy) const {
+  *dx = look_dx_;
+  *dy = look_dy_;
+}
+
 void KeyboardPad::SetFocused(bool focused) {
   focused_ = focused;
   if (!focused) {
@@ -342,29 +347,54 @@ PadState KeyboardPad::Poll() {
   return s;
 }
 
-bool WindowToGuest(int32_t window_width, int32_t window_height, int32_t x, int32_t y, uint32_t guest_width,
-                   uint32_t guest_height, GuestPoint* out) {
+namespace {
+
+// Same fit as rex::ui::Presenter (present_letterbox on, no overscan cutoff): the guest image keeps its aspect ratio,
+// fills one window dimension and is centred along the other. The point relative to the image's corner.
+bool GuestFit(int32_t window_width, int32_t window_height, int32_t x, int32_t y, uint32_t guest_width,
+              uint32_t guest_height, int64_t* rx, int64_t* ry, uint64_t* out_w, uint64_t* out_h) {
   if (window_width <= 0 || window_height <= 0 || guest_width == 0 || guest_height == 0) {
     return false;
   }
-  // Same fit as rex::ui::Presenter (present_letterbox on, no overscan cutoff): the guest image keeps its
-  // aspect ratio, fills one window dimension and is centred along the other.
   const uint64_t ww = uint64_t(window_width), wh = uint64_t(window_height);
-  uint64_t out_w, out_h;
-  int64_t out_x, out_y;
   if (ww * guest_height > wh * guest_width) {  // window wider: pillarbox
-    out_h = wh;
-    out_w = (wh * guest_width + guest_height / 2) / guest_height;
+    *out_h = wh;
+    *out_w = (wh * guest_width + guest_height / 2) / guest_height;
   } else {  // window taller (or equal): letterbox
-    out_w = ww;
-    out_h = (ww * guest_height + guest_width / 2) / guest_width;
+    *out_w = ww;
+    *out_h = (ww * guest_height + guest_width / 2) / guest_width;
   }
-  out_x = (int64_t(ww) - int64_t(out_w)) / 2;
-  out_y = (int64_t(wh) - int64_t(out_h)) / 2;
-  const int64_t rx = int64_t(x) - out_x, ry = int64_t(y) - out_y;
+  *rx = int64_t(x) - (int64_t(ww) - int64_t(*out_w)) / 2;
+  *ry = int64_t(y) - (int64_t(wh) - int64_t(*out_h)) / 2;
+  return true;
+}
+
+}  // namespace
+
+bool WindowToGuest(int32_t window_width, int32_t window_height, int32_t x, int32_t y, uint32_t guest_width,
+                   uint32_t guest_height, GuestPoint* out) {
+  int64_t rx, ry;
+  uint64_t out_w, out_h;
+  if (!GuestFit(window_width, window_height, x, y, guest_width, guest_height, &rx, &ry, &out_w, &out_h)) {
+    return false;
+  }
   if (rx < 0 || ry < 0 || rx >= int64_t(out_w) || ry >= int64_t(out_h)) {
     return false;
   }
+  out->x = static_cast<int32_t>(rx * guest_width / out_w);
+  out->y = static_cast<int32_t>(ry * guest_height / out_h);
+  return true;
+}
+
+bool WindowToGuestClamped(int32_t window_width, int32_t window_height, int32_t x, int32_t y, uint32_t guest_width,
+                          uint32_t guest_height, GuestPoint* out) {
+  int64_t rx, ry;
+  uint64_t out_w, out_h;
+  if (!GuestFit(window_width, window_height, x, y, guest_width, guest_height, &rx, &ry, &out_w, &out_h)) {
+    return false;
+  }
+  rx = std::clamp<int64_t>(rx, 0, int64_t(out_w) - 1);
+  ry = std::clamp<int64_t>(ry, 0, int64_t(out_h) - 1);
   out->x = static_cast<int32_t>(rx * guest_width / out_w);
   out->y = static_cast<int32_t>(ry * guest_height / out_h);
   return true;

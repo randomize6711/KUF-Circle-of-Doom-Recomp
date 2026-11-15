@@ -160,6 +160,25 @@ double LookAtError(const Mat4& m) {
   return std::abs(m[15] - 1) > 1e-6 ? 1e9 : e;
 }
 
+double PivotElevation(const Mat4& m, const Vec3& pivot) {
+  const Vec3 eye = Position(m), f = Forward(m);
+  const Vec3 on_line = Add(eye, Scale(f, Dot(Sub(pivot, eye), f) / Dot(f, f)));
+  return Elevation(Sub(eye, on_line));
+}
+
+Mat4 TurnAroundPivot(const Mat4& m, const Vec3& pivot, double yaw, double elevation_change, double max_elevation) {
+  constexpr double kLookAt = 1e-3;
+  if (LookAtError(m) > kLookAt) return m;
+  const Vec3 eye = Position(m), f = Forward(m);
+  const Vec3 on_line = Add(eye, Scale(f, Dot(Sub(pivot, eye), f) / Dot(f, f)));
+  const Vec3 offset = Sub(eye, on_line);
+  const double d = Length(offset);
+  if (d < 1e-3 || Dot(offset, f) >= 0) return m;
+  const double el = std::clamp(Elevation(offset) + elevation_change, -max_elevation, max_elevation);
+  const Vec3 turned = Scale(Direction(Azimuth(offset) + yaw, el), d);
+  return LookAt(Scale(turned, -1), Add(on_line, turned));
+}
+
 Mat4 InterpolateCamera(const CameraTick& a, const CameraTick& b, double t, double turn, bool pulled_in) {
   if (t <= 0) return a.matrix;
   if (t >= 1) return b.matrix;

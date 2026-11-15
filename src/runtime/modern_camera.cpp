@@ -58,6 +58,8 @@
 #include "runtime/frame_pacing.h"
 #include "runtime/tick_schedule.h"
 #include "runtime/modern_camera.h"
+
+#include "runtime/presentation.h"
 #include "runtime/pc_settings.h"
 
 REXCVAR_DEFINE_BOOL(kuf_trace_camera_orbit, false, "KUF/Debug",
@@ -192,6 +194,9 @@ struct State {
   // For the presentation interpolation (modern_camera.h): this tick's view, and what happened since the last one.
   kuf::camera::TickView tick_view;
   double tick_turn = 0;         // the player's turns applied since the last view (radians)
+  double tick_mouse_yaw = 0, tick_mouse_pitch = 0;  // the mouse's part of them since the last view (radians)
+  double frame_mouse_yaw = 0;   // the mouse's turn of this frame, for the geometry step (radians)
+  double stick_held = 0;        // seconds the stick has been at full deflection (the optional acceleration)
   bool tick_smoothed = false;   // the position smoothing moved the eye around the target since the last view
   bool snapped_pending = false; // the game turned its own camera since the last view
   bool pulled_pending = false;  // the collision pulled the camera in at once since the last view
@@ -264,6 +269,13 @@ void MouseLook(bool modern, double* dx, double* dy) {
 // A place for a debugger breakpoint once the gameplay camera runs (investigations with tools/menu_test.py --gdb).
 extern "C" __attribute__((noinline, used)) void kuf_camera_gdb_anchor(uint32_t camera) { asm volatile("" ::"r"(camera)); }
 
+REXCVAR_DEFINE_DOUBLE(kuf_test_look_rate, 0.0, "KUF/Debug",
+                      "M15B test: a synthetic mouse turning at this many counts per second, delivered between frames, and "
+                      "each frame's view logged ([kuf-late-look], tests/camera/late_look_check.py)");
+REXCVAR_DEFINE_DOUBLE(kuf_test_look_seconds, 1.0, "KUF/Debug",
+                      "M15.1 test: how long the synthetic mouse (--kuf_test_look_rate) turns each way");
+namespace { double g_test_counts = 0; }  // the synthetic mouse so far
+
 REX_EXTERN(__imp__sub_82523D78);
 REX_EXTERN(sub_826B6EF0);  // the pad's stick values: (pad, -1, stick) -> pointer to {int16 x, int16 y}
 REX_HOOK_RAW(sub_82523D78) {  // read one stick for the camera: (camera, stick, &x, &y)
@@ -312,8 +324,12 @@ REX_HOOK_RAW(sub_825232B8) {  // the free camera's per-frame update: (camera)
   const double invert = settings.invert_mouse_y ? -1.0 : 1.0;
   const double mouse_yaw = mouse_dx * kuf::camera::MouseRadiansPerCount(settings.mouse_horizontal);
   const double mouse_pitch = -mouse_dy * invert * kuf::camera::MouseRadiansPerCount(settings.mouse_vertical);
-  const double speed = kuf::camera::StickRadiansPerSecond(settings.stick_sensitivity);
+  double speed = kuf::camera::StickRadiansPerSecond(settings.stick_sensitivity);
   const double stick_x = LoadF(base, camera + kStickX), stick_y = LoadF(base, camera + kStickY);
+  if (settings.stick_acceleration) {  // M15B: real time held at full deflection, so the same at any frame rate
+    g.stick_held = std::hypot(stick_x, stick_y) >= kuf::camera::kStickBoostMin ? g.stick_held + dt : 0;
+    speed *= kuf::camera::StickBoost(g.stick_held);
+  }
   const uint32_t horizontal = Load32(base, camera + kHorizontalMode), vertical = Load32(base, camera + kVerticalMode);
   const bool free_camera = base[camera + kFreeCamEnabled] != 0;
 
@@ -322,7 +338,7 @@ REX_HOOK_RAW(sub_825232B8) {  // the free camera's per-frame update: (camera)
     if (dt > 0 && speed > 0) {
       StoreF(base, camera + kStickX, float(std::clamp(stick_x + mouse_yaw / (speed * dt), -1.0, 1.0)));
       StoreF(base, camera + kStickY,
-             float(std::clamp(stick_y + mouse_pitch / (speed * kuf::camera::kStickPitchRatio * dt), -1.0, 1.0)));
+             float(std::clamp(stick_y + mouse_pitch / (speed * (settings.stick_vertical / 100.0) * dt), -1.0, 1.0)));
     }
     __imp__sub_825232B8(ctx, base);
     return;
@@ -333,7 +349,10 @@ REX_HOOK_RAW(sub_825232B8) {  // the free camera's per-frame update: (camera)
   g.turn += stick_x * speed * dt + mouse_yaw;
 
   // Vertical: our own angle, kept when the input stops; the geometry step limits it.
-  const double pitch_input = stick_y * speed * kuf::camera::kStickPitchRatio * dt + mouse_pitch;
+  const double pitch_input = stick_y * speed * (settings.stick_vertical / 100.0) * dt + mouse_pitch;
+  g.tick_mouse_yaw += mouse_yaw;
+  g.frame_mouse_yaw = mouse_yaw;
+  g.tick_mouse_pitch += mouse_pitch;
   g.pitch_input += kuf::camera::LimitUpward(pitch_input, g.final_up, g.final_distance, dt);
   g.idle = std::abs(pitch_input) > 1e-6 ? 0 : g.idle + dt;
   g.dt = dt;
@@ -439,6 +458,15 @@ REX_HOOK_RAW(sub_825239F8) {  // the free camera's geometry: (camera, eye out, t
       g.smooth_eye = LoadVec(base, camera + kSmoothEye);
     }
     g.smoothing = true;
+    if (settings.low_latency_mouse && g.frame_mouse_yaw != 0) {
+      // M15B: the game's smoothing is there for the camera's position trailing the character; it also spread the
+      // player's own mouse turn over several frames (about 100 ms). The smoothed eye turns with the mouse here, so that
+      // turn shows at once and only the trailing is smoothed.
+      const double c = std::cos(g.frame_mouse_yaw), s = std::sin(g.frame_mouse_yaw);
+      const Vec3 o{g.smooth_eye.x - last_target.x, g.smooth_eye.y - last_target.y, g.smooth_eye.z - last_target.z};
+      g.smooth_eye = {last_target.x + o.x * c + o.z * s, g.smooth_eye.y, last_target.z + o.z * c - o.x * s};
+    }
+    g.frame_mouse_yaw = 0;
     Vec3 target = g.game_target;
     const int target_frames = frames_at(kSmoothTargetFrames);
     const Vec3 dt{g.game_target.x - last_target.x, g.game_target.y - last_target.y, g.game_target.z - last_target.z};
@@ -656,7 +684,10 @@ REX_HOOK_RAW(sub_825246D0) {  // (camera manager)
     v.turn = v.modern && !g.tick_smoothed ? g.tick_turn : NAN;
     v.snapped = g.snapped_pending || base[v.camera + kSmoothOff] != 0;
     v.pulled_in = g.pulled_pending;
+    v.mouse_yaw = g.tick_mouse_yaw;
+    v.mouse_pitch = g.tick_mouse_pitch;
   }
+  g.tick_mouse_yaw = g.tick_mouse_pitch = 0;
   g.tick_turn = 0;
   g.tick_smoothed = false;
   g.snapped_pending = false;
@@ -679,6 +710,9 @@ REX_HOOK_RAW(sub_825246D0) {  // (camera manager)
     g.gameplay_started = true;
   }
 
+  if (!kuf::presentation::Enabled() && kuf::camera::TestMouseStep()) {  // one frame per tick: the view as it is shown
+    kuf::camera::TestMouseLog(std::atan2(g.render[8], g.render[10]));
+  }
   g.rendering = true;
   __imp__sub_825246D0(ctx, base);
   g.rendering = false;
@@ -918,5 +952,48 @@ REX_HOOK_RAW(sub_82521710) {  // camera collision: (camera, eye out, target out,
 }
 
 namespace kuf::camera {
+bool TestMouseStep() {
+  const double rate = REXCVAR_GET(kuf_test_look_rate);
+  if (rate == 0) return false;
+  using Clock = std::chrono::steady_clock;
+  static Clock::time_point last = Clock::now();
+  const auto now = Clock::now();
+  const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count();
+  // A turn one way for a second, then back: the view's delay is found against this pattern.
+  const double one_way = REXCVAR_GET(kuf_test_look_seconds);
+  const double counts = (std::fmod(seconds, 2.0 * one_way) < one_way ? rate : -rate) * std::chrono::duration<double>(now - last).count();
+  last = now;
+  if (auto* driver = kuf::input::KufInputDriver::Instance()) driver->InjectLook(counts, 0);
+  g_test_counts += counts;
+  // An unbound key every 37 frames, at varying moments between the ticks: the event-to-poll time
+  // (--kuf_trace_input_latency).
+  static int frames = 0;
+  if (++frames % 37 == 0) {
+    if (auto* driver = kuf::input::KufInputDriver::Instance()) {
+      const auto key = kuf::input::ParseHostKey("F9");
+      driver->InjectKey(key, true);
+      driver->InjectKey(key, false);
+    }
+  }
+  return true;
+}
+
+void TestMouseLog(double azimuth) {
+  REXLOG_INFO("[kuf-late-look] t {:.2f} counts {:.2f} azimuth {:.5f}",
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+              g_test_counts, azimuth);
+}
+
+void PendingMouseLook(double* yaw, double* pitch) {
+  *yaw = *pitch = 0;
+  const auto settings = kuf::pc::CurrentCamera();
+  auto* driver = kuf::input::KufInputDriver::Instance();
+  if (!settings.modern || !driver) return;
+  double dx, dy;
+  driver->PeekMouseLook(&dx, &dy);
+  *yaw = dx * MouseRadiansPerCount(settings.mouse_horizontal);
+  *pitch = -dy * (settings.invert_mouse_y ? -1.0 : 1.0) * MouseRadiansPerCount(settings.mouse_vertical);
+}
+
 const TickView& LatestTickView() { return g.tick_view; }
 }  // namespace kuf::camera

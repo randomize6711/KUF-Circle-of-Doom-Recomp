@@ -286,9 +286,9 @@ def run_scenario(path, args):
         sc = tomllib.load(f)["scenario"]
     name = os.path.splitext(os.path.basename(path))[0]
     run_id = f"{args.run_prefix}-{name}"
-    run_dir = os.path.join(ROOT, "build", "runs", run_id)
+    runs = args.verify_only or os.path.join(ROOT, "build", "runs")
+    run_dir = os.path.join(runs, run_id)
     cap_dir = os.path.join(run_dir, "user", "captures")
-    frames = ",".join(str(f) for f in sc.get("capture_frames", []))
     cmd = [os.path.join(ROOT, "tools", "run_sandboxed.sh"), "-p", args.preset, "-t", str(sc["seconds"] + 60),
            "-n", run_id, "--gpu"]
     if "script_file" in sc:
@@ -300,14 +300,14 @@ def run_scenario(path, args):
     prev_cap_dir = None
     source = None
     if "saves_from_run" in sc:
-        prev_run = os.path.join(ROOT, "build", "runs", f"{args.run_prefix}-{sc['saves_from_run']}")
-        compare_run = os.path.join(ROOT, "build", "runs", f"{args.run_prefix}-{sc.get('compare_run', sc['saves_from_run'])}")
+        prev_run = os.path.join(runs, f"{args.run_prefix}-{sc['saves_from_run']}")
+        compare_run = os.path.join(runs, f"{args.run_prefix}-{sc.get('compare_run', sc['saves_from_run'])}")
         prev_cap_dir = os.path.join(compare_run, "user", "captures")
         source = os.path.join(prev_run, "saves")
         if not os.path.isdir(source):
             print(f"MENU TEST {name}: FAIL (no saves from run {prev_run}; run that scenario first)")
             return False
-        if sc.get("damage"):
+        if sc.get("damage") and not args.verify_only:
             source = prepare_damaged_saves(source, os.path.join(ROOT, "build", "runs", f"{run_id}-input-saves"),
                                            sc["damage"])
         cmd += ["--saves-from", source]
@@ -317,7 +317,7 @@ def run_scenario(path, args):
             print(f"MENU TEST {name}: FAIL (saves_from_dir {sc['saves_from_dir']!r} is not a directory under build/)")
             return False
         if "compare_run" in sc:
-            prev_cap_dir = os.path.join(ROOT, "build", "runs", f"{args.run_prefix}-{sc['compare_run']}", "user", "captures")
+            prev_cap_dir = os.path.join(runs, f"{args.run_prefix}-{sc['compare_run']}", "user", "captures")
         cmd += ["--saves-from", source]
     if "compare_dir" in sc:
         prev_cap_dir = os.path.realpath(os.path.join(ROOT, sc["compare_dir"]))
@@ -328,7 +328,7 @@ def run_scenario(path, args):
         cmd += ["--cache-from", args.cache_from]
     # PC settings (M6B): start from an earlier scenario's pc_settings.toml, or from a file in the repository.
     if "pc_settings_from_run" in sc:
-        prev = os.path.join(ROOT, "build", "runs", f"{args.run_prefix}-{sc['pc_settings_from_run']}")
+        prev = os.path.join(runs, f"{args.run_prefix}-{sc['pc_settings_from_run']}")
         if not os.path.isfile(os.path.join(prev, "user", "pc_settings.toml")):
             print(f"MENU TEST {name}: FAIL (no pc_settings.toml from run {prev}; run that scenario first)")
             return False
@@ -339,26 +339,57 @@ def run_scenario(path, args):
         cmd += ["--copy-in", os.path.join(ROOT, f)]
     if args.gdb:
         cmd += ["--gdb", args.gdb]
-    cmd += ["--", f"--kuf_exit_after_seconds={sc['seconds']}"]
+    cmd += ["--"] + game_args(sc, items, args.game_arg)
+    if args.verify_only:  # a run made elsewhere (the Windows acceptance test): only its results are checked
+        run_dir = os.path.join(args.verify_only, run_id)
+        cap_dir = os.path.join(run_dir, "user", "captures")
+        if not os.path.isfile(os.path.join(run_dir, "exit_status")):
+            print(f"MENU TEST {name}: FAIL (no run in {run_dir})")
+            return False
+        if source and os.path.isdir(os.path.join(run_dir, "input-saves")):
+            source = os.path.join(run_dir, "input-saves")
+    else:
+        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL)
+    return verify_run(sc, path, name, run_id, run_dir, cap_dir, items, source, prev_cap_dir, args)
+
+
+def game_args(sc, items, extra):
+    """The game options of a scenario (after run_sandboxed.sh's own; tools/windows/acceptance uses them too)."""
+    out = [f"--kuf_exit_after_seconds={sc['seconds']}"]
     if "script_file" not in sc:
-        cmd.append("--kuf_input_script=" + "; ".join(items))
-    cmd += sc.get("args", [])
+        out.append("--kuf_input_script=" + "; ".join(items))
+    out += sc.get("args", [])
     # The scripted routes answer the console's storage question themselves (Return or Escape at about frame 700); the
     # port answers it for players (M7 UX fix 5, --kuf_storage_prompt=auto): scenarios keep it unless they say so.
-    if not any(a.startswith("--kuf_storage_prompt") for a in sc.get("args", []) + args.game_arg):
-        cmd.append("--kuf_storage_prompt=ask")
-    cmd += args.game_arg
+    if not any(a.startswith("--kuf_storage_prompt") for a in sc.get("args", []) + extra):
+        out.append("--kuf_storage_prompt=ask")
+    out += extra
+    frames = ",".join(str(f) for f in sc.get("capture_frames", []))
     if frames:
-        cmd.append(f"--kuf_capture_frames={frames}")
-    subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL)
+        out.append(f"--kuf_capture_frames={frames}")
+    return out
 
-    results = []
-    status = int(open(os.path.join(run_dir, "exit_status")).read().strip())
-    crashed = os.path.exists(os.path.join(run_dir, "user", "crash-report.txt"))
+
+def read_run_log(run_dir):
+    """The run's kuf_cod*.log files; a run made on Windows has its own folder in the paths: written as /run-data."""
     log = ""
     for fname in sorted(os.listdir(run_dir)):
         if fname.startswith("kuf_cod") and fname.endswith(".log"):
             log += open(os.path.join(run_dir, fname), errors="replace").read()
+    marker = os.path.join(run_dir, "run-root.txt")
+    if os.path.isfile(marker):
+        root = open(marker, encoding="utf-8").read().strip()
+        if root:
+            pattern = re.compile(re.escape(root).replace(r"\\", r"[\\/]") + r"((?:[\\/][^\s'\"]*)?)", re.I)
+            log = pattern.sub(lambda m: "/run-data" + m.group(1).replace("\\", "/"), log)
+    return log
+
+
+def verify_run(sc, path, name, run_id, run_dir, cap_dir, items, source, prev_cap_dir, args):
+    results = []
+    status = int(open(os.path.join(run_dir, "exit_status")).read().strip())
+    crashed = os.path.exists(os.path.join(run_dir, "user", "crash-report.txt"))
+    log = read_run_log(run_dir)
     errors, known = known_errors.classify(log.splitlines())
     expected = [re.compile(p) for p in sc.get("expect_errors", [])]
     absent_expected = [p.pattern for p in expected if not any(p.search(e) for e in errors)]
@@ -476,6 +507,9 @@ def main():
     ap.add_argument("--cache-from", help="start every scenario with a copy of this shader/pipeline cache (a cache "
                     "or run directory, only read): measures with a warm cache")
     ap.add_argument("--gdb", help="run the game under this gdb script (run_sandboxed.sh --gdb; output in gdb.txt)")
+    ap.add_argument("--verify-only", metavar="RUNS_DIR",
+                    help="do not run: check the runs in RUNS_DIR/<run-prefix>-<scenario> (made elsewhere, e.g. by "
+                    "tools/windows/acceptance on Windows; paths in their logs read as /run-data)")
     ap.add_argument("scenarios", nargs="+")
     args = ap.parse_args()
     results = [run_scenario(p, args) for p in args.scenarios]

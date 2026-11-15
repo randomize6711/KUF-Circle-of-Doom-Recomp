@@ -6,6 +6,10 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#if defined(_WIN32)
+#include "runtime/win32.h"
+#endif
+
 REXCVAR_DEFINE_STRING(kuf_steam_deck, "auto", "KUF",
                       "auto: the Steam Deck is recognised by its board (Valve Jupiter / Galileo); on / off: as if it "
                       "were or were not one (tests)")
@@ -36,8 +40,30 @@ std::string OsReleaseValue(const std::string& text, const std::string& key) {
 
 }  // namespace
 
+#if defined(_WIN32)
+// "Windows 11 (build 26100)": RtlGetVersion, which reports the real version (GetVersionEx is capped by the manifest).
+std::string WindowsName() {
+  using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
+  OSVERSIONINFOW v{};
+  v.dwOSVersionInfoSize = sizeof(v);
+  const HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+  const auto get = ntdll ? reinterpret_cast<RtlGetVersionFn>(::GetProcAddress(ntdll, "RtlGetVersion")) : nullptr;
+  if (!get || get(&v) != 0) return "Windows";
+  const char* name = v.dwMajorVersion == 10 && v.dwBuildNumber >= 22000 ? "Windows 11"
+                     : v.dwMajorVersion == 10                          ? "Windows 10"
+                                                                        : "Windows";
+  return std::string(name) + " (build " + std::to_string(v.dwBuildNumber) + ")";
+}
+#endif
+
 Info Detect(const std::filesystem::path& root, const char* gamescope_display, const char* desktop) {
   Info info;
+#if defined(_WIN32)
+  (void)root;
+  (void)gamescope_display;
+  (void)desktop;
+  info.os_name = WindowsName();
+#else
   std::string os = ReadTrimmed(root / "etc/os-release");
   if (os.empty()) os = ReadTrimmed(root / "usr/lib/os-release");
   info.os_name = OsReleaseValue(os, "PRETTY_NAME");
@@ -49,6 +75,7 @@ Info Detect(const std::filesystem::path& root, const char* gamescope_display, co
     info.deck_model = board == "Galileo" ? "OLED" : "LCD";
   }
   info.gamescope = (gamescope_display && *gamescope_display) || (desktop && std::string(desktop) == "gamescope");
+#endif
   return info;
 }
 

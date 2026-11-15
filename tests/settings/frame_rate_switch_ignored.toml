@@ -2,6 +2,8 @@
 # (as frame_rate_menu): 30 -> 60 -> 90 -> 120 -> 90 -> 60 -> 30 -> ... -> 120 -> 144 -> 165 -> 240 -> Unlimited ->
 # ... -> 60, Interpolation Off and On, each advanced row Off and On; back to the game, a walk with turns. The game's
 # state traced per tick (--kuf_trace_game_state, --kuf_trace_camera_orbit). With --kuf_debug_frame_rate_ignored the menu's changes are dropped before the frame scheduler: the game stays at 30 fps (frame_rate_check.py --expect-not-applied must see it; the reference for state_compare.py).
+# M15.1: Settings opens directly on the categories: Display, Camera, Audio, Mouse & Keyboard, Controller, Gameplay,
+# Restore Defaults (K66). What this route checks is unchanged; where the text above names older rows, these replace them.
 
 [scenario]
 description = "Fault test: frame-rate changes made in the menu dropped before the scheduler (stays at 30)"
@@ -21,17 +23,6 @@ script = """
 @gameplay+500 press Down
 @gameplay+550 press Down
 @gameplay+650 press Return
-@gameplay+800 press Down
-@gameplay+830 press Down
-@gameplay+860 press Down
-@gameplay+890 press Down
-@gameplay+920 press Down
-@gameplay+950 press Down
-@gameplay+980 press Down
-@gameplay+1010 press Down
-@gameplay+1110 press Return
-@gameplay+1260 press Down
-@gameplay+1290 press Down
 @gameplay+1320 press Return
 @gameplay+1420 press Down
 @gameplay+1450 press Down
@@ -80,7 +71,6 @@ script = """
 @gameplay+5270 press Escape
 @gameplay+5370 press Escape
 @gameplay+5470 press Escape
-@gameplay+5570 press Escape
 @gameplay+5770 log mark walk
 @gameplay+5780 down W
 @gameplay+5980 look 120 0

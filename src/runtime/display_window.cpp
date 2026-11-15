@@ -22,6 +22,7 @@
 // wins. (Scales above 1 tinted the scene red until the SDK's pixel position was fixed, KNOWN_ISSUES K31.)
 
 #include <SDL3/SDL.h>
+#include "runtime/platform_env.h"
 
 #include <algorithm>
 #include <atomic>
@@ -314,8 +315,8 @@ void Configure() {
   const bool from_environment = std::getenv("REX_DRAW_RESOLUTION_SCALE_X") || std::getenv("REX_DRAW_RESOLUTION_SCALE_Y");
   if (!from_environment) {
     g_start_scale = RenderScaleForSetting(display.render_scale, target.width, target.height);
-    setenv("REX_DRAW_RESOLUTION_SCALE_X", std::to_string(g_start_scale.x).c_str(), 1);
-    setenv("REX_DRAW_RESOLUTION_SCALE_Y", std::to_string(g_start_scale.y).c_str(), 1);
+    kuf::SetEnv("REX_DRAW_RESOLUTION_SCALE_X", std::to_string(g_start_scale.x).c_str());
+    kuf::SetEnv("REX_DRAW_RESOLUTION_SCALE_Y", std::to_string(g_start_scale.y).c_str());
   }
   const std::string mode =
       std::string(kuf::pc::DisplayModeName(display.mode)) + " " +

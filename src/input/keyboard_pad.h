@@ -150,6 +150,7 @@ class KeyboardPad {
   // Direct mouse look: the movement accumulated in gameplay since the last call (window pixels; +x right,
   // +y down), then cleared.
   void TakeLook(double* dx, double* dy);
+  void PeekLook(double* dx, double* dy) const;  // the movement not taken yet, left where it is
   // Window focus. Losing focus releases every key and drops pending latches, wheel pulses and look movement.
   void SetFocused(bool focused);
   bool focused() const { return focused_; }
@@ -184,5 +185,9 @@ struct GuestPoint {
 };
 bool WindowToGuest(int32_t window_width, int32_t window_height, int32_t x, int32_t y, uint32_t guest_width,
                    uint32_t guest_height, GuestPoint* out);
+// The same mapping, a point outside the guest image taken to its nearest edge (M15A: a slider's drag continues while
+// the pointer is on an ultrawide window's side bar). False only for an empty window.
+bool WindowToGuestClamped(int32_t window_width, int32_t window_height, int32_t x, int32_t y, uint32_t guest_width,
+                          uint32_t guest_height, GuestPoint* out);
 
 }  // namespace kuf::input

@@ -1,8 +1,10 @@
 // A full installation with the real payload and the player's game files into a disposable folder (not a unit test:
 // it copies about 4 GB). Never starts the game.
-//   kuf_setup_e2e <payload package dir> <assets dir> <game folder> <target root>
+//   kuf_setup_e2e <payload package dir> <assets dir> <game folder or disc image> <target root> [<separate default.xex>]
+// KUF_E2E_JOBS: the local build's parallel jobs (default: from this machine).
 // HOME / XDG_* should point into a temporary folder (installer/README.md "Testing").
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "core/install.h"
@@ -16,8 +18,8 @@ int main(int argc, char** argv) {
     for (const auto& n : u.notes) std::printf("  note: %s\n", n.c_str());
     return u.ok ? 0 : 1;
   }
-  if (argc != 5) {
-    std::fprintf(stderr, "usage: kuf_setup_e2e PAYLOAD ASSETS GAME ROOT\n");
+  if (argc != 5 && argc != 6) {
+    std::fprintf(stderr, "usage: kuf_setup_e2e PAYLOAD ASSETS GAME ROOT [EXECUTABLE]\n");
     return 2;
   }
   std::string list;
@@ -25,7 +27,9 @@ int main(int argc, char** argv) {
   Plan plan;
   plan.package = argv[1];
   plan.manifest = ParseGameManifest(list, "v1");
-  plan.game_source = argv[3];
+  plan.game_source = FindGameRoot(argv[3]);
+  if (argc == 6) plan.executable = argv[5];
+  plan.build_jobs = std::atoi(Env("KUF_E2E_JOBS").c_str());
   plan.root = argv[4];
   plan.icon = fs::path(argv[2]) / "icon-256.png";
   plan.setup_assets = argv[2];

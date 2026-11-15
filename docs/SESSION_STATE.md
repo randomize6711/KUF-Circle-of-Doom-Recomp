@@ -3,9 +3,134 @@
 Read this first after a context reset or interruption, then `docs/PROGRESS.md` for history. Update it after every
 completed step (commit it with the step).
 
+## M17 Cross-platform stabilization (2026-11-10; the player's prompt; branch m17/cross-platform-stabilization from dd36bf3)
+
+M16 merged (main dd36bf3, 2046/2046). M17 so far (each a commit; nothing merged, pushed or published):
+- **M17A** native Windows build in one command: tools/windows/build.sh, docs/WINDOWS_BUILD.md (K80). Verified as a
+  Linux cross build of a fresh clone with Git for Windows' defaults (symlinks off, autocrlf true) in a Unicode path,
+  rerun included; not yet on a Windows PC.
+- **No audio device** (Linux and Windows): crashed at start; SDK patch 0021 silent driver; ctest smoke.no_audio_device_60s.
+- **M17F** co-op on Windows: src/net/sock (Winsock), the co-op runtime and lobby menus built for Windows. Net tests as
+  a Windows program under Wine 440/440; tests/net/cross_platform_lobby.sh (opt-in ctest net.cross_platform_lobby):
+  Linux/Windows hosts and guests in every combination pass (Wine, not two real PCs).
+- **M17H** saves: same files on both systems; a CRLF manifest now verifies (patch 0005). Real cross-system load: open.
+- **M17E** Windows Unicode paths were broken (the ANSI code page): UTF-8 manifest in every Windows program and in the
+  player-side link; kuf-localbuild UTF-8 arguments; an unusable build cache is rebuilt once; cancel/resume tests.
+- **M17G** Windows updater: kuf-update.exe (WinHTTP, SSHSIG Ed25519, staged Runtime.next applied by the launcher,
+  --rollback-update); docs/UPDATES_WINDOWS.md; Wine end to end 11/11 (ctest updater.windows_wine). Not live: no
+  Windows release signed or published.
+- **Integration regression at 1210562 + bb1ab2a** (build/m17-regress.sh, logs build/m17-regress/): all builds; setup
+  tests 1141/1141; Wine 2/2; Linux release 0.9.0-dev.m17 (AppImage, portable); ctest 2049/2049; local install test
+  74/74 (after bb1ab2a: the section-4 retail check still expected the pre-decision-(2) refusal); game folder
+  unchanged; tracked paths clean.
+- **Native Windows acceptance (the player's prompt, 2026-11-10: do not merge before it; no Xvfb for what Windows can
+  test natively; two-PC co-op stays pending without a second machine; automatic Windows rollback a follow-up):**
+  found and fixed from Linux: the setup asked for an administrator (no asInvoker in the manifest; D1), no Settings >
+  Apps entry (D6), the manifest not rebuilt when changed. Kit: tools/windows/make_acceptance_kit.sh ->
+  "~/Documents/KUF Windows port/M17-accept/" (0.9.0-dev.m17d; Run-Acceptance.cmd; START_HERE.md also for Claude on
+  Windows). Results come back as results-<time>.zip: tools/windows/verify_acceptance.py. The harness never ran on
+  Windows yet (no PowerShell/C# here).
+- Older test packages: "~/Documents/KUF Windows port/M17-test/" (0.9.0-dev.m17c), superseded by the kit.
+- **The player's decision (2026-11-10, M17/M18 prompt):** no Windows PC for now. Windows is provisionally supported,
+  not fully verified; the acceptance kit stays for later (not run). Finish M17 with the Linux regression and the
+  Windows cross-builds, merge with safe_merge.sh (approved), then M18 Linux performance on m18/linux-performance.
+  No Windows-only work unless a shared change breaks the Windows build.
+- **Merge attempts (2026-11-11):** run 1 stopped by low memory (a game on the desktop); runs 2 and 3 failed
+  load-sensitive timing/render tests while a game ran (each passed alone); run 4 on an idle PC failed only
+  timing.k44_120_check (late 18 of 848, one 1 s burst while the checks ran beside it; alone 4 of 4 pass). Fix:
+  the K44 runs RUN_SERIAL. Then safe_merge again.
+- **M17 MERGED (2026-11-12):** run 5 (after a low-memory stop of run 5a) passed every gate: 2049/2049 tests, game
+  folder unchanged, 624 tracked paths clean; main fast-forwarded dd36bf3 -> **cf40bfe** (28 commits). The acceptance
+  kit stays at "~/Documents/KUF Windows port/M17-accept/" (unrun). Nothing pushed, tagged, signed or published.
+
+## M18 Linux performance and stability (2026-11-12; branch m18/linux-performance from cf40bfe)
+The player's prompt: Linux/Steam Deck performance, frame pacing, pipeline stutter, stability; measured changes only;
+Windows kept building (cross-build after shared changes), no Windows-only work; no merge/push without approval.
+- Baseline build frozen: build/m18-base (main cf40bfe). Benchmarks: build/m18-scratch/base.sh (tag m18-b0).
+- M18A baseline done (PERFORMANCE 12.1). X1 progressive ring read pointer and X2 -O3: rejected (12.2).
+- P1 (6e6f086, PERFORMANCE 12.3): the first frame step after a late hand-off; 120 fps at 1440p 108.5 -> 116.4 avg,
+  p95 14.4 -> 10.4 ms. Test timing.late_steps_120. Windows cross-build + portable package OK after it.
+- M18C (863727a, e972549; PERFORMANCE 12.4): cold cache unchanged (K76 as M14); SDK patch 0022 + test
+  stability.damaged_shader_cache. M18G validation at 1280x800: K75/K77 only; K77's cause found (1x2 render scale).
+- M18B/F (3d0af94, PERFORMANCE 12.5): 4K split as M14, no change; release package audit clean (glibc 2.30).
+  build/linux-amd64-portable is left at version 0.9.0-dev.m18 (make_release.sh): rebuild before other use.
+- Stability 21/21, ctest -LE smoke 1952/1952 (12.6). M18 complete pending the player's review; merge only with the
+  player's approval (tools/safe_merge.sh m18/linux-performance runs the full ctest).
+
 ## Release cleanup (2026-11-04)
-The old draft releases are deleted. The public history's key removal and the rc.2 publication wait for the player's explicit
-approval; nothing is signed or published without it. Private recovery copies stay outside the repository and are never uploaded.
+**v0.8.0-rc.2 is published (2026-11-06):** https://github.com/randomize6711/KUF-Circle-of-Doom-Recomp/releases/tag/v0.8.0-rc.2,
+public commit and tag 05b934e (files identical to local 7bcfc44). Old drafts deleted; public branches and tags rewritten to remove the key
+(backup: ~/Work/kuf-public-mirror-backup-20261104). Old commit URLs still serve the key until GitHub Support clears them (request text in
+that backup; the player sends it). Next public commit goes on top of build/public-release, whose push URL stays disabled: push by explicit URL.
+The player's Steam Deck test is still to come.
+
+## M15 Gameplay and controls polish (2026-11-06; the player's prompt; branch m15/gameplay-controls-polish from 7bcfc44)
+Autonomous through M15A (menus and mouse), M15B (camera and controller), M15C (combat input and movement), a commit per
+stage. Nothing pushed, tagged or published until the player reviews. See docs/PROGRESS.md "M15".
+All three stages committed (3c3ca7e, 6bc2bff, e614caa); waiting for the player's review. Not reached by script: the shop, equipping by
+mouse. Decision open: Low Latency's default (K78). `.game_dir` points at build/game-plain, a test copy with an unencrypted
+default.xex and no $SystemUpdate, so tools/verify_game_dir.sh fails on it by design: to check the original folder, set KUF_GAME_DIR to it. tools/safe_merge.sh: `KUF_ORIGINAL_GAME_DIR=<original folder>` (gate 6 checks that folder; the tests keep the copy).
+
+## M15.1 Test cleanup and release validation (2026-11-06; the player's prompt, same branch)
+Do not start M16. Nothing pushed, merged or published; waiting for the player's review and manual tests (docs/MANUAL_TEST_PC.md,
+docs/MANUAL_TEST_STEAM_DECK.md). Low Latency stays Off until the player has tested it. The GitHub Support request (see above) is the
+player's to send. tools/manual_test.sh was only tried with a stub in place of the game (agents never run the game bare).
+
+M15.1 complete (2026-11-07): all routes ran, units 1788/1788 and net 41/41 pass; the four timing tests that failed while a game ran
+pass on an idle machine (7/7 with combat_loot_no_drops and k44_60). A/B (5 interleaved runs each, docs/PERFORMANCE.md "M15.1"): M15 matches
+M14 within noise. At the gate: waiting for the player's manual tests and review. Scratch files survive in build/m151-scratch.
+
+## M15.2 Retail import (2026-11-07; the player's prompt; branch m15.2/retail-import from 4f5152c)
+Stage A (retail and ISO recognition) done. Then the player chose a **built-in retail key** ("do 2", docs/RETAIL_FILES.md
+"Decision of 2026-11-07", made without legal clearance): only kuf-setup decrypts, the key comes from the SDK's git history at
+build time and is never committed; the runtime, code generator and SDK key deletion are unchanged. Publishing a release
+with it needs the player's separate approval. Low Latency stays Off. Nothing pushed, merged or published. Waiting for the
+player's review and a Steam Deck test of the setup with a retail dump.
+
+## M16 Native Windows port, drag and drop, portable editions (2026-11-08; branch m16/windows-portable from 6ae0dd6)
+The player chose llvm-mingw (memory: kuf-m16-windows-toolchain). Done and committed per stage (c627a28 Stage 1-2a,
+054fb1f core platform layer, a28d071 Windows builder, 66a6168 portable core, 213d81b launcher, d9da0ee GTK drag and
+drop, 58c8ab2 portable packages, 57321ab Windows setup). Windows: built, packaged and audited, NOT run on Windows
+(no Windows machine; docs/WINDOWS_TEST.md is the player's checklist). Artifacts: build/releases-local/windows-0.9.0-dev.m16/.
+Nothing pushed or published. Open: the player's Windows test; co-op and the updater on Windows; crash stacks on Windows.
+Retail decryption (0df7992, the player's decision of 2026-11-08 (2), docs/RETAIL_FILES.md): the setup and the portable
+launchers decrypt a retail default.xex in every build, like other recompilation projects; the key only in kuf-setup and
+Play KUF(.exe), enforced by the audits. Real test: the Linux portable launcher prepared the game from the encrypted retail
+folder (only read, unchanged); the decrypted default.xex is byte-identical to build/game-plain's; the game starts in the
+sandbox. First Windows run (player, 2026-11-08): decryption and code generation worked; the link failed ("The object
+kuf_cod_init.cpp.o is missing from the cache"): the object list was written in text mode, so Windows wrote "\r\n" and
+the name read back ended in "\r". Fixed (binary writes, every line reader strips '\r'; test with a CRLF list). Second run: the game linked and started, then
+"Failed to load GPU plugin 'xenos'": the runtime loads rexgpu-xenosrd.dll (MSVC naming), MinGW had built
+librexgpu-xenosrd.dll. Fixed: PREFIX "" for rexgpu-xenos under MinGW (root CMakeLists.txt), package renamed. Third run (logs from the player):
+Vulkan on an RX 9070 XT (AMD 26.10.1), audio, the game files all fine; then an access violation inside a Windows DLL at
+the game's first setjmp/longjmp (guest sub_8290CA18): mingw-w64's x64 setjmp records the frame, so longjmp unwinds
+the SEH way through recompiled frames. Fixed: __USE_MINGW_SETJMP_NON_SEH for kuf_cod and kuf_cod_recomp (setjmp
+then _setjmp(buf, NULL): registers only, as on Linux). Also: the platform line says the Windows version. Fourth run:
+the same crash - the real cause was the jmp_buf's alignment: ppc_setjmp keeps jmp_bufs in an unordered_map<u32,
+jmp_buf>, whose value type libc++ aligns to 8 (mingw-w64 aligns jmp_buf by typedef), and Windows' _setjmp saves the
+XMM registers with aligned stores (#GP, reported as a read of 0xFFFFFFFFFFFFFFFF). Fixed in patch 0020
+(pch_h.inja: struct alignas(16) PPCJmpBuf); reproduced and verified with a small test program (old layout: the same
+fault; new: works). Windows game rebuilt with it but NOT packaged or run on Windows yet. Development of the Windows
+port then moved to the player's Windows PC (docs/WINDOWS_DEV_HANDOFF.md).
+
+On the Windows PC (2026-11-08): the m16 portable package (with 978642e) run by the player: past the setjmp, title,
+title movie, menus, gameplay; then an access violation reading guest 0x01000000 in kuf::controls_screen::OnTick
+(FindScene) on opening the in-game Settings: menu_pointer's Readable checked only the page table's protection, which a
+reserved but uncommitted page also has; on Windows reading such a page faults. Fixed: Readable also requires the pages
+committed. The native Windows build (mingw-amd64-relwithdebinfo, built on the PC): CMake runs apply_sdk_patches.sh
+through bash on a Windows host; the SDK's nested submodules fetched (shallow, pinned commits); Git for Windows checks
+out symlinks as text files (libmspack's cabextract/mspack/*, o1heap's CLAUDE.md), replaced by copies of their targets
+in the working tree; rexgluerd.exe needs llvm-mingw's libc++.dll and libunwind.dll beside it in bin/ (copied by hand:
+still to automate). Player's run with the fix: PC Settings at the title, gameplay, in-game Settings and the Controls
+page (keyboard list), a save, Quit Game from the title: no crash, clean exit.
+
+## v0.8.0-rc.3 (2026-11-08; prepared, NOT published)
+Built from 27eeeff into build/releases-local/v0.8.0-rc.3 (AppImage sha256 497ed88c…3bc00): audit clean, unsigned. The packaged
+AppImage passed tools/package/local_install_test.sh 69/69 (run rc3-a: install, cancel, crash recovery with default.xex picked
+directly, start, Vulkan menu scenario, repair, updates, rollback, uninstall; retail folder and a synthetic ISO of it, each
+refused alone and installed with the unencrypted default.xex). Not published: automatic retail decryption is blocked by
+docs/RETAIL_FILES.md (no permission, no lawyer's opinion); the build is keyless. Publishing a keyless rc.3 needs the
+player's decision, and signing needs the player's key. The synthetic ISO is not a real disc dump.
 
 ## Mandate (2026-10-30, the player's "FINAL OVERRIDE")
 Work autonomously through the feature-completion roadmap below without stopping between features. After each

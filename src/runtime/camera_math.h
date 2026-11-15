@@ -28,7 +28,11 @@ constexpr double kMouseStepDegrees = 0.025, kMouseMaxDegrees = 1.5;   // degrees
 constexpr double kStickStepDegrees = 15.0, kStickMaxDegrees = 600.0;  // degrees per second at full deflection
 double MouseRadiansPerCount(int level);
 double StickRadiansPerSecond(int level);  // yaw at full deflection
-constexpr double kStickPitchRatio = 0.65; // vertical speed relative to horizontal (stick)
+constexpr double kStickPitchRatio = 0.65; // the default vertical speed relative to horizontal (stick)
+// M15B, optional: the stick's camera speed while it stays at full deflection, 1 at first and up to kStickBoostMax after
+// kStickBoostSeconds of holding (real time, so the same at any frame rate). Below kStickBoostMin the hold starts over.
+constexpr double kStickBoostMin = 0.9, kStickBoostMax = 1.5, kStickBoostSeconds = 0.5;
+double StickBoost(double held_seconds);
 
 // The vertical view angle as an orbit around the pivot, applied after the game has placed the camera (and turned
 // it horizontally). The pivot is the game's own camera target on the character (its upper body).

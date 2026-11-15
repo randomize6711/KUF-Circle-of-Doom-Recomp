@@ -1,0 +1,310 @@
+Build the SDK for Windows x64 with llvm-mingw (Clang, libc++, MinGW-w64 UCRT) as well as clang-cl (kuf-cod-recomp M16)
+
+- Windows headers by their lower-case names (windows.h, winsock2.h, ws2tcpip.h, objbase.h, sdkddkver.h): the names
+  MinGW-w64 installs, which MSVC's case-insensitive lookup accepts too; needed when cross-building on Linux.
+- rex/chrono: the clock_time_conversion / clock_cast fallback for every libc++, not only Apple's.
+- FFmpeg under MinGW: an overlay config.h takes config_windows_x86_64.h and sets HAVE_LIBC_MSVCRT to 0, as FFmpeg's
+  own configure does for MinGW (the MSVC branch includes crtversion.h). FFmpeg itself is unchanged.
+- XInput: GetProcAddress results stored with reinterpret_cast (Clang rejects the implicit function-to-void* cast).
+- Thread names: the debugger exception needs MSVC's __try; under MinGW SetThreadDescription alone names the thread.
+- Guest imports (__imp__Name) exported from the runtime DLL explicitly under MinGW (REX_FUNC_EXPORT in rex/hook.h):
+  the MinGW linker's automatic export skips every __imp_* name. The project links rexruntime with
+  --export-all-symbols so the rest stays exported.
+- Cross builds: the generated rexglue.cmake runs REXGLUE_HOST_REXGLUE (the build machine's code generator) instead
+  of the target's rexglue program (which, on Linux with Wine registered for .exe files, would run under Wine).
+  Only when the target system differs from the build machine (a Linux sysroot build runs its own).
+
+diff --git a/include/rex/chrono/chrono.h b/include/rex/chrono/chrono.h
+index d876846..464c4f8 100644
+--- a/include/rex/chrono/chrono.h
++++ b/include/rex/chrono/chrono.h
+@@ -116,8 +116,8 @@ using XSystemClock = detail::NtSystemClock<detail::Domain::Guest>;
+ 
+ namespace std::chrono {
+ 
+-#ifdef __APPLE__
+-// Apple libc++ does not expose clock_time_conversion or clock_cast.
++#if defined(__APPLE__) || defined(_LIBCPP_VERSION)
++// libc++ (Apple's, and LLVM's as in llvm-mingw) does not expose clock_time_conversion or clock_cast.
+ template <class, class>
+ struct clock_time_conversion {};
+ 
+diff --git a/include/rex/hook.h b/include/rex/hook.h
+index 4ce4f9b..e0563ed 100644
+--- a/include/rex/hook.h
++++ b/include/rex/hook.h
+@@ -28,41 +28,50 @@
+ // Hook Macros
+ //=============================================================================
+ 
++// MinGW-w64 (llvm-mingw): the linker's automatic DLL export leaves out every symbol named __imp_*, which is how guest
++// imports are named (__imp__XGetLanguage), so they are exported explicitly. (The library is linked with
++// --export-all-symbols so that the rest is still exported.)
++#if defined(__MINGW32__)
++#define REX_FUNC_EXPORT __attribute__((dllexport))
++#else
++#define REX_FUNC_EXPORT
++#endif
++
+ // Hook a recompiled function with an auto-marshaled native C++ function.
+ // The native function uses plain types (u32, mapped_u32, etc.) and
+ // HostToGuestFunction handles register translation automatically.
+ #ifdef REXGLUE_ENABLE_PROFILING
+ #include <tracy/Tracy.hpp>
+ #define REX_HOOK(subroutine, function)                           \
+-  extern "C" REX_FUNC(subroutine) {                              \
++  extern "C" REX_FUNC_EXPORT REX_FUNC(subroutine) {                              \
+     ZoneNamedN(___tracy_hook_zone, #subroutine, TracyIsStarted); \
+     rex::ppc::HostToGuestFunction<function>(ctx, base);          \
+   }
+ #else
+ #define REX_HOOK(subroutine, function)                  \
+-  extern "C" REX_FUNC(subroutine) {                     \
++  extern "C" REX_FUNC_EXPORT REX_FUNC(subroutine) {                     \
+     rex::ppc::HostToGuestFunction<function>(ctx, base); \
+   }
+ #endif
+ 
+ // Define a raw hook with direct ctx/base access.
+-#define REX_HOOK_RAW(name) extern "C" REX_FUNC(name)
++#define REX_HOOK_RAW(name) extern "C" REX_FUNC_EXPORT REX_FUNC(name)
+ 
+ // Stub: logs a warning when called.
+ #define REX_STUB(subroutine)              \
+-  extern "C" REX_FUNC(subroutine) {       \
++  extern "C" REX_FUNC_EXPORT REX_FUNC(subroutine) {       \
+     (void)base;                           \
+     REXKRNL_WARN("{} STUB", #subroutine); \
+   }
+ 
+ #define REX_STUB_LOG(subroutine, msg)               \
+-  extern "C" REX_FUNC(subroutine) {                 \
++  extern "C" REX_FUNC_EXPORT REX_FUNC(subroutine) {                 \
+     (void)base;                                     \
+     REXKRNL_WARN("{} STUB - {}", #subroutine, msg); \
+   }
+ 
+ #define REX_STUB_RETURN(subroutine, value)                                                \
+-  extern "C" REX_FUNC(subroutine) {                                                       \
++  extern "C" REX_FUNC_EXPORT REX_FUNC(subroutine) {                                                       \
+     (void)base;                                                                           \
+     REXKRNL_WARN("{} STUB - returning {:#x}", #subroutine, static_cast<uint32_t>(value)); \
+     ctx.r3.u64 = (value);                                                                 \
+diff --git a/resources/templates/codegen/pch_h.inja b/resources/templates/codegen/pch_h.inja
+index 68274d2..1bd363c 100644
+--- a/resources/templates/codegen/pch_h.inja
++++ b/resources/templates/codegen/pch_h.inja
+@@ -266,18 +266,24 @@ extern PPCFuncMapping PPCFuncMappings[];
+ // Setjmp/Longjmp
+ //=============================================================================
+ 
+-inline std::unordered_map<u32, jmp_buf>& get_jmp_buf_map() {
+-  static thread_local std::unordered_map<u32, jmp_buf> map;
++// A jmp_buf in its own 16-byte aligned struct: Windows x64 setjmp saves the XMM registers with aligned stores, and as
++// an unordered_map value a bare jmp_buf (an array of a type aligned by typedef) is only 8-byte aligned under libc++.
++struct alignas(16) PPCJmpBuf {
++  jmp_buf buf;
++};
++
++inline std::unordered_map<u32, PPCJmpBuf>& get_jmp_buf_map() {
++  static thread_local std::unordered_map<u32, PPCJmpBuf> map;
+   return map;
+ }
+ 
+-#define ppc_setjmp(guest_buf_addr) (setjmp(::get_jmp_buf_map()[(guest_buf_addr)]))
++#define ppc_setjmp(guest_buf_addr) (setjmp(::get_jmp_buf_map()[(guest_buf_addr)].buf))
+ 
+ [[noreturn]] inline void ppc_longjmp(u32 guest_buf_addr, int val) {
+   auto& map = get_jmp_buf_map();
+   auto it = map.find(guest_buf_addr);
+   if (it != map.end()) {
+-    longjmp(it->second, val);
++    longjmp(it->second.buf, val);
+   }
+   std::abort();
+ }
+diff --git a/resources/templates/init/rexglue_cmake.inja b/resources/templates/init/rexglue_cmake.inja
+index f39557b..a2edb36 100644
+--- a/resources/templates/init/rexglue_cmake.inja
++++ b/resources/templates/init/rexglue_cmake.inja
+@@ -114,10 +114,22 @@ endmacro()
+ # codegen, including one a project assembles itself rather than taking the
+ # library rexglue_setup_target() builds. The stamp comes first: the DEPFILE
+ # names it.
++#
++# A cross build (for example Windows from Linux) runs the build machine's code
++# generator, never the target's program: REXGLUE_HOST_REXGLUE names it. The
++# output is plain C++, the same on every system.
++if(CMAKE_CROSSCOMPILING AND NOT CMAKE_SYSTEM_NAME STREQUAL CMAKE_HOST_SYSTEM_NAME)
++    if(NOT REXGLUE_HOST_REXGLUE OR NOT EXISTS "{{ cmake_var("REXGLUE_HOST_REXGLUE") }}")
++        message(FATAL_ERROR "A cross build needs -DREXGLUE_HOST_REXGLUE=<a native build>/bin/rexglue")
++    endif()
++    set(_rexglue_codegen_tool "{{ cmake_var("REXGLUE_HOST_REXGLUE") }}")
++else()
++    set(_rexglue_codegen_tool $<TARGET_FILE:rex::rexglue>)
++endif()
+ add_custom_command(
+     OUTPUT "{{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}/{{ entrypoint_out_dir }}/codegen.build.stamp"
+            {{ cmake_var("REXGLUE_ENTRYPOINT_GENERATED_SOURCES") }}
+-    COMMAND $<TARGET_FILE:rex::rexglue> codegen {{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}/{{ names.snake_case }}_manifest.toml
++    COMMAND {{ cmake_var("_rexglue_codegen_tool") }} codegen {{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}/{{ names.snake_case }}_manifest.toml
+     DEPFILE "{{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}/{{ entrypoint_out_dir }}/codegen.d"
+     WORKING_DIRECTORY {{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}
+     COMMENT "Generating recompiled code for {{ names.snake_case }}"
+diff --git a/src/core/fiber_win32.cpp b/src/core/fiber_win32.cpp
+index 5744a90..60d02b6 100644
+--- a/src/core/fiber_win32.cpp
++++ b/src/core/fiber_win32.cpp
+@@ -11,7 +11,7 @@
+ 
+ #include <rex/platform.h>
+ #if REX_PLATFORM_WIN32
+-#include <Windows.h>
++#include <windows.h>
+ #include <rex/thread/fiber.h>
+ 
+ #include <cassert>
+diff --git a/src/core/platform_win.h b/src/core/platform_win.h
+index 22d6566..e39ff02 100644
+--- a/src/core/platform_win.h
++++ b/src/core/platform_win.h
+@@ -24,8 +24,8 @@
+ #include <windows.h>
+ #include <windowsx.h>
+ 
+-#include <ObjBase.h>
+-#include <SDKDDKVer.h>
++#include <objbase.h>
++#include <sdkddkver.h>
+ #include <bcrypt.h>
+ #include <dwmapi.h>
+ #include <shellapi.h>
+diff --git a/src/core/socket_win.cpp b/src/core/socket_win.cpp
+index 87f1960..65c2d86 100644
+--- a/src/core/socket_win.cpp
++++ b/src/core/socket_win.cpp
+@@ -5,7 +5,7 @@ static_assert(REX_PLATFORM_WIN32, "This file is Windows-only");
+ 
+ #include "platform_win.h"
+ 
+-#include <WinSock2.h>
++#include <winsock2.h>
+ 
+ namespace rex::net {
+ 
+diff --git a/src/core/threading_win.cpp b/src/core/threading_win.cpp
+index 896dfec..74358f3 100644
+--- a/src/core/threading_win.cpp
++++ b/src/core/threading_win.cpp
+@@ -56,11 +56,15 @@ void raise_thread_name_exception(HANDLE thread, const std::string& name) {
+   info.szName = name.c_str();
+   info.dwThreadID = ::GetThreadId(thread);
+   info.dwFlags = 0;
++#if defined(_MSC_VER)
+   __try {
+     RaiseException(0x406D1388, 0, sizeof(info) / sizeof(ULONG_PTR),
+                    reinterpret_cast<ULONG_PTR*>(&info));
+   } __except (EXCEPTION_EXECUTE_HANDLER) {  // NOLINT
+   }
++#else
++  (void)info;  // MinGW: no structured exception handling; SetThreadDescription names the thread instead
++#endif
+ }
+ 
+ static void set_thread_name_impl(HANDLE thread, const std::string_view name) {
+diff --git a/src/input/xinput/xinput_input_driver.cpp b/src/input/xinput/xinput_input_driver.cpp
+index a6a1da9..45c242a 100644
+--- a/src/input/xinput/xinput_input_driver.cpp
++++ b/src/input/xinput/xinput_input_driver.cpp
+@@ -115,12 +115,12 @@ X_STATUS XinputInputDriver::Setup() {
+   }
+ 
+   module_ = module;
+-  XInputGetCapabilities_ = xigc;
+-  XInputGetState_ = xigs;
+-  XInputGetStateEx_ = xigsEx;
+-  XInputGetKeystroke_ = xigk;
+-  XInputSetState_ = xiss;
+-  XInputEnable_ = xie;
++  XInputGetCapabilities_ = reinterpret_cast<void*>(xigc);
++  XInputGetState_ = reinterpret_cast<void*>(xigs);
++  XInputGetStateEx_ = reinterpret_cast<void*>(xigsEx);
++  XInputGetKeystroke_ = reinterpret_cast<void*>(xigk);
++  XInputSetState_ = reinterpret_cast<void*>(xiss);
++  XInputEnable_ = reinterpret_cast<void*>(xie);
+ 
+   return X_STATUS_SUCCESS;
+ }
+diff --git a/src/system/xsocket.cpp b/src/system/xsocket.cpp
+index 2d13ac8..c1c68d2 100644
+--- a/src/system/xsocket.cpp
++++ b/src/system/xsocket.cpp
+@@ -21,9 +21,9 @@
+ 
+ // Standard socket types used by Xbox API emulation
+ #if REX_PLATFORM_WIN32
+-#include <WinSock2.h>
++#include <winsock2.h>
+ 
+-#include <WS2tcpip.h>
++#include <ws2tcpip.h>
+ #else
+ #include <arpa/inet.h>
+ #include <netinet/in.h>
+diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
+index f102b56..9a7c9a7 100644
+--- a/thirdparty/CMakeLists.txt
++++ b/thirdparty/CMakeLists.txt
+@@ -125,8 +125,9 @@ target_include_directories(aes128 PUBLIC
+ target_compile_options(aes128 PRIVATE -w)
+ 
+ # libmspack - LZX decompression (only lzxd.c needed for XEX decompression)
+-# Uses cabextract version which has all needed headers in one place
+-set(MSPACK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libmspack/cabextract/mspack")
++# The library's own sources (cabextract/mspack holds symlinks to them, which Git for Windows checks out as text files
++# unless symlinks are enabled; the files are the same)
++set(MSPACK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libmspack/libmspack/mspack")
+ add_library(mspack STATIC
+     ${MSPACK_DIR}/lzxd.c
+ )
+@@ -427,6 +428,20 @@ configure_file(
+   COPYONLY
+ )
+ 
++# MinGW-w64 (llvm-mingw): the Windows configuration assumes MSVC's C runtime (HAVE_LIBC_MSVCRT, crtversion.h). An
++# overlay config.h, found before FFmpeg's own, takes the Windows configuration and turns that off, as FFmpeg's
++# configure does for MinGW (kuf-cod-recomp patch).
++set(FFMPEG_MINGW_CONFIG_DIR "")
++if(MINGW)
++  set(FFMPEG_MINGW_CONFIG_DIR "${FFMPEG_OVERLAY_BUILD_DIR}/mingw-config")
++  file(MAKE_DIRECTORY "${FFMPEG_MINGW_CONFIG_DIR}")
++  file(WRITE "${FFMPEG_MINGW_CONFIG_DIR}/config.h.new"
++       "/* Generated by thirdparty/CMakeLists.txt for MinGW-w64. */\n"
++       "#include \"config_windows_x86_64.h\"\n"
++       "#undef HAVE_LIBC_MSVCRT\n#define HAVE_LIBC_MSVCRT 0\n")
++  configure_file("${FFMPEG_MINGW_CONFIG_DIR}/config.h.new" "${FFMPEG_MINGW_CONFIG_DIR}/config.h" COPYONLY)
++endif()
++
+ # Common defines for both libraries
+ set(FFMPEG_COMMON_DEFINES
+     HAVE_AV_CONFIG_H
+@@ -553,6 +568,9 @@ if(IS_ARM64)
+     )
+ endif()
+ 
++if(FFMPEG_MINGW_CONFIG_DIR)
++  target_include_directories(libavutil BEFORE PRIVATE "${FFMPEG_MINGW_CONFIG_DIR}")
++endif()
+ target_include_directories(libavutil
+     PUBLIC
+         $<BUILD_INTERFACE:${FFMPEG_DIR}>
+@@ -681,6 +699,9 @@ if(IS_ARM64)
+ endif()
+ 
+ target_include_directories(libavcodec BEFORE PRIVATE "${FFMPEG_OVERLAY_BUILD_DIR}")
++if(FFMPEG_MINGW_CONFIG_DIR)
++  target_include_directories(libavcodec BEFORE PRIVATE "${FFMPEG_MINGW_CONFIG_DIR}")
++endif()
+ 
+ target_include_directories(libavcodec
+     PUBLIC

@@ -21,6 +21,9 @@ The player's current installation (`~/Games/Kingdom Under Fire - Circle of Doom`
 and an updater without manifests: it updates only after one repair or reinstall with the v0.7.0 setup (section 3,
 "Bootstrap"); saves, settings and the game-file copy are kept.
 
+Windows (M17G): the portable ZIP is also the Windows update package, with its own signed update manifest:
+docs/UPDATES_WINDOWS.md "Publishing a Windows release".
+
 ## 1. What a release is
 
 A GitHub release `vX.Y.Z` (a Git tag alone, or a commit on `main`, is **not** an update) with four assets:

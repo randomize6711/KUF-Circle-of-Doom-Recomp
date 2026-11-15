@@ -395,6 +395,24 @@ TEST_CASE("image controls are cloned under a control, in place or placed anew, w
   CHECK(AddImageClones(data, 0x00F00000, {{0xF05001, 0xF05082}}, 0, &error));  // added last
 }
 
+TEST_CASE("controls of a scene get new places and widths; a missing one leaves the layout alone") {
+  const std::vector<Control> controls = {{5, 0xF05001, 100, 50}, {1, 0xF01001, 500, 60}};
+  const auto data = Build({{0x00F00000, controls}});
+  std::string error;
+  const auto out = PlaceControls(data, 0x00F00000, {{0xF05001, kKeepBox, 250}, {0xF01001, 320}}, &error);
+  REQUIRE(out);
+  const auto layout = Parse(*out, &error);
+  REQUIRE(layout);
+  const Scene& scene = layout->scenes[0];
+  CHECK(scene.placements[0].x == 100);
+  CHECK(Get32(scene.controls[0].bytes, 8) == 250);
+  CHECK(scene.placements[1].x == 320);
+  CHECK(scene.placements[1].y == 60);
+  CHECK(Get32(scene.controls[1].bytes, 8) == 100);  // kept
+  CHECK_FALSE(PlaceControls(data, 0x00F00000, {{0xF05999, 1, 1}}, &error));
+  CHECK_FALSE(PlaceControls(data, 0x00100000, {{0xF05001, 1, 1}}, &error));
+}
+
 TEST_CASE("the game type screen gets fixed label and value columns on its rows' lines (multiplayer menus)") {
   // The screen as UiStartGame.uitb has it: six row buttons (row 0 set in), their twins, the description line.
   const std::vector<Control> controls = {

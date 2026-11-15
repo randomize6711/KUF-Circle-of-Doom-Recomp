@@ -71,6 +71,7 @@ REXCVAR_DECLARE(bool, kuf_trace_menu_pointer);
 REXCVAR_DEFINE_BOOL(kuf_storage_row, false, "KUF/Settings",
                     "M7 UX fix 5: show the console's Change Storage Device row in the title SETTINGS (the PC port saves "
                     "in its own folder; false: the row is moved off screen and PC Settings takes its place)");
+REXCVAR_DECLARE(bool, kuf_title_menu_rows);
 REXCVAR_DEFINE_BOOL(kuf_descriptions, true, "KUF/Settings",
                     "M7: the description of the selected row on the PC Settings pages");
 REXCVAR_DEFINE_BOOL(kuf_settings_compact_rows, true, "KUF/Settings",
@@ -125,7 +126,6 @@ struct Spec {
   uint32_t slider_tracks[4];
   uint32_t description_id;   // M7 UX fix 4: the description text (a clone of the help line, kDescriptionText)
   uint32_t description_source;  // the help line cloned for it
-  int32_t help_y;            // the button help line's top in the layout (the description ends above it)
 };
 
 const Spec kInGame = {"in-game Settings", "\\uiprofileoption.uitb", 44, 64, 164, 60, 128, 152, 156, 160,
@@ -133,13 +133,13 @@ const Spec kInGame = {"in-game Settings", "\\uiprofileoption.uitb", 44, 64, 164,
                       7, false, 0x2704001,
                       {0x270500A, 0x2705010, 0x2705016, 0x270502E, 0x270501C, 0x2705037, 0x270503D, 0x2705045, 0,
                        0x2705080},
-                      {0x2705022, 0x2705025, 0x2705028, 0x2705034}, 0x2704080, 0x2704001, 563};
+                      {0x2705022, 0x2705025, 0x2705028, 0x2705034}, 0x2704080, 0x2704001};
 const Spec kTitle = {"title SETTINGS", "\\uititle.uitb", 44, 160, 268, 156, 228, 252, 256, 260,
                      {280, 276, 284, 288}, 196, 212, sub_82676C38, sub_82676AB8, sub_82676B98, kuf::ui::kTitlePcRowButton,
                      8, true, 0,
                      {0x410500A, 0x4105010, 0x4105016, 0x410502B, 0x410501C, 0x4105034, 0x410503A, 0x410504B, 0x4105043,
                       0x4105080},
-                     {0x4105022, 0x4105025, 0x4105028, 0x4105031}, 0x4104080, 0x4104002, 634};
+                     {0x4105022, 0x4105025, 0x4105028, 0x4105031}, 0x4104080, 0x4104002};
 
 // The title SETTINGS' version line (M7): a copy of its button help line (right-aligned, the same font, smaller), just
 // above it in the panel's bottom-right corner; the descriptions end above it.
@@ -147,11 +147,69 @@ constexpr uint32_t kVersionText = 0x4104082;
 constexpr int32_t kVersionY = 610, kVersionHeight = 24;
 // The scrollbar's track and thumb (layout copies; +1 the thumb).
 constexpr uint32_t ScrollTrackId(const Spec& spec) { return (spec.slider_tracks[0] & 0xFFFFF000) | 0x090; }
+// M15A: the descriptions' column right of the rows, its backdrop a copy of a row's dark frame (the panel's logo and the
+// scene behind stay out of the text). The rows and their widgets are narrowed for it in the layout (ColumnBoxes), the
+// sliders follow (the game takes a slider's full width from its bar when the menu binds).
+constexpr uint32_t DescriptionBackdropId(const Spec& spec) { return (spec.slider_tracks[0] & 0xFFFFF000) | 0x092; }
+struct Columns {
+  int32_t widget_x, widget_w;       // the sliders' tracks, the toggles and the selector
+  int32_t frame_x;                  // the row frame's middle piece starts here
+  int32_t frame_right;              // the row frame's right edge (its right piece is 8 wide)
+  int32_t box_x, box_y, box_w, box_h;  // the description's backdrop
+  int32_t panel_grow;               // how much wider the panel is
+};
+constexpr Columns kTitleColumns = {470, 320, 183, 803, 836, 128, 348, 474, 0};
+constexpr Columns kInGameColumns = {755, 200, 468, 968, 996, 134, 238, 424, 50};
+constexpr int32_t kDescriptionMargin = 10;  // the text inside its backdrop
+// The text's size: smaller than the rows' so that a description fits the column in few lines.
+constexpr char kDescriptionStyle[] = "@(offsety=-2)@(scale=0.8,0.8)";
+// The layout's changes for the two columns: each row's frame ends at frame_right, the widgets fit widget_w, the panel
+// grows by panel_grow (in game: to the right, where nothing else is).
+std::vector<kuf::ui::ControlBox> ColumnBoxes(const Spec& spec, const Columns& col, bool title) {
+  std::vector<kuf::ui::ControlBox> boxes;
+  const int32_t frame_w = col.frame_right - 8 - col.frame_x;
+  for (const uint32_t frame : spec.row_frames) {
+    if (!frame) continue;
+    boxes.push_back({frame + 1, kuf::ui::kKeepBox, frame_w});
+    boxes.push_back({frame + 2, col.frame_right - 8, kuf::ui::kKeepBox});
+  }
+  for (const uint32_t track : spec.slider_tracks) {
+    boxes.push_back({track, col.widget_x, col.widget_w});
+    boxes.push_back({track + 1, col.widget_x + 2, col.widget_w - 4});
+  }
+  const int32_t half = (col.widget_w - 4) / 2;
+  // The toggles' two halves and the selector (its text between its two arrows, 15 wide), from the layouts' IDs.
+  const uint32_t scene = spec.description_id & 0xFFF00000;
+  const uint32_t toggles[3][2] = {
+      {scene | 0x1009, scene | 0x100A},
+      {scene | 0x100B, scene | 0x100C},
+      {title ? (scene | 0x100F) : (scene | 0x100E), title ? (scene | 0x1010) : (scene | 0x100F)},
+  };
+  for (const auto& pair : toggles) {
+    boxes.push_back({pair[0], col.widget_x, half});
+    boxes.push_back({pair[1], col.widget_x + half + 4, half});
+  }
+  const uint32_t selector_text = title ? 0x4104003 : 0x2704002;
+  const uint32_t arrow_left = title ? 0x4105049 : 0x2705043, arrow_right = title ? 0x410504A : 0x2705044;
+  boxes.push_back({selector_text, col.widget_x + 19, col.widget_w - 38});
+  boxes.push_back({arrow_left, col.widget_x, kuf::ui::kKeepBox});
+  boxes.push_back({arrow_right, col.widget_x + col.widget_w - 15, kuf::ui::kKeepBox});
+  if (title) {  // the wide Restore Defaults row: its label button and its state images
+    boxes.push_back({kuf::ui::kTitlePcRowButton, kuf::ui::kKeepBox, col.frame_right - 176 - 2});
+    boxes.push_back({spec.row_frames[9] + 4, kuf::ui::kKeepBox, col.frame_right - 8 - 181});
+    boxes.push_back({spec.row_frames[9] + 5, col.frame_right - 8, kuf::ui::kKeepBox});
+  }
+  if (col.panel_grow) {  // nine images from the scene's first: its top, centre and bottom rows, right column moved
+    const uint32_t panel = scene | 0x5001;
+    for (const uint32_t row : {0u, 3u, 6u}) {
+      boxes.push_back({panel + row + 1, kuf::ui::kKeepBox, 740 + col.panel_grow});
+      boxes.push_back({panel + row + 2, 1184 + col.panel_grow, kuf::ui::kKeepBox});
+    }
+    boxes.push_back({spec.help_text_id, kuf::ui::kKeepBox, 737 + col.panel_grow});
+  }
+  return boxes;
+}
 constexpr uint32_t kLabelText = 0xFF00;  // not in the game's text tables (they end at 1910)
-constexpr int32_t kDescriptionGap = 8;      // between the list (above) and the button help (below) and the description
-constexpr int32_t kDescriptionIndent = 12;  // the description's left margin from the rows' labels
-constexpr uint32_t kSetRect = 0x82624018;  // the toolkit's base SetRect (control, x, y, width, height)
-constexpr uint32_t kDescriptionFont = 35;  // the small left-aligned font of the Controls page's second lines
 constexpr uint32_t kTitleSceneId = 0x04100000;  // SN_TITLE_OPTION
 constexpr int32_t kExtraSelected = 100;  // ShowRowsFor: the Restore Defaults row (the PC Settings row) is selected
 constexpr int32_t kOffScreen = 4000;            // a placement this far down is never drawn or under the pointer
@@ -180,12 +238,13 @@ using kuf::pc::CameraSettings;
 // (Audio), Brightness (Graphics), Camera Normal / Inverted and Vibration (Controller), Skin and Blood (Gameplay); the
 // game saves them as before when Settings closes.
 enum class Page : int { kCategories, kDisplay, kCamera, kAudio, kMouseKeys, kController, kGameplay, kKeys,
-                        kButtons };
+                        kButtons, kSticks };
 // A slider (slots 0-3), the value in the label (the widget hidden), the game's own row, or a row opening a page.
 enum class Kind { kSlider, kLabel, kGame, kLink };
 // What a row shows (the PC settings; kGameRow: the game's own option of its slot).
 enum class Item { kNone, kMouseH, kMouseV, kMouseY, kStickSens, kDeadzone, kPrompts, kDistance, kFov, kVRange,
-                  kRecenter, kModern, kLinkKeys, kLinkButtons, kGameRow };
+                  kRecenter, kModern, kLinkKeys, kLinkButtons, kGameRow, kLowLatency, kStickVertical, kMoveDeadzone,
+                  kStickAccel, kVibration, kLinkSticks };
 struct RowDef {
   uint32_t slot;
   Kind kind;
@@ -203,18 +262,23 @@ constexpr Page kCategoryPages[] = {Page::kDisplay,   Page::kCamera,     Page::kA
 // modern camera (values in the labels).
 constexpr RowDef kCameraRows[] = {{0, Kind::kSlider, Item::kDistance}, {1, Kind::kSlider, Item::kFov},
                                   {2, Kind::kLabel, Item::kVRange},    {3, Kind::kLabel, Item::kRecenter},
-                                  {4, Kind::kLabel, Item::kModern}};
+                                  {4, Kind::kLabel, Item::kModern},    {5, Kind::kLabel, Item::kLowLatency}};
 // Audio: the game's SFX, Music and Voice volumes.
 constexpr RowDef kAudioRows[] = {{0, Kind::kGame, Item::kGameRow}, {1, Kind::kGame, Item::kGameRow},
                                  {2, Kind::kGame, Item::kGameRow}};
 // Mouse & Keyboard: the mouse's sensitivities (sliders), its Y axis, the Key Bindings page.
 constexpr RowDef kMouseKeysRows[] = {{0, Kind::kSlider, Item::kMouseH}, {1, Kind::kSlider, Item::kMouseV},
                                      {2, Kind::kLabel, Item::kMouseY}, {3, Kind::kLink, Item::kLinkKeys}};
-// Controller: the stick's sensitivity and dead zone (sliders), the Controller Buttons page, the game's Camera
-// (vertical axis, slot 5) and Vibration (slot 7).
-constexpr RowDef kControllerRows[] = {{0, Kind::kSlider, Item::kStickSens}, {1, Kind::kSlider, Item::kDeadzone},
-                                      {2, Kind::kLink, Item::kLinkButtons}, {5, Kind::kGame, Item::kGameRow},
-                                      {7, Kind::kGame, Item::kGameRow}};
+// Controller: the Stick Settings and Controller Buttons pages, the game's Camera (vertical axis, slot 5) and Vibration
+// (slot 7), the vibration's strength. (M15B: the sticks' rows on a page of their own: eight rows would not hold them.)
+constexpr RowDef kControllerRows[] = {{0, Kind::kLink, Item::kLinkSticks}, {2, Kind::kLink, Item::kLinkButtons},
+                                      {5, Kind::kGame, Item::kGameRow},    {7, Kind::kGame, Item::kGameRow},
+                                      {1, Kind::kLabel, Item::kVibration}};
+// Stick Settings: the camera's speeds and dead zone (the right stick), the left stick's dead zone (sliders), the
+// optional acceleration.
+constexpr RowDef kSticksRows[] = {{0, Kind::kSlider, Item::kStickSens}, {1, Kind::kSlider, Item::kStickVertical},
+                                  {2, Kind::kSlider, Item::kDeadzone},  {3, Kind::kSlider, Item::kMoveDeadzone},
+                                  {4, Kind::kLabel, Item::kStickAccel}};
 // Gameplay: the button prompts, the game's Skin (slot 4) and Blood (slot 6).
 constexpr RowDef kGameplayRows[] = {{0, Kind::kLabel, Item::kPrompts}, {4, Kind::kGame, Item::kGameRow},
                                     {6, Kind::kGame, Item::kGameRow}};
@@ -288,6 +352,7 @@ std::span<const RowDef> RowsOf(Page page) {
     case Page::kAudio: return kAudioRows;
     case Page::kMouseKeys: return kMouseKeysRows;
     case Page::kController: return kControllerRows;
+    case Page::kSticks: return kSticksRows;
     case Page::kGameplay: return kGameplayRows;
     default: return kListRows;  // Display, Key Bindings, Controller Buttons
   }
@@ -311,13 +376,16 @@ const char* PageName(Page page) {
     case Page::kController: return "controller";
     case Page::kGameplay: return "gameplay";
     case Page::kKeys: return "key bindings";
+    case Page::kSticks: return "stick settings";
     default: return "controller buttons";
   }
 }
 
 // The page a page's Back returns to, and the row selected there.
 Page ParentOf(Page page) {
-  return page == Page::kKeys ? Page::kMouseKeys : page == Page::kButtons ? Page::kController : Page::kCategories;
+  return page == Page::kKeys                                ? Page::kMouseKeys
+         : page == Page::kButtons || page == Page::kSticks ? Page::kController
+                                                            : Page::kCategories;
 }
 uint32_t RowIn(Page page, Page child) {
   if (page == Page::kCategories) {
@@ -329,7 +397,8 @@ uint32_t RowIn(Page page, Page child) {
   const auto rows = RowsOf(page);
   for (uint32_t r = 0; r < rows.size(); ++r) {
     if ((rows[r].item == Item::kLinkKeys && child == Page::kKeys) ||
-        (rows[r].item == Item::kLinkButtons && child == Page::kButtons)) {
+        (rows[r].item == Item::kLinkButtons && child == Page::kButtons) ||
+        (rows[r].item == Item::kLinkSticks && child == Page::kSticks)) {
       return r;
     }
   }
@@ -373,7 +442,7 @@ std::atomic<uint64_t> g_confirm_timed_out{0};
 
 uint32_t g_label = 0;    // guest copy of kLabel
 uint32_t g_scratch = 0;  // guest buffer for strings handed to the game's set-text (it copies them)
-constexpr uint32_t kScratchSize = 256;
+constexpr uint32_t kScratchSize = 1024;
 MenuState g_state[2];  // in-game, title
 uint32_t g_ingame_menu = 0;  // the in-game options menu object seen last (BeforeSettingsEvent)
 
@@ -491,16 +560,30 @@ REX_HOOK_RAW(sub_82190C60) {  // read a whole file: (path, &buffer, &size) -> 0 
       REXLOG_WARN("[kuf-pc-menu] {}: no scrollbar: {}", menu, why);
     }
   }
-  if (REXCVAR_GET(kuf_descriptions)) {  // M7 UX fix 4: the description text (placed per page, UpdateDescription)
+  // M15A: the descriptions' column right of the rows, where the category pages run (the developer flag
+  // --kuf_title_menu_rows=false leaves the title on the game's own page, as it is).
+  if (REXCVAR_GET(kuf_descriptions) && (in_game || REXCVAR_GET(kuf_title_menu_rows))) {
     const Spec& spec = in_game ? kInGame : kTitle;
+    const Columns& col = in_game ? kInGameColumns : kTitleColumns;
+    const uint32_t scene_id = spec.description_id & 0xFFF00000;
     std::string why;
-    auto with = kuf::ui::AddTextClone(*extended, spec.description_id & 0xFFF00000, spec.description_source,
-                                      spec.description_id, 480, 150, 600, 300,
-                                      uint32_t(REXCVAR_GET(kuf_description_font)), &why);
+    auto with = kuf::ui::PlaceControls(*extended, scene_id, ColumnBoxes(spec, col, title), &why);
+    if (with) {
+      with = kuf::ui::AddImageClones(*with, scene_id,
+                                     {{spec.row_frames[0] + 1, DescriptionBackdropId(spec), true, col.box_x, col.box_y,
+                                       col.box_w, col.box_h}},
+                                     0, &why);
+    }
+    if (with) {
+      with = kuf::ui::AddTextClone(*with, scene_id, spec.description_source, spec.description_id,
+                                   col.box_x + kDescriptionMargin, col.box_y + kDescriptionMargin,
+                                   col.box_w - 2 * kDescriptionMargin, col.box_h - 2 * kDescriptionMargin,
+                                   uint32_t(REXCVAR_GET(kuf_description_font)), &why);
+    }
     if (with) {
       extended = std::move(with);
     } else {
-      REXLOG_WARN("[kuf-pc-menu] {}: no description text: {}", menu, why);
+      REXLOG_WARN("[kuf-pc-menu] {}: no description column: {}", menu, why);
     }
   }
   if (title) {  // M7: the version line (EnterPcPage sets its text)
@@ -587,6 +670,9 @@ void SetText(PPCContext& ctx, uint8_t* base, uint32_t control, std::string_view 
     return;
   }
   const size_t n = std::min<size_t>(text.size(), kScratchSize - 1);
+  if (n < text.size()) {
+    REXLOG_WARN("[kuf-pc-menu] text cut to {} of {} characters", n, text.size());
+  }
   std::memcpy(base + g_scratch, text.data(), n);
   base[g_scratch + n] = 0;
   Call(ctx, base, sub_82624CB8, control, g_scratch, 0);
@@ -632,7 +718,7 @@ constexpr const char* kCategoryText[] = {
     "The modern camera: distance, field of view, vertical range and recentering, or the original console camera.",
     "Sound effects, music and voice volumes.",
     "Mouse sensitivity and vertical axis, and the keyboard and mouse keys for each gameplay action.",
-    "Stick sensitivity and dead zone, the controller's buttons, the camera's vertical axis and vibration.",
+    "The sticks' speed and dead zones, the controller's buttons, the camera's vertical axis and vibration.",
     "Button prompts, the character's skin and blood effects.",
 };
 constexpr char kDefaultsText[] =
@@ -645,7 +731,7 @@ constexpr const char* kGameRowText[] = {
     "The volume of the music.",
     "The volume of the characters' voices.",
     "The game's brightness.",
-    "The character's skin (appearance) for this game.",
+    "The character's skin: the game's own numbered alternative appearances.",
     "The camera's vertical axis with a controller's right stick: Normal or Inverted. The mouse has its own setting "
     "under Mouse & Keyboard.",
     "Blood effects on or off.",
@@ -655,13 +741,30 @@ constexpr const char* kGameRowText[] = {
 const char* ItemText(Item item) {
   switch (item) {
     case Item::kMouseH:
-      return "How far the camera turns per mouse movement, sideways. Raw mouse input: no acceleration or smoothing.";
+      return "How far the camera turns per mouse movement, sideways. Applied directly: the game adds no acceleration "
+             "or smoothing.";
     case Item::kMouseV: return "How far the camera turns per mouse movement, up and down.";
     case Item::kMouseY: return "Inverts the mouse's vertical axis (a controller follows Camera under Controller).";
     case Item::kStickSens:
-      return "How fast the right stick turns the camera at full deflection (the vertical speed follows at 65 %).";
+      return "How fast the right stick turns the camera sideways at full deflection.";
+    case Item::kStickVertical:
+      return "The right stick's speed up and down, as a percentage of its sideways speed. 65 % is the default.";
+    case Item::kMoveDeadzone:
+      return "How far the left stick must move before the character walks. Raise it if the character creeps with the "
+             "stick released. 0 % leaves the stick as the controller reports it.";
+    case Item::kStickAccel:
+      return "On: the camera turns up to 50 % faster while the right stick is held at full deflection, building up over "
+             "half a second. Off: its speed depends only on how far the stick is pushed.";
+    case Item::kVibration:
+      return "How strong the controller's vibration is. The game's Vibration row above turns it on or off. It stops "
+             "while the game's window has no focus.";
+    case Item::kLinkSticks: return "The right stick's camera speeds and dead zone, the left stick's dead zone.";
+    case Item::kLowLatency:
+      return "On: mouse turns show at once, without the game's camera smoothing, and with FPS above 30 each frame also "
+             "shows the movement received up to that moment. Only the view changes. Off: as smoothed by the game.";
     case Item::kDeadzone:
-      return "How far a stick must move before it counts. Raise it if the camera drifts with the stick released.";
+      return "How far the right stick must move before it turns the camera. Raise it if the camera drifts with the "
+             "stick released. Applies with the modern camera.";
     case Item::kPrompts:
       return "Which button icons the game's texts show: Auto follows the device you used last; Keyboard shows the "
              "bound keys; Gamepad shows the controller's icons.";
@@ -669,7 +772,8 @@ const char* ItemText(Item item) {
     case Item::kFov:
       return "The horizontal field of view at 16:9; wider displays see more at the sides. 58 is the game's own view.";
     case Item::kVRange: return "How far the camera can look up and down from level, in degrees.";
-    case Item::kRecenter: return "Eases the view back to its usual height after a pause in camera input.";
+    case Item::kRecenter:
+      return "After a second without vertical camera input the view eases back to the game's usual height.";
     case Item::kModern:
       return "On: the PC camera (free mouse look and the settings above). Off: the original console camera, exactly "
              "as on the Xbox 360.";
@@ -756,54 +860,34 @@ struct SlotPlacement {
 };
 SlotPlacement g_placement[2];  // in-game, title
 
-// The description control: its text, and its rectangle in the right-hand column from the first row without a widget
-// on this page to the last row (hidden off the PC pages).
+struct Rect {
+  int32_t x = 0, y = 0, w = 0, h = 0;
+  bool Contains(int32_t px, int32_t py, int32_t pad_y = 0) const {
+    return w > 0 && px >= x && px < x + w && py >= y - pad_y && py < y + h + pad_y;
+  }
+};
+Rect RectOf(const uint8_t* base, uint32_t control) {
+  if (!control) return {};
+  return {int32_t(Load32(base, control + 16)), int32_t(Load32(base, control + 20)), int32_t(Load32(base, control + 24)),
+          int32_t(Load32(base, control + 28))};
+}
+
+// The description control (M15A: its place and backdrop are fixed in the layout, right of the rows): its text.
 void UpdateDescription(PPCContext& ctx, uint8_t* base, const Spec& spec, const MenuState& g, uint32_t scene) {
   const uint32_t text = spec.description_id ? Find(ctx, base, scene, spec.description_id) : 0;
   if (!text || !g.menu) return;
+  const uint32_t backdrop = Find(ctx, base, scene, DescriptionBackdropId(spec));
   const std::string description = Describe(g);
+  if (backdrop) Show(ctx, base, backdrop, !description.empty());
   if (description.empty()) {
     Show(ctx, base, text, false);
     return;
   }
-  // UI polish: a region of its own below the list (the eighth row, or the Restore Defaults row on the category page)
-  // and above the button help, as wide as the rows: clear of every row, slider and the panel's background logo.
-  const uint32_t last_row = Row(base, spec, g.menu, kLastRow), label = Row(base, spec, g.menu, 0);
-  const uint32_t track = Find(ctx, base, scene, spec.slider_tracks[0]);
-  const uint32_t pc_button = g.pc_button;
-  if (!last_row || !label || !track) return;
-  // Below the last row's place in the layout (fixed: PlaceRows may have moved that slot up).
-  int32_t y = int32_t(Load32(base, last_row + 20) + Load32(base, last_row + 28)) -
-              g_placement[&spec == &kTitle ? 1 : 0].dy[kLastRow];
-  if (g.page == Page::kCategories && pc_button) {
-    y = std::max(y, int32_t(Load32(base, pc_button + 20) + Load32(base, pc_button + 28)));
-  }
-  y += kDescriptionGap;
-  const int32_t x = int32_t(Load32(base, label + 16)) + kDescriptionIndent;
-  const int32_t right = int32_t(Load32(base, track + 16) + Load32(base, track + 24));
-  // The button help line's top (layout); in the title, the version line's.
-  const int32_t bottom = (&spec == &kTitle ? kVersionY : spec.help_y) - kDescriptionGap / 2;
-  if (right - x < 200 || bottom - y < 16) return;
-  // The control's own SetRect (vtable slot 5: control, x, y, width, height), only when it is the toolkit's base one
-  // (sub_82624018, which the buttons' sub_82625AC8 calls first); otherwise the layout's rectangle stays.
-  const uint32_t set_rect = Load32(base, Load32(base, text) + 20);
-  static bool logged = false;
-  if (set_rect != kSetRect && !logged) {
-    logged = true;
-    REXLOG_WARN("[kuf-pc-menu] the description's SetRect is {:08X}, not the shared one: not moved", set_rect);
-  }
-  if (PPCFunc* fn = set_rect == kSetRect ? rex::runtime::ResolveIndirectFunction(set_rect) : nullptr) {
-    ctx.r3.u64 = text;
-    ctx.r4.s64 = x;
-    ctx.r5.s64 = y;
-    ctx.r6.s64 = right - x;
-    ctx.r7.s64 = bottom - y;
-    fn(ctx, base);
-  }
-  SetText(ctx, base, text, "@(offsety=-2)" + description);
+  SetText(ctx, base, text, kDescriptionStyle + description);
   Show(ctx, base, text, true);
   if (REXCVAR_GET(kuf_trace_menu_pointer)) {
-    REXLOG_INFO("[kuf-pc-menu] description ({},{} {}x{}): {}", x, y, right - x, bottom - y, description);
+    const Rect r = RectOf(base, text);
+    REXLOG_INFO("[kuf-pc-menu] description ({},{} {}x{}): {}", r.x, r.y, r.w, r.h, description);
   }
 }
 
@@ -902,17 +986,6 @@ std::array<uint32_t, 4> SlotControls(const uint8_t* base, const Spec& spec, uint
   return c;
 }
 
-struct Rect {
-  int32_t x = 0, y = 0, w = 0, h = 0;
-  bool Contains(int32_t px, int32_t py, int32_t pad_y = 0) const {
-    return w > 0 && px >= x && px < x + w && py >= y - pad_y && py < y + h + pad_y;
-  }
-};
-Rect RectOf(const uint8_t* base, uint32_t control) {
-  if (!control) return {};
-  return {int32_t(Load32(base, control + 16)), int32_t(Load32(base, control + 20)), int32_t(Load32(base, control + 24)),
-          int32_t(Load32(base, control + 28))};
-}
 
 // A control's rectangle through its own SetRect (vtable slot 5).
 void MoveTo(PPCContext& ctx, uint8_t* base, uint32_t control, const Rect& r) {
@@ -974,6 +1047,17 @@ void PlaceRows(PPCContext& ctx, uint8_t* base, const Spec& spec, uint32_t menu, 
   std::array<int32_t, kRows> dy{};
   for (uint32_t i = 0; compact && i < rows.size(); ++i) dy[rows[i].slot] = p.y[0] + int32_t(i) * pitch - p.y[rows[i].slot];
   for (uint32_t slot = 0; slot < kRows; ++slot) PlaceSlot(ctx, base, spec, menu, scene, slot, dy[slot]);
+  // The label's dark images (a frame's +3 to +5) lie on their own row only in some layout rows: others sit 15 to 45
+  // pixels off and showed as stray dark bars over the scene (M15A, seen in the in-game captures). On their frame always.
+  auto align_label_images = [&](uint32_t frame_id) {
+    const uint32_t frame = frame_id ? Find(ctx, base, scene, frame_id) : 0;
+    if (!frame) return;
+    const int32_t want = int32_t(Load32(base, frame + 20)) + 2;
+    for (uint32_t i = 3; i < 6; ++i) {
+      const uint32_t image = Find(ctx, base, scene, frame_id + i);
+      if (image) MoveControlY(ctx, base, image, want - int32_t(Load32(base, image + 20)));
+    }
+  };
   // Restore Defaults (the categories' last row, the PC row button and its frame): right below the categories.
   const int32_t extra_dy = compact && page == Page::kCategories && pc_button && p.extra_y
                                ? p.y[0] + int32_t(rows.size()) * pitch - p.extra_y
@@ -985,6 +1069,8 @@ void PlaceRows(PPCContext& ctx, uint8_t* base, const Spec& spec, uint32_t menu, 
     }
     p.extra_dy = extra_dy;
   }
+  for (uint32_t slot = 0; slot < kRows; ++slot) align_label_images(spec.row_frames[slot]);
+  align_label_images(spec.row_frames[9]);
 }
 
 // Shows what a page uses of the slots (labels, widgets, frames, slider tracks) with the game's own shown flag and hides
@@ -1370,8 +1456,14 @@ std::string ItemLabel(const MenuState& g, const kuf::pc::Settings& s, Item item)
     case Item::kMouseH: return "@(offsety=-2)Mouse Horizontal";
     case Item::kMouseV: return "@(offsety=-2)Mouse Vertical";
     case Item::kMouseY: return Clip(std::string("Mouse Y: ") + (c.invert_mouse_y ? "Inverted" : "Normal"));
-    case Item::kStickSens: return "@(offsety=-2)Stick Sensitivity";
-    case Item::kDeadzone: return "@(offsety=-2)Stick Dead Zone";
+    case Item::kStickSens: return "@(offsety=-2)Stick Horizontal";
+    case Item::kDeadzone: return "@(offsety=-2)Camera Dead Zone";
+    case Item::kMoveDeadzone: return "@(offsety=-2)Move Dead Zone";
+    case Item::kStickVertical: return "@(offsety=-2)Stick Vertical " + std::to_string(c.stick_vertical) + "%";
+    case Item::kStickAccel: return OnOff("Acceleration: ", c.stick_acceleration);
+    case Item::kVibration: return Clip("Strength: " + std::to_string(c.vibration) + "%");
+    case Item::kLowLatency: return OnOff("Low Latency: ", c.low_latency_mouse);
+    case Item::kLinkSticks: return "@(offsety=-2)Stick Settings >";
     case Item::kPrompts: return Clip(std::string("Prompts: ") + kPrompts[std::clamp(s.ui.button_prompts, 0, 2)]);
     case Item::kDistance: return "@(offsety=-2)Distance " + std::to_string(c.distance) + "%";
     case Item::kFov:  // the game's own field of view is 57.6 degrees horizontally at 16:9 (camera_math.h)
@@ -1531,6 +1623,14 @@ void DrawValue(PPCContext& ctx, uint8_t* base, const Spec& spec, uint32_t menu, 
     case Item::kDeadzone:
       DrawSlider(ctx, base, spec, menu, slot, c.stick_deadzone / double(kuf::pc::kDeadzoneMax));
       break;
+    case Item::kMoveDeadzone:
+      DrawSlider(ctx, base, spec, menu, slot, c.move_deadzone / double(kuf::pc::kDeadzoneMax));
+      break;
+    case Item::kStickVertical:
+      DrawSlider(ctx, base, spec, menu, slot,
+                 double(c.stick_vertical - kuf::pc::kStickVerticalMin) /
+                     (kuf::pc::kStickVerticalMax - kuf::pc::kStickVerticalMin));
+      break;
     case Item::kDistance:
       DrawSlider(ctx, base, spec, menu, slot,
                  double(c.distance - kuf::pc::kDistanceMin) / (kuf::pc::kDistanceMax - kuf::pc::kDistanceMin));
@@ -1632,6 +1732,22 @@ bool ChangeItem(MenuState& g, Item item, int step, bool wrap = false) {
       c.stick_deadzone =
           std::clamp(c.stick_deadzone + step * kuf::pc::kDeadzoneStep, kuf::pc::kDeadzoneMin, kuf::pc::kDeadzoneMax);
       break;
+    case Item::kMoveDeadzone:
+      c.move_deadzone =
+          std::clamp(c.move_deadzone + step * kuf::pc::kDeadzoneStep, kuf::pc::kDeadzoneMin, kuf::pc::kDeadzoneMax);
+      break;
+    case Item::kStickVertical:
+      c.stick_vertical = std::clamp(c.stick_vertical + step * kuf::pc::kStickVerticalStep, kuf::pc::kStickVerticalMin,
+                                    kuf::pc::kStickVerticalMax);
+      break;
+    case Item::kVibration: {
+      const int next = c.vibration + step * kuf::pc::kVibrationStep;
+      c.vibration = wrap && next > kuf::pc::kVibrationMax ? kuf::pc::kVibrationMin
+                                                          : std::clamp(next, kuf::pc::kVibrationMin, kuf::pc::kVibrationMax);
+      break;
+    }
+    case Item::kStickAccel: c.stick_acceleration = wrap ? !c.stick_acceleration : step < 0; break;  // Left: On, Right: Off
+    case Item::kLowLatency: c.low_latency_mouse = wrap ? !c.low_latency_mouse : step < 0; break;    // Left: On, Right: Off
     case Item::kMouseY: c.invert_mouse_y = wrap ? !c.invert_mouse_y : step > 0; break;  // Left: Normal, Right: Inverted
     case Item::kDistance:
       c.distance = std::clamp(c.distance + step * kuf::pc::kDistanceStep, kuf::pc::kDistanceMin, kuf::pc::kDistanceMax);
@@ -1911,7 +2027,10 @@ void PcPageInput(PPCContext& ctx, uint8_t* base, const Spec& spec, MenuState& g,
         forward(code);
         AfterGameInput(ctx, base, spec, g, menu, scene, pc_button);
       } else if (!list && def.kind == Kind::kLink) {
-        OpenPage(ctx, base, spec, g, menu, scene, pc_button, def.item == Item::kLinkKeys ? Page::kKeys : Page::kButtons,
+        OpenPage(ctx, base, spec, g, menu, scene, pc_button,
+                 def.item == Item::kLinkKeys     ? Page::kKeys
+                 : def.item == Item::kLinkSticks ? Page::kSticks
+                                                 : Page::kButtons,
                  0);
         Cue(ctx, base, menu, kCueSelect);
       } else if (g.page == Page::kDisplay && display_item == kRowBrightness) {
@@ -2301,6 +2420,22 @@ bool PointerSlider(PPCContext& ctx, uint8_t* base, int32_t px, int32_t py, bool 
     return true;
   }
   return PointerWidget(ctx, base, px, py, true);
+}
+
+int32_t RowPointerX(PPCContext& ctx, uint8_t* base, int32_t px, int32_t py) {
+  if (!REXCVAR_GET(kuf_pc_settings_menu) || !REXCVAR_GET(kuf_descriptions)) return px;
+  size_t index = 0;
+  const MenuState* g = FocusedSettings(base, &index);
+  if (!g || !g->pc_page || g->capturing) return px;
+  const Spec& spec = index == 0 ? kInGame : kTitle;
+  const Columns& col = index == 0 ? kInGameColumns : kTitleColumns;
+  for (const RowDef& r : RowsOf(g->page)) {
+    const Rect label = RectOf(base, Row(base, spec, g->menu, r.slot));
+    if (px >= label.x + label.w && px < col.frame_right && py >= label.y && py < label.y + label.h) {
+      return label.x + label.w / 2;
+    }
+  }
+  return px;
 }
 
 void OnTick(PPCContext& ctx, uint8_t* base) {

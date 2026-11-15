@@ -3,9 +3,15 @@
 #include <algorithm>
 #include <atomic>
 
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#else
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#endif
 
 #include "coop/coop_addr.h"
 
@@ -119,6 +125,27 @@ uint32_t CodeAddress(const std::vector<uint32_t>& local, uint32_t public_address
 
 std::vector<uint32_t> LocalAddresses() {
   std::vector<uint32_t> out;
+#if defined(_WIN32)
+  // The adapters that are up, their IPv4 unicast addresses, loopback left out (as getifaddrs below).
+  ULONG size = 16 * 1024;
+  std::vector<uint8_t> buffer;
+  ULONG rc = ERROR_BUFFER_OVERFLOW;
+  for (int tries = 0; tries < 3 && rc == ERROR_BUFFER_OVERFLOW; ++tries) {
+    buffer.resize(size);
+    rc = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                              nullptr, reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()), &size);
+  }
+  if (rc != NO_ERROR) return out;
+  for (auto* a = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()); a; a = a->Next) {
+    if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+    for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
+      if (u->Address.lpSockaddr && u->Address.lpSockaddr->sa_family == AF_INET) {
+        out.push_back(ntohl(reinterpret_cast<const sockaddr_in*>(u->Address.lpSockaddr)->sin_addr.s_addr));
+      }
+    }
+  }
+  return out;
+#else
   ifaddrs* list = nullptr;
   if (getifaddrs(&list) != 0) return out;
   for (ifaddrs* i = list; i; i = i->ifa_next) {
@@ -129,6 +156,7 @@ std::vector<uint32_t> LocalAddresses() {
   }
   freeifaddrs(list);
   return out;
+#endif
 }
 
 std::unique_ptr<InviteProvider> MakeDirectProvider(uint16_t discovery_port, std::chrono::milliseconds wait,

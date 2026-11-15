@@ -80,7 +80,8 @@ take hours and report numbers rather than pass/fail:
 ## The full suite within memory
 
 The game runs take one `game_gpu` resource lock, so one game runs at a time whatever `-j`; the other slots run
-checks and unit tests. A game process uses 1.1-1.5 GB, a run with a build freeze (the alpha sweeps) up to 6.8 GB
+checks and unit tests. The K44 runs (`timing.k44_*`, real-time frame steps) are `RUN_SERIAL`: the checks beside them
+once made 18 of 848 ticks late within one second (M17 merge run, 2026-11-11), over the 2 % limit. A game process uses 1.1-1.5 GB, a run with a build freeze (the alpha sweeps) up to 6.8 GB
 (a copy of guest memory, test-only); the largest check 2.4 GB (`effect_check_presentation_native_4k`; all 315
 non-game tests measured alone, D5 validation). With the desktop's applications using about half
 of a 32 GB machine, use `-j4` (D5: `-j6` with a 14 GB check exhausted memory, KNOWN_ISSUES K50). The D5 validation
@@ -135,6 +136,21 @@ presentation at boot while an async pipeline compiled).
 - On this machine the captures are bit-identical between runs (block difference 0.00). The comparison
   tolerances (8×8 block averages, mean ≤ 3.0, ≤ 1 % of blocks off by > 24) are for other GPUs and drivers.
 - Negative control: the pre-K13 run (`build/runs/m3-cap-1`) fails stats, blank and animation checks.
+
+## M15 routes
+
+`menu.settings_tour`, `settings_tour_ingame` (every page, captures), `sliders`, `sliders_ultrawide`, `ingame_mouse`, `pointer_sdl`
+(real SDL events; hover latency from the trace), `controller_settings`, `controller_settings_game`; `camera.late_look_on`,
+`late_look_off` and their checks (the mouse's delay in the view, a synthetic mouse); `gameplay.keyboard_move` and its check;
+`tests/gameplay/input_ticks.toml` with `--kuf_frame_rate` set per run, then `input_ticks_check.py`.
+
+M15.1: `menu.backspace_menus`; the settings and display routes rewritten for the categories (K66).
+Not in ctest, run by hand: `tests/perf/input_stalls.toml` (gaps between input polls; docs/INPUT.md) and
+`tests/camera/lead_check.py` (Low Latency's frames against the collision; docs/CAMERA.md 9), with
+`--kuf_trace_camera_lead`, `--kuf_test_look_rate` and `--kuf_test_look_seconds`.
+
+Manual checklists: docs/MANUAL_TEST_PC.md (`tools/manual_test.sh` starts this build with its own data in build/manual-test),
+docs/MANUAL_TEST_STEAM_DECK.md.
 
 ## Merging a milestone (fail-closed)
 

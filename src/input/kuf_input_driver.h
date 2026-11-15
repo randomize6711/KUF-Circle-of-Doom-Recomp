@@ -93,6 +93,8 @@ class KufInputDriver final : public rex::input::InputDriver,
   // deflection. TakeMouseLook returns the movement since the last call (window pixels, +y down).
   void SetDirectMouseLook(bool direct);
   void TakeMouseLook(double* dx, double* dy);
+  // The movement the next tick's TakeMouseLook will return, left where it is (M15B: low latency mouse look).
+  void PeekMouseLook(double* dx, double* dy) const;
 
   // The window the driver listens to (null before the window exists); for the input script.
   rex::ui::Window* window() const;
@@ -109,6 +111,10 @@ class KufInputDriver final : public rex::input::InputDriver,
     std::chrono::steady_clock::time_point moved_at;  // the last movement (latency diagnostics)
   };
   PointerWork TakePointerWork();
+  // Wheel notches for the menus since the last call (up positive), for the focused control's own handler (game thread,
+  // menu_pointer.cpp OnTick); WheelAsPresses gives back what a handler did not take, as virtual D-pad presses.
+  int TakeWheelSteps();
+  void WheelAsPresses(int detents);
   // One press of a control as a short tap (the pointer's confirm, and its fallback steps).
   void PulseControl(Control control);
   bool PendingPulses() const;
@@ -137,6 +143,11 @@ class KufInputDriver final : public rex::input::InputDriver,
   PadState last_state_;
   uint32_t packet_number_ = 1;
   int32_t wheel_accum_ = 0;
+  std::chrono::steady_clock::time_point key_event_at_{};  // the last key event (--kuf_trace_input_latency)
+  std::chrono::steady_clock::time_point last_poll_at_{};  // the last poll (--kuf_trace_input_latency)
+  static constexpr int kMaxWheelSteps = 32;
+  int wheel_steps_ = 0;           // notches waiting for the menus' next tick (up positive)
+  void WheelLocked(int detents);
   bool pointer_valid_ = false;
   GuestPoint pointer_;
   bool pointer_moved_ = false;    // moved since the last menu-pointer plan

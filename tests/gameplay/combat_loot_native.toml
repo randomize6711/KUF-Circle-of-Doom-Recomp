@@ -394,7 +394,8 @@ a = "status_before"
 b = "status_after"
 rect = [910, 152, 1000, 184]
 metric = "text"
-min_mean_diff = 1.0
+edge_tolerance_px = 1  # anti-aliased edges crossing the threshold are not a change (combat_loot.toml, 2026-11-09)
+min_mean_diff = 0.4
 any_of = "loot"
 
 [[region]]

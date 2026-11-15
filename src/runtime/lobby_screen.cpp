@@ -47,8 +47,6 @@ REXCVAR_DEFINE_BOOL(kuf_lobby_menus, true, "KUF/Multiplayer",
                     "The multiplayer menus (Create Lobby, Browse Lobbies, Join by Code) on the game type screen "
                     "(seen working in the game by the player, 2026-11-01; =false hides them)");
 
-#if !defined(_WIN32)
-
 REX_EXTERN(__imp__sub_8266A3F8);  // the game type screen's input handler (menu, event)
 REX_EXTERN(__imp__sub_82669010);  // its per-tick update (menu)
 REX_EXTERN(sub_82667780);         // show the selected row (menu)
@@ -604,17 +602,3 @@ REX_HOOK_RAW(sub_82669010) {
               g.screen, Live(menu));
 }
 
-#else
-
-namespace kuf::lobby_screen {
-bool Active() { return false; }
-bool IsLayout(const std::string&) { return false; }
-bool ExtendLayout(std::vector<uint8_t>*, std::string*) { return false; }
-bool RowZeroIsPageRow() { return false; }
-bool Editing() { return false; }
-void ClickWhileEditing(PPCContext&, uint8_t*, int32_t, int32_t) {}
-void OnTick(PPCContext&, uint8_t*) {}
-void Tick() {}
-}  // namespace kuf::lobby_screen
-
-#endif

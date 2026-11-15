@@ -1,0 +1,102 @@
+# M15A: the in-game menus with the mouse (K64, K65; src/runtime/menu_mouse.cpp, menu_pointer.cpp), from the Shadow
+# Depths save (a copy): the status menu's equipment screen (hover rows, wheel, tabs, a row's item list with hover, wheel
+# and a right click back), its footer entry to the inventory (hover, wheel), the Level Up button (a click beside the dialog changes nothing), the options menu (hover, a click on
+# Settings, a right click back). Nothing is equipped or used: the saves stay as they are.
+
+[scenario]
+description = "Mouse in the in-game menus: equipment, item list, inventory, options"
+seconds = 190
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+expect_saves_unchanged = true
+args = ["--kuf_trace_menu_pointer=true", "--kuf_trace_scene_dump=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+250 press Tab
+@gameplay+340 capture equip_open
+@gameplay+360 mouse 800 325 1280 720
+@gameplay+400 capture equip_row2
+@gameplay+420 mouse 800 411 1280 720
+@gameplay+460 capture equip_row4
+@gameplay+480 wheel 2
+@gameplay+520 capture equip_wheel_up
+@gameplay+540 mouse 617 235 1280 720
+@gameplay+560 tap MouseLeft
+@gameplay+620 capture equip_tab2
+@gameplay+640 mouse 565 232 1280 720
+@gameplay+660 tap MouseLeft
+@gameplay+720 capture equip_tab1
+@gameplay+740 mouse 800 281 1280 720
+@gameplay+770 tap MouseLeft
+@gameplay+840 capture item_list
+@gameplay+860 wheel -2
+@gameplay+900 capture item_list_wheel
+@gameplay+930 press MouseRight
+@gameplay+1020 capture back_on_equip
+@gameplay+1040 mouse 1047 648 1280 720
+@gameplay+1070 tap MouseLeft
+@gameplay+1150 capture inventory
+@gameplay+1170 mouse 350 241 1280 720
+@gameplay+1210 capture inventory_row3
+@gameplay+1230 wheel -2
+@gameplay+1270 capture inventory_wheel
+@gameplay+1560 press MouseRight
+@gameplay+1640 capture back_to_equip
+@gameplay+1660 mouse 940 68 1280 720
+@gameplay+1690 tap MouseLeft
+@gameplay+1770 capture levelup
+@gameplay+1790 mouse 100 600 1280 720
+@gameplay+1810 tap MouseLeft
+@gameplay+1860 capture levelup_outside_click
+@gameplay+1865 mouse 911 171 1280 720
+@gameplay+1868 tap MouseLeft
+@gameplay+1875 capture levelup_arrow
+@gameplay+1880 press Escape
+@gameplay+1960 capture levelup_closed
+@gameplay+1980 press MouseRight
+@gameplay+2080 press Escape
+@gameplay+2170 capture options
+@gameplay+2190 mouse 300 175 1280 720
+@gameplay+2230 capture options_controls
+@gameplay+2250 mouse 300 211 1280 720
+@gameplay+2280 tap MouseLeft
+@gameplay+2370 capture settings_open
+@gameplay+2375 mouse 600 202 1280 720
+@gameplay+2380 tap MouseLeft
+@gameplay+2385 mouse 954 156 1280 720
+@gameplay+2388 tap MouseLeft
+@gameplay+2392 mouse 850 202 1280 720
+@gameplay+2395 capture camera_hover_slider
+@gameplay+2398 down MouseLeft
+@gameplay+2402 mouse 1270 202 1280 720
+@gameplay+2406 up MouseLeft
+@gameplay+2410 capture camera_set
+@gameplay+2420 press MouseRight
+@gameplay+2440 press MouseRight
+@gameplay+2500 capture options_again
+@gameplay+2520 press MouseRight
+@gameplay+2620 capture play
+"""
+capture_frames = []
+log_sequence = [
+    "[kuf-mouse] equipment: tab 0 -> 1",
+    "[kuf-mouse] equipment: row 1 clicked",
+    "[kuf-mouse] equipment: row 0 clicked",
+    "[kuf-mouse] footer 00F00000: 3 clickable entries",
+    "[kuf-mouse] level-up: row 0 right arrow",
+    "[kuf-pc-menu] PC Settings opened (in-game Settings)",
+    "[kuf-pc-menu] camera page",
+    "[kuf-pc-menu] slider 0 (camera): set from the pointer",
+    "The horizontal field of view at 16:9",
+    "[kuf-pc-menu] slider 1 (camera): set from the pointer",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+]
+pc_settings_expect = { "camera.distance_percent" = 200, "camera.field_of_view_degrees" = 110 }
+
+[format]
+width = 1280
+height = 720

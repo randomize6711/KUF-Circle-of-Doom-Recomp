@@ -136,6 +136,14 @@ X_RESULT PadRemapDriver::GetDeviceState(rex::input::DeviceId id, rex::input::X_I
     return result;
   }
   PadState s = FromGuest(state.gamepad);
+  if (!focused_.load()) {  // M15C: neutral without the window's focus, whatever the platform layer still reports
+    if (out_state) {
+      out_state->packet_number = state.packet_number;
+      ToGuest(PadState{}, &out_state->gamepad);
+    }
+    return result;
+  }
+  ApplyRadialDeadzone(&s.thumb_lx, &s.thumb_ly, kuf::pc::CurrentCamera().move_deadzone);
   constexpr int kStickMoved = 12000;  // a stick pushed (not resting off-centre) counts as using the controller
   if (s.buttons || Pressed(s, PadButton::kLeftTrigger) || Pressed(s, PadButton::kRightTrigger) ||
       std::abs(s.thumb_lx) > kStickMoved || std::abs(s.thumb_ly) > kStickMoved ||
@@ -168,6 +176,31 @@ X_RESULT PadRemapDriver::GetDeviceState(rex::input::DeviceId id, rex::input::X_I
     ToGuest(s, &out_state->gamepad);
   }
   return result;
+}
+
+X_RESULT PadRemapDriver::SetDeviceVibration(rex::input::DeviceId id, rex::input::X_INPUT_VIBRATION* vibration) {
+  if (!vibration) return inner_->SetDeviceVibration(id, vibration);
+  const int percent = focused_.load() ? kuf::pc::CurrentCamera().vibration : 0;
+  rex::input::X_INPUT_VIBRATION scaled;
+  scaled.left_motor_speed = ScaleVibration(vibration->left_motor_speed, percent);
+  scaled.right_motor_speed = ScaleVibration(vibration->right_motor_speed, percent);
+  return inner_->SetDeviceVibration(id, &scaled);
+}
+
+void PadRemapDriver::StopVibration() {
+  std::vector<rex::input::DeviceInfo> devices;
+  inner_->EnumerateDevices(devices);
+  for (const auto& d : devices) {
+    rex::input::X_INPUT_VIBRATION off;
+    off.left_motor_speed = uint16_t(0);
+    off.right_motor_speed = uint16_t(0);
+    inner_->SetDeviceVibration(d.id, &off);
+  }
+}
+
+void PadRemapDriver::SetFocused(bool focused) {
+  focused_.store(focused);
+  if (!focused) StopVibration();
 }
 
 void ApplyBindingSettings() {

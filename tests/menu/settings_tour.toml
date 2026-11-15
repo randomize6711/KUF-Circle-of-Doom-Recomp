@@ -1,0 +1,47 @@
+# M15A: every Settings page, by keyboard, with the title's Settings: a capture of each, the row list and rectangles
+# from the scene dump. Baseline of the pages' layout (docs/SETTINGS.md).
+
+[scenario]
+description = "Settings tour: each category page opened from the title SETTINGS"
+seconds = 105
+args = ["--kuf_trace_menu_pointer=true", "--kuf_trace_scene_dump=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 mouse 640 519 1280 720
+1100 capture title_settings
+1120 press MouseLeft
+1250 capture categories
+1270 press Return
+1400 capture display
+1420 press Escape
+1500 press Down
+1560 press Return
+1650 capture camera
+1670 press Escape
+1750 press Down
+1810 press Return
+1900 capture audio
+1920 press Escape
+2000 press Down
+2060 press Return
+2150 capture mouse_keys
+2170 press Escape
+2250 press Down
+2310 press Return
+2400 capture controller
+2420 press Escape
+2500 press Down
+2560 press Return
+2650 capture gameplay
+2670 press Escape
+2750 press Escape
+2850 capture title_again
+"""
+capture_frames = []
+log_expect = ["[kuf-pc-menu] PC Settings opened (title SETTINGS)"]
+
+[format]
+width = 1280
+height = 720

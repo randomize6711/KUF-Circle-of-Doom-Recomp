@@ -244,7 +244,7 @@ index 228728d..6c4d4e1 100644
  
    // Stash unrecognized --options for cvars that register later. Supported
 diff --git a/src/filesystem/devices/host_path_device.cpp b/src/filesystem/devices/host_path_device.cpp
-index f68b79a..930163c 100644
+index f68b79a..a01382b 100644
 --- a/src/filesystem/devices/host_path_device.cpp
 +++ b/src/filesystem/devices/host_path_device.cpp
 @@ -21,6 +21,14 @@
@@ -255,7 +255,7 @@ index f68b79a..930163c 100644
 +// Runtime bookkeeping inside host directories (content manifests, temporary files of atomic writes;
 +// rex/system/xam/content_transaction.h) is not guest content: the guest never sees it.
 +bool IsRuntimeName(const std::filesystem::path& name) {
-+  return name.native().starts_with(".rex-");
++  return name.string().starts_with(".rex-");  // string(): native() is wide on Windows
 +}
 +}  // namespace
 +
@@ -426,10 +426,10 @@ index 697399c..f53ac80 100644
    if (shared_kernel_state_ != nullptr) {
      REXSYS_ERROR("KernelState constructed but shared_kernel_state_ already set");
 diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
-index bd6c797..eb7c0a5 100644
+index bd6c797..67fa02b 100644
 --- a/src/system/xam/content_manager.cpp
 +++ b/src/system/xam/content_manager.cpp
-@@ -10,26 +10,84 @@
+@@ -10,26 +10,105 @@
   */
  
  #include <array>
@@ -439,6 +439,16 @@ index bd6c797..eb7c0a5 100644
  #include <queue>
  #include <string>
  
++#if defined(_WIN32)
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#endif
++
  #include <fmt/format.h>
  
 +#include <rex/cvar.h>
@@ -478,6 +488,17 @@ index bd6c797..eb7c0a5 100644
 +int g_kill_at = 0;
 +int g_changed_commits = 0;
 +int g_flushes = 0;
++// An abrupt end with no clean-up, like a crash or power cut: SIGKILL; on Windows TerminateProcess.
++[[noreturn]] void KillForTest() {
++#if defined(_WIN32)
++  ::TerminateProcess(::GetCurrentProcess(), 137);
++  std::_Exit(137);
++#else
++  std::raise(SIGKILL);
++  std::_Exit(137);
++#endif
++}
++
 +void KillHook(const char* stage, const std::filesystem::path& package) {
 +  if (std::string_view(stage) == "changed") {
 +    ++g_changed_commits;
@@ -486,7 +507,7 @@ index bd6c797..eb7c0a5 100644
 +    REXKRNL_WARN("[content] TEST: killing the process at commit {} stage '{}' of {}", g_changed_commits,
 +                 stage, rex::path_to_utf8(package.filename()));
 +    rex::FlushLogging();
-+    std::raise(SIGKILL);
++    KillForTest();
 +  }
 +}
 +void FlushKillHook(const std::filesystem::path& package) {
@@ -494,7 +515,7 @@ index bd6c797..eb7c0a5 100644
 +    REXKRNL_WARN("[content] TEST: killing the process at flush {} of {}", g_flushes,
 +                 rex::path_to_utf8(package.filename()));
 +    rex::FlushLogging();
-+    std::raise(SIGKILL);
++    KillForTest();
 +  }
 +}
 +
@@ -514,7 +535,7 @@ index bd6c797..eb7c0a5 100644
  static const char* kThumbnailFileName = "__thumbnail.png";
  
  static const char* kGameUserContentDirName = "profile";
-@@ -40,13 +98,18 @@ static int content_device_id_ = 0;
+@@ -40,13 +119,18 @@ static int content_device_id_ = 0;
  
  ContentPackage::ContentPackage(KernelState* kernel_state, const std::string_view root_name,
                                 const XCONTENT_AGGREGATE_DATA& data,
@@ -536,7 +557,7 @@ index bd6c797..eb7c0a5 100644
                                                                    /*allow_share_delete=*/true);
    device->Initialize();
    fs->RegisterDevice(std::move(device));
-@@ -81,7 +144,15 @@ void ContentPackage::LoadPackageLicenseMask(const std::filesystem::path header_p
+@@ -81,7 +165,15 @@ void ContentPackage::LoadPackageLicenseMask(const std::filesystem::path header_p
  }
  
  ContentManager::ContentManager(KernelState* kernel_state, const std::filesystem::path& root_path)
@@ -553,7 +574,7 @@ index bd6c797..eb7c0a5 100644
  
  ContentManager::~ContentManager() = default;
  
-@@ -148,12 +219,16 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
+@@ -148,12 +240,16 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
    // Search path:
    // content_root/xuid/title_id/type_name/*
    auto package_root = ResolvePackageRoot(xuid, content_type, title_id);
@@ -570,7 +591,7 @@ index bd6c797..eb7c0a5 100644
  
      XCONTENT_AGGREGATE_DATA content_data;
      if (XSUCCEEDED(ReadContentHeaderFile(rex::path_to_utf8(file_info.name), xuid, title_id,
-@@ -179,13 +254,19 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
+@@ -179,13 +275,19 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
    if (!std::filesystem::exists(package_path)) {
      return nullptr;
    }
@@ -592,7 +613,7 @@ index bd6c797..eb7c0a5 100644
  }
  
  X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGATE_DATA data,
-@@ -208,17 +289,18 @@ X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGAT
+@@ -208,17 +310,18 @@ X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGAT
      }
    }
  
@@ -620,7 +641,7 @@ index bd6c797..eb7c0a5 100644
    return X_ERROR_SUCCESS;
  }
  
-@@ -256,7 +338,7 @@ X_RESULT ContentManager::ReadContentHeaderFile(const std::string_view file_name,
+@@ -256,7 +359,7 @@ X_RESULT ContentManager::ReadContentHeaderFile(const std::string_view file_name,
  }
  
  X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_t xuid,
@@ -629,7 +650,7 @@ index bd6c797..eb7c0a5 100644
    {
      auto global_lock = global_critical_region_.Acquire();
      if (open_packages_.count(string::string_key_case(root_name))) {
-@@ -265,13 +347,41 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
+@@ -265,13 +368,41 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
    }
  
    auto package_path = ResolvePackagePath(xuid, data);
@@ -675,7 +696,7 @@ index bd6c797..eb7c0a5 100644
    assert_not_null(package);
  
    {
-@@ -295,10 +405,41 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t
+@@ -295,10 +426,41 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t
    }
  
    auto package_path = ResolvePackagePath(xuid, data);
@@ -718,7 +739,7 @@ index bd6c797..eb7c0a5 100644
    assert_not_null(package);
    package->LoadPackageLicenseMask(ResolvePackageHeaderPath(
        data.file_name(), xuid, kernel_state_->title_id(), data.content_type));
-@@ -325,10 +466,101 @@ X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
+@@ -325,10 +487,101 @@ X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
      }
      package = DetachPackage(it);
    }
@@ -821,7 +842,7 @@ index bd6c797..eb7c0a5 100644
  X_RESULT ContentManager::GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
                                               std::vector<uint8_t>* buffer) {
    auto global_lock = global_critical_region_.Acquire();
-@@ -352,6 +584,10 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+@@ -352,6 +605,10 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
                                               std::vector<uint8_t> buffer) {
    auto global_lock = global_critical_region_.Acquire();
    auto package_path = ResolvePackagePath(xuid, data);
@@ -832,7 +853,7 @@ index bd6c797..eb7c0a5 100644
    std::filesystem::create_directories(package_path);
    if (std::filesystem::exists(package_path)) {
      auto thumb_path = package_path / kThumbnailFileName;
-@@ -374,7 +610,14 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
+@@ -374,7 +631,14 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
  
    auto package_path = ResolvePackagePath(xuid, data);
    std::error_code ec;
@@ -848,7 +869,7 @@ index bd6c797..eb7c0a5 100644
    if (ec) {
      return X_ERROR_ACCESS_DENIED;
    }
-@@ -386,6 +629,7 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
+@@ -386,6 +650,7 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
    bool header_removed = std::filesystem::remove(header_path, ec2);
  
    if (dir_removed > 0 || header_removed) {
@@ -856,7 +877,7 @@ index bd6c797..eb7c0a5 100644
      return X_ERROR_SUCCESS;
    }
    return X_ERROR_FILE_NOT_FOUND;
-@@ -401,8 +645,7 @@ X_RESULT ContentManager::UnmountContent(uint64_t xuid, const XCONTENT_AGGREGATE_
+@@ -401,8 +666,7 @@ X_RESULT ContentManager::UnmountContent(uint64_t xuid, const XCONTENT_AGGREGATE_
      }
      package = DetachPackage(it);
    }
@@ -866,7 +887,7 @@ index bd6c797..eb7c0a5 100644
  }
  
  X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
-@@ -416,7 +659,11 @@ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
+@@ -416,7 +680,11 @@ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
        package = DetachPackage(it);
      }
    }
@@ -881,10 +902,10 @@ index bd6c797..eb7c0a5 100644
    auto package_path = ResolvePackagePath(xuid, data);
 diff --git a/src/system/xam/content_transaction.cpp b/src/system/xam/content_transaction.cpp
 new file mode 100644
-index 0000000..fe3f39f
+index 0000000..d2c26e3
 --- /dev/null
 +++ b/src/system/xam/content_transaction.cpp
-@@ -0,0 +1,480 @@
+@@ -0,0 +1,550 @@
 +/**
 + * Transactional content packages (kuf-cod-recomp patch). See content_transaction.h.
 + */
@@ -901,11 +922,21 @@ index 0000000..fe3f39f
 +#include <sstream>
 +#include <system_error>
 +
++#if defined(_WIN32)
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#else
 +#include <fcntl.h>
 +#include <linux/fs.h>
 +#include <sys/stat.h>
 +#include <sys/syscall.h>
 +#include <unistd.h>
++#endif
 +
 +namespace rex::system::xam::content_txn {
 +namespace fs = std::filesystem;
@@ -999,6 +1030,36 @@ index 0000000..fe3f39f
 +  return package.parent_path() / Suffixed(package, suffix);
 +}
 +
++// The last system error as text.
++std::string LastError() {
++#if defined(_WIN32)
++  return "Windows error " + std::to_string(::GetLastError());
++#else
++  return std::strerror(errno);
++#endif
++}
++
++#if defined(_WIN32)
++// Windows: a file's data is flushed with FlushFileBuffers (it needs write access). A directory's entries are
++// metadata that NTFS journals; Windows cannot flush a directory handle, so a directory counts as synced.
++bool FsyncPath(const fs::path& path, bool directory) {
++  if (directory) return true;
++  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
++                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
++  if (h == INVALID_HANDLE_VALUE) return false;
++  const bool ok = ::FlushFileBuffers(h) != 0;
++  ::CloseHandle(h);
++  return ok;
++}
++
++// Renames a file or folder, written through to the disk; a file replaces an existing file. (MoveFileExW refuses
++// MOVEFILE_REPLACE_EXISTING for folders; a folder is only ever renamed to a name that does not exist.)
++bool RenamePath(const fs::path& from, const fs::path& to) {
++  std::error_code ec;
++  const DWORD replace = fs::is_directory(from, ec) ? 0 : MOVEFILE_REPLACE_EXISTING;
++  return ::MoveFileExW(from.c_str(), to.c_str(), replace | MOVEFILE_WRITE_THROUGH) != 0;
++}
++#else
 +bool FsyncPath(const fs::path& path, bool directory) {
 +  int fd = ::open(path.c_str(), (directory ? O_RDONLY | O_DIRECTORY : O_RDONLY) | O_CLOEXEC);
 +  if (fd < 0) return false;
@@ -1006,6 +1067,9 @@ index 0000000..fe3f39f
 +  ::close(fd);
 +  return ok;
 +}
++
++bool RenamePath(const fs::path& from, const fs::path& to) { return ::rename(from.c_str(), to.c_str()) == 0; }
++#endif
 +
 +// Relative path -> file content digest and size, for every regular file below `dir` (the manifest itself
 +// excluded).
@@ -1068,10 +1132,18 @@ index 0000000..fe3f39f
 +}
 +
 +bool ParseManifest(const fs::path& file, Tree* out) {
-+  std::ifstream in(file);
++  std::ifstream in(file, std::ios::binary);  // the same bytes on every system
 +  std::string line;
-+  if (!std::getline(in, line) || line != "rex-content-manifest 1") return false;
++  // A manifest that went through a tool converting line endings (saves copied between Windows and Linux) still
++  // reads: a trailing CR is not part of a file name.
++  const auto strip_cr = [](std::string& l) {
++    if (!l.empty() && l.back() == '\r') l.pop_back();
++  };
++  if (!std::getline(in, line)) return false;
++  strip_cr(line);
++  if (line != "rex-content-manifest 1") return false;
 +  while (std::getline(in, line)) {
++    strip_cr(line);
 +    std::istringstream ls(line);
 +    FileDigest d;
 +    std::string rel;
@@ -1107,11 +1179,12 @@ index 0000000..fe3f39f
 +}
 +
 +int RenameExchange(const fs::path& a, const fs::path& b) {
-+#ifdef SYS_renameat2
++#if !defined(_WIN32) && defined(SYS_renameat2)
 +  return static_cast<int>(::syscall(SYS_renameat2, AT_FDCWD, a.c_str(), AT_FDCWD, b.c_str(), RENAME_EXCHANGE));
 +#else
-+  errno = ENOSYS;
-+  return -1;
++  (void)a;
++  (void)b;
++  return -1;  // Windows has no exchange: Install() moves the previous version aside instead
 +#endif
 +}
 +
@@ -1120,8 +1193,8 @@ index 0000000..fe3f39f
 +  std::error_code ec;
 +  const fs::path parent = package.parent_path();
 +  if (!fs::exists(package, ec)) {
-+    if (::rename(from.c_str(), package.c_str()) != 0) {
-+      if (error) *error = "rename " + from.string() + ": " + std::strerror(errno);
++    if (!RenamePath(from, package)) {
++      if (error) *error = "rename " + from.string() + ": " + LastError();
 +      return false;
 +    }
 +    FsyncPath(parent, true);
@@ -1137,13 +1210,13 @@ index 0000000..fe3f39f
 +  // between the two renames leaves <package>.rex-previous, which Recover() moves back.
 +  const fs::path previous = Sibling(package, kPreviousSuffix);
 +  fs::remove_all(previous, ec);
-+  if (::rename(package.c_str(), previous.c_str()) != 0) {
-+    if (error) *error = "rename " + package.string() + ": " + std::strerror(errno);
++  if (!RenamePath(package, previous)) {
++    if (error) *error = "rename " + package.string() + ": " + LastError();
 +    return false;
 +  }
-+  if (::rename(from.c_str(), package.c_str()) != 0) {
-+    if (error) *error = "rename " + from.string() + ": " + std::strerror(errno);
-+    ::rename(previous.c_str(), package.c_str());
++  if (!RenamePath(from, package)) {
++    if (error) *error = "rename " + from.string() + ": " + LastError();
++    RenamePath(previous, package);
 +    return false;
 +  }
 +  FsyncPath(parent, true);
@@ -1330,9 +1403,25 @@ index 0000000..fe3f39f
 +
 +bool AtomicWriteFile(const fs::path& file, std::span<const uint8_t> data, std::string* error) {
 +  const fs::path tmp = file.parent_path() / (".rex-tmp-" + file.filename().string());
++#if defined(_WIN32)
++  HANDLE h = ::CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
++  if (h == INVALID_HANDLE_VALUE) {
++    if (error) *error = "open " + tmp.string() + ": " + LastError();
++    return false;
++  }
++  size_t done = 0;
++  while (done < data.size()) {
++    DWORD n = 0;
++    const DWORD want = static_cast<DWORD>(std::min<size_t>(data.size() - done, 1u << 30));
++    if (!::WriteFile(h, data.data() + done, want, &n, nullptr) || n == 0) break;
++    done += n;
++  }
++  bool ok = done == data.size() && ::FlushFileBuffers(h) != 0;
++  ok &= ::CloseHandle(h) != 0;
++#else
 +  int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
 +  if (fd < 0) {
-+    if (error) *error = "open " + tmp.string() + ": " + std::strerror(errno);
++    if (error) *error = "open " + tmp.string() + ": " + LastError();
 +    return false;
 +  }
 +  size_t done = 0;
@@ -1346,10 +1435,12 @@ index 0000000..fe3f39f
 +  }
 +  bool ok = done == data.size() && ::fsync(fd) == 0;
 +  ok &= ::close(fd) == 0;
-+  if (ok) ok = ::rename(tmp.c_str(), file.c_str()) == 0;
++#endif
++  if (ok) ok = RenamePath(tmp, file);
 +  if (!ok) {
-+    if (error) *error = "write " + file.string() + ": " + std::strerror(errno);
-+    ::unlink(tmp.c_str());
++    if (error) *error = "write " + file.string() + ": " + LastError();
++    std::error_code ec;
++    fs::remove(tmp, ec);
 +    return false;
 +  }
 +  FsyncPath(file.parent_path(), true);

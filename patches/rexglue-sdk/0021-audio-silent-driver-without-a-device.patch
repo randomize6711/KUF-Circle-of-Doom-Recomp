@@ -1,0 +1,107 @@
+KUF port: without an audio device (none present, the sound server down, a headless machine) the game ran into a
+guest access violation (read of 0x3C on the audio thread): the driver creation failed and the game, written for a
+console that always had audio, does not check it. A silent driver now consumes the frames at a device's rate and the
+game runs without sound (a warning in the log). Found under Wine (M17) and reproduced on Linux without an ALSA device.
+diff --git a/src/audio/sdl/sdl_audio_system.cpp b/src/audio/sdl/sdl_audio_system.cpp
+index 68da0cf..7764a76 100644
+--- a/src/audio/sdl/sdl_audio_system.cpp
++++ b/src/audio/sdl/sdl_audio_system.cpp
+@@ -13,8 +13,70 @@
+ #include <rex/audio/sdl/sdl_audio_driver.h>
+ #include <rex/audio/sdl/sdl_audio_system.h>
+ 
++#include <algorithm>
++#include <chrono>
++#include <condition_variable>
++#include <thread>
++
++#include <rex/logging.h>
++
+ namespace rex::audio::sdl {
+ 
++namespace {
++
++// No audio device (none present, the sound server down, a headless machine): the game still needs its frames
++// consumed at the rate a device plays them, or its audio thread waits forever or it misreads the failed driver
++// creation (a console always had audio). This driver plays nothing and releases one frame per frame period
++// (256 samples at 48 kHz), as SDLAudioDriver's callback does for each frame it hands to the device.
++class SilentAudioDriver : public AudioDriver {
++ public:
++  SilentAudioDriver(memory::Memory* memory, rex::thread::Semaphore* semaphore)
++      : AudioDriver(memory), semaphore_(semaphore), worker_([this] { Run(); }) {}
++  ~SilentAudioDriver() override {
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      stop_ = true;
++    }
++    wake_.notify_all();
++    worker_.join();
++  }
++  void SubmitFrame(uint32_t) override {
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      ++queued_;
++    }
++    wake_.notify_all();
++  }
++
++ private:
++  void Run() {
++    using Clock = std::chrono::steady_clock;
++    constexpr auto kFrame = std::chrono::nanoseconds(1'000'000'000LL * 256 / 48000);
++    auto next = Clock::now();
++    std::unique_lock<std::mutex> lock(mutex_);
++    while (!stop_) {
++      if (queued_ == 0) {  // nothing to play: the device would play silence; the next frame starts from now
++        wake_.wait(lock, [this] { return stop_ || queued_ > 0; });
++        next = std::max(next, Clock::now());
++        continue;
++      }
++      next += kFrame;
++      if (wake_.wait_until(lock, next, [this] { return stop_; })) break;
++      --queued_;
++      semaphore_->Release(1, nullptr);
++    }
++  }
++
++  rex::thread::Semaphore* semaphore_;
++  std::mutex mutex_;
++  std::condition_variable wake_;
++  uint32_t queued_ = 0;
++  bool stop_ = false;
++  std::thread worker_;
++};
++
++}  // namespace
++
+ std::unique_ptr<AudioSystem> SDLAudioSystem::Create(
+     runtime::FunctionDispatcher* function_dispatcher) {
+   return std::make_unique<SDLAudioSystem>(function_dispatcher);
+@@ -36,7 +98,9 @@ X_STATUS SDLAudioSystem::CreateDriver([[maybe_unused]] size_t index,
+   if (!driver->Initialize()) {
+     driver->Shutdown();
+     delete driver;
+-    return X_STATUS_UNSUCCESSFUL;
++    REXAPU_WARN("No audio device could be opened (the error above): the game runs without sound");
++    *out_driver = new SilentAudioDriver(memory_, semaphore);
++    return X_STATUS_SUCCESS;
+   }
+ 
+   *out_driver = driver;
+@@ -45,10 +109,12 @@ X_STATUS SDLAudioSystem::CreateDriver([[maybe_unused]] size_t index,
+ 
+ void SDLAudioSystem::DestroyDriver(AudioDriver* driver) {
+   assert_not_null(driver);
+-  auto sdldriver = dynamic_cast<SDLAudioDriver*>(driver);
+-  assert_not_null(sdldriver);
+-  sdldriver->Shutdown();
+-  delete sdldriver;
++  if (auto sdldriver = dynamic_cast<SDLAudioDriver*>(driver)) {
++    sdldriver->Shutdown();
++    delete sdldriver;
++    return;
++  }
++  delete driver;  // SilentAudioDriver
+ }
+ 
+ }  // namespace rex::audio::sdl

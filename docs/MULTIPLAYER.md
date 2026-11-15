@@ -1,5 +1,17 @@
 # Native PC co-op: lobbies, invitations, networking
 
+Status (2026-11-10, M17F: Windows): the lobby layer, the co-op runtime and the menus are built for Windows too (one
+implementation; the sockets through `src/net/sock`). Tested: the network unit tests as a Windows program under Wine
+(440/440), and `tests/net/cross_platform_lobby.sh`: a Linux and a Windows build of the lobby in every combination
+(Linux/Linux, Windows/Windows, Linux host with a Windows guest, Windows host with a Linux guest: discovery,
+password proof both ways, session data byte for byte, start, leave, a wrong password refused). The Windows side ran
+under Wine on one machine: **not yet tested between two real computers, nor in the game on Windows**.
+
+**Windows Firewall:** the first time a player hosts (or browses lobbies), Windows asks whether to allow
+`kuf_cod.exe` on networks. Allow **private networks** (the home network); public networks are not needed. The game
+never changes firewall or router settings itself. A host on the internet forwards the lobby port (TCP 36961) and the
+game ports (`kuf_coop_port_base`, TCP and UDP 37000-37001) on their router themselves.
+
 Status (2026-10-31):
 - **Lobby layer, lobby service, invitation providers, menu model:** IMPLEMENTED and tested in isolation (loopback
   lobbies, a fake Steam; `kuf_net_tests`).
@@ -94,8 +106,8 @@ writes, disconnects and timeouts are the game's own (it runs over non-blocking T
 codes); malformed lobby frames and advertisements are refused with bounds on every field; a guest that loses the
 lobby joins it again every 5 s.
 
-With `kuf_coop` empty (the default) every override forwards to the SDK unchanged. Windows: not available yet (the
-socket layer is POSIX); Steam: not used.
+With `kuf_coop` empty (the default) every override forwards to the SDK unchanged (Linux: `dlsym(RTLD_NEXT)`;
+Windows, M17F: the runtime DLL's export of the same name). Steam: not used.
 
 ### Developer configuration (for tests; not a player setting, never shown in the menus)
 

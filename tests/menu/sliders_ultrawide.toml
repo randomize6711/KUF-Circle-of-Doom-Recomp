@@ -1,0 +1,42 @@
+# M15A: the values of tests/menu/sliders.toml after a restart, shown on the pages again; a slider at its end stays there
+# (a click past the end changes nothing). On a 2560x1080 window (pillarbox: the menus in the 1920x1080 box at x 320, a
+# guest pixel 1.5 window pixels): Mouse Vertical dragged onto the left side bar stops at its first level and on the
+# right side bar at its last, the drag surviving the pointer's leaving the image.
+
+[scenario]
+description = "Sliders after a restart; a drag on an ultrawide window's side bars"
+seconds = 90
+pc_settings_from_run = "sliders"
+args = ["--kuf_trace_menu_pointer=true", "--kuf_display_size=2560x1080"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 mouse 1280 779 2560 1080
+1120 press MouseLeft
+1250 mouse 770 429 2560 1080
+1290 tap MouseLeft
+1370 capture mouse_page
+1400 mouse 1400 294 2560 1080
+1430 down MouseLeft
+1460 mouse 10 294 2560 1080
+1500 capture dragged_to_the_left_bar
+1530 mouse 2550 294 2560 1080
+1570 capture dragged_to_the_right_bar
+1600 up MouseLeft
+1660 press Escape
+1720 press Escape
+1820 capture title_list
+"""
+capture_frames = []
+pc_settings_expect = { "mouse.sensitivity_horizontal" = 10, "mouse.sensitivity_vertical" = 20, "mouse.invert_y" = true, "camera.distance_percent" = 200, "camera.field_of_view_degrees" = 110 }
+log_sequence = [
+    "[kuf-pc-menu] mouse and keyboard page",
+    "[kuf-pc-menu] slider 1 (mouse and keyboard): set from the pointer",
+    "[kuf-pc-menu] slider 1: released",
+    "[kuf-settings] saved /run-data/user/pc_settings.toml",
+]
+
+[format]
+width = 2560
+height = 1440

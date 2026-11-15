@@ -97,6 +97,17 @@ std::optional<std::vector<uint8_t>> MoveControls(std::span<const uint8_t> data, 
                                                  const std::vector<uint32_t>& ids, int32_t dx, int32_t dy,
                                                  std::string* error);
 
+// New horizontal places and widths for controls of a scene (M15A: the Settings pages' two columns). `x` or `w`
+// kKeepBox keeps that value. A control's record holds its size (+8 width), the scene's placement its place. False
+// (unchanged) if one of them is missing.
+constexpr int32_t kKeepBox = -1;
+struct ControlBox {
+  uint32_t id;
+  int32_t x = kKeepBox, w = kKeepBox;
+};
+std::optional<std::vector<uint8_t>> PlaceControls(std::span<const uint8_t> data, uint32_t scene_id,
+                                                  const std::vector<ControlBox>& boxes, std::string* error);
+
 // Copies of a scene's button control (type 1) with new IDs, each placed at (x, y), its text set by code (the source's
 // text number kept until then): the update box's three buttons (src/runtime/update_box.cpp) from the message box's
 // own. Images the source button owns (its state images, +100..+132, whose owner field +376 is the source) are copied

@@ -2,7 +2,7 @@
 
 You need:
 
-- your own copy of the original Xbox 360 game files, whose `default.xex` is **unencrypted** (see below);
+- your own copy of the original Xbox 360 game files: an extracted retail folder or a disc image (`.iso`);
 - a 64-bit Linux desktop new enough for this build (the setup tells you if yours is not), a Vulkan-capable graphics
   driver, and about 5.5 GB of free space (about 4.5 GB stays in use).
 
@@ -14,8 +14,10 @@ system.
 1. Download `KingdomUnderFire-CircleOfDoom-Setup-<version>-x86_64.AppImage`.
 2. Make it executable (file manager: right-click > Properties > Permissions > "Allow executing", or
    `chmod +x KingdomUnderFire-CircleOfDoom-Setup-*.AppImage`) and open it.
-3. **Game Files:** choose the folder with `default.xex`. The setup checks that every file is there and that the game
-   is the supported version. Your folder is only read.
+3. **Game Files:** choose the folder with `default.xex` (**Browse…**), or your disc image or that `default.xex` itself
+   (**File…**). The setup checks that every file is there and that the game is the supported version. Your files are
+   only read. A retail copy works as it is: its encrypted `default.xex` is decrypted into the installation
+   (docs/RETAIL_FILES.md).
 4. **Location:** keep `~/Games/Kingdom Under Fire - Circle of Doom` or choose another folder. No administrator
    password is needed.
 5. **Options:** an application-menu shortcut (on by default), a desktop shortcut, and "Add to Steam as a non-Steam
@@ -35,9 +37,14 @@ made; your saves and settings are kept unless you tick that option and confirm i
 
 ## If something goes wrong
 
-- *"This default.xex is encrypted"*: retail copies are. This project contains no console decryption keys and no tool to
-  decrypt one, so the setup cannot use this file. It can only use a `default.xex` that is already unencrypted (docs/RETAIL_FILES.md).
-- *"Unsupported game version"*: only the original release (base version, without title update) is supported.
+- *"Retail copy recognised, but its encrypted default.xex could not be decrypted"*: the file is probably damaged; an
+  unencrypted `default.xex` of the same version can be given in the second field.
+- *"This default.xex was decrypted, but its content differs"*: the
+  copy is modified or damaged; make a new dump.
+- *"Unsupported game version"*: only the original release (base version 0.0.0.1, media ID 7092B5EC, without title
+  update) is supported. The message names what was found instead: another game's title ID, another version or
+  release, or a title update.
+- *"The disc image is damaged"*: the image's file system is inconsistent (the message says how); make a new dump.
 - *"Steam is running"*: quit Steam completely (Steam > Exit) and choose Retry.
 - A desktop icon that does not start: some desktops ask first; right-click it and choose "Allow Launching".
 - Logs for a bug report: `~/.local/share/kuf-cod-recomp/data/logs/`.

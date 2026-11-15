@@ -1,0 +1,63 @@
+# M15A: the menu pointer through real SDL events pushed into the window (motion, clicks, the wheel), not the script's
+# driver shortcut (the offscreen window is 1024x768, the image letterboxed at y 96, a window pixel 1.25 guest pixels): 30 moves between the Settings categories at irregular times, each answered at the next tick. The
+# hover latency (input event to the game's selection moved) is read from the trace: "<n> ms after the last move".
+
+[scenario]
+description = "Menu pointer through SDL events: hover latency, click, wheel"
+seconds = 104
+args = ["--kuf_trace_menu_pointer=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 sdl motion 512 511
+1120 sdl click left 512 511
+1260 sdl motion 240 217
+1283 sdl motion 240 327
+1313 sdl motion 240 438
+1339 sdl motion 240 290
+1372 sdl motion 240 401
+1401 sdl motion 240 254
+1426 sdl motion 240 364
+1458 sdl motion 240 217
+1486 sdl motion 240 327
+1510 sdl motion 240 438
+1541 sdl motion 240 290
+1568 sdl motion 240 401
+1591 sdl motion 240 254
+1621 sdl motion 240 364
+1647 sdl motion 240 217
+1680 sdl motion 240 327
+1709 sdl motion 240 438
+1734 sdl motion 240 290
+1766 sdl motion 240 401
+1794 sdl motion 240 254
+1818 sdl motion 240 364
+1849 sdl motion 240 217
+1876 sdl motion 240 327
+1899 sdl motion 240 438
+1929 sdl motion 240 290
+1955 sdl motion 240 401
+1988 sdl motion 240 254
+2017 sdl motion 240 364
+2042 sdl motion 240 217
+2074 sdl motion 240 327
+2102 sdl motion 240 217
+2142 sdl click left 240 217
+2212 capture display
+2222 sdl wheel -3 240 217
+2282 sdl wheel 3 240 217
+2342 press Escape
+2402 press Escape
+"""
+capture_frames = []
+log_sequence = [
+    "[kuf-pc-menu] PC Settings opened (title SETTINGS)",
+    "[kuf-pc-menu] display page",
+    "wheel -3: 3 direct step(s)",
+    "wheel 3: 3 direct step(s)",
+]
+
+[format]
+width = 1280
+height = 720

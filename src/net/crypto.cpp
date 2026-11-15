@@ -2,7 +2,12 @@
 
 #include <cstring>
 
+#if defined(_WIN32)
+#include <windows.h>
+#include <bcrypt.h>
+#else
 #include <sys/random.h>
+#endif
 
 namespace kuf::net {
 namespace {
@@ -149,6 +154,10 @@ bool ConstantTimeEqual(const uint8_t* a, const uint8_t* b, size_t size) {
 }
 
 bool RandomBytes(uint8_t* out, size_t size) {
+#if defined(_WIN32)
+  // The system's preferred cryptographic generator (the same source getrandom draws from on Linux).
+  return BCryptGenRandom(nullptr, out, ULONG(size), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+#else
   size_t done = 0;
   while (done < size) {
     const ssize_t n = getrandom(out + done, size - done, 0);
@@ -156,6 +165,7 @@ bool RandomBytes(uint8_t* out, size_t size) {
     done += size_t(n);
   }
   return true;
+#endif
 }
 
 std::string Hex(const uint8_t* data, size_t size) {

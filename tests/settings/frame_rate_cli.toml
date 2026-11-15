@@ -1,6 +1,6 @@
 # Command line over the saved settings (M6D D5, docs/SETTINGS.md): pc_settings.toml says 60 fps with the effect clock
 # off; --kuf_frame_rate=120 is given. The flag wins for this run (120 frames per second; the effect clock still off:
-# only the flags given override), the log says so. In the menu Mouse Horizontal +1 (5); Back writes the file: the
+# only the flags given override), the log says so. Settings > Mouse & Keyboard (K66, M15.1): Mouse Horizontal +1 (5); Back writes the file: the
 # frame rate in it stays 60 (the command line is not saved), the mouse value is 5.
 
 [scenario]
@@ -22,30 +22,23 @@ script = """
 @gameplay+520 up W
 @gameplay+580 press Escape
 @gameplay+680 press Down
-@gameplay+730 press Down
-@gameplay+780 press Down
-@gameplay+830 press Down
-@gameplay+930 press Return
-@gameplay+1080 press Down
-@gameplay+1110 press Down
-@gameplay+1140 press Down
-@gameplay+1170 press Down
-@gameplay+1200 press Down
-@gameplay+1230 press Down
-@gameplay+1260 press Down
-@gameplay+1290 press Down
-@gameplay+1390 press Return
-@gameplay+1540 press Return
-@gameplay+1690 press Right
-@gameplay+1750 capture mouse_5
-@gameplay+1780 press Escape
-@gameplay+1880 press Escape
-@gameplay+1980 press Escape
-@gameplay+2080 press Escape
-@gameplay+2280 log mark play_c
-@gameplay+2290 down W
-@gameplay+2590 log mark play_d
-@gameplay+2600 up W
+@gameplay+710 press Down
+@gameplay+740 press Down
+@gameplay+770 press Down
+@gameplay+840 press Return
+@gameplay+960 press Down
+@gameplay+990 press Down
+@gameplay+1020 press Down
+@gameplay+1050 press Return
+@gameplay+1170 press Right
+@gameplay+1240 capture mouse_5
+@gameplay+1280 press Escape
+@gameplay+1340 press Escape
+@gameplay+1400 press Escape
+@gameplay+1720 log mark play_c
+@gameplay+1730 down W
+@gameplay+2030 log mark play_d
+@gameplay+2040 up W
 """
 capture_frames = []
 expect_saves_unchanged = true

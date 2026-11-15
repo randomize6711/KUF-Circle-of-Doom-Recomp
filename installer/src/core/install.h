@@ -48,7 +48,8 @@ const char* StageName(Stage s);
 struct Plan {
   fs::path root;
   fs::path package;          // the unpacked game package (VERSION, MANIFEST.sha256, bin/, kuf-cod.sh, ...)
-  fs::path game_source;      // the player's game folder (only read)
+  fs::path game_source;      // the player's game folder or disc image (only read)
+  fs::path executable;       // a separate unencrypted default.xex, used instead of the dump's (optional)
   GameManifest manifest;
   fs::path setup_binary;     // this program and its assets, copied to share/setup (the uninstaller)
   fs::path setup_assets;

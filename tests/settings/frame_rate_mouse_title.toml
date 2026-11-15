@@ -1,51 +1,33 @@
-# The frame-rate page with the mouse in the title screen's SETTINGS (M6D D5; the menus have no pointer: the wheel
-# moves one row per detent, the left button selects, the right button goes back, docs/INPUT.md). The keyboard opens
-# SETTINGS (as pc_settings_title); nine wheel detents down to PC Settings, a left click opens the categories; two
-# detents down to Display, a left click opens it, five detents down to FPS (M7 UX fix 3); three left clicks step it 30 -> 60 -> 90 -> 120 (Select
-# steps forward); a real SDL wheel event to Interpolation and a real SDL click: Off. Right click three times: the
-# categories, SETTINGS (the file written), the main menu. The title screen
-# and its menus are drawn over the title-loop movie, which keeps the render thread busy: render-only frames reach
+# The frame-rate rows with the mouse in the title screen's SETTINGS (M6D D5; the pointer since M7; K66, M15.1). The keyboard opens
+# SETTINGS (the categories); the pointer on Display, a left click opens it; the pointer on FPS (the sixth row, M7 UX fix 3); three
+# left clicks step it 30 -> 60 -> 90 -> 120 (Select steps forward); a real SDL wheel event to Interpolation and a real SDL click on
+# it (window 1024x768: x 240, y 437 is guest 300, 426): Off. Right click twice: the categories, the title list (the file written).
+# The title screen and its menus are drawn over the title-loop movie, which keeps the render thread busy: render-only frames reach
 # about 36 per second there whatever the setting (docs/HIGH_FPS.md 21.6), so frame_rate_check.py --min-fps 33 (more
 # than one frame per tick: the setting reached the scheduler; no lock at 30).
 
 [scenario]
 description = "Frame-rate page with the mouse in the title SETTINGS: wheel, left click steps, right click back"
-seconds = 131
+seconds = 90
 script = """
 500 tap Return
 700 tap Escape
 800 press Down
 900 press Return
-1000 wheel -1
-1040 wheel -1
-1080 wheel -1
-1120 wheel -1
-1160 wheel -1
-1200 wheel -1
-1240 wheel -1
-1280 wheel -1
-1320 wheel -1
-1390 press MouseLeft
-1540 wheel -1
-1580 wheel -1
-1650 press MouseLeft
-1800 wheel -1
-1840 wheel -1
-1880 wheel -1
-1920 wheel -1
-1960 wheel -1
-2030 capture fps_row
-2060 press MouseLeft
-2100 press MouseLeft
-2140 press MouseLeft
-2180 log mark at_120
-2510 sdl wheel -1 640 360
-2570 sdl click left 640 360
-2670 capture interpolation_off
-2700 press MouseRight
-2800 press MouseRight
-2900 press MouseRight
-3000 capture main_menu
+1000 mouse 300 150 1280 720
+1040 press MouseLeft
+1150 mouse 300 380 1280 720
+1200 capture fps_row
+1230 press MouseLeft
+1270 press MouseLeft
+1310 press MouseLeft
+1350 log mark at_120
+1680 sdl wheel -1 240 437
+1740 sdl click left 240 437
+1840 capture interpolation_off
+1870 press MouseRight
+1970 press MouseRight
+2070 capture main_menu
 """
 capture_frames = []
 pc_settings_expect = { "frame_rate.limit_fps" = 120, "frame_rate.interpolation" = false }

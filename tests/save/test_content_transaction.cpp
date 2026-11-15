@@ -259,6 +259,14 @@ TEST_CASE("verify: damage is detected and described", "[save][txn]") {
     fs::remove(pkg / ".rex-manifest");
     CHECK(txn::Verify(pkg, &detail) == txn::Integrity::kNoManifest);
   }
+  SECTION("a manifest with Windows line endings (copied between systems) is the same manifest") {
+    std::string text = Read(pkg / ".rex-manifest"), crlf;
+    for (char c : text) crlf += c == '\n' ? std::string("\r\n") : std::string(1, c);
+    Write(pkg / ".rex-manifest", crlf);
+    CHECK(txn::Verify(pkg, &detail) == txn::Integrity::kOk);
+    Write(pkg / "KD_1350", "0123456780");  // and still catches damage
+    CHECK(txn::Verify(pkg, &detail) == txn::Integrity::kDamaged);
+  }
 }
 
 TEST_CASE("internal names are never content", "[save][txn]") {

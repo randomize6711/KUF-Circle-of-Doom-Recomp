@@ -1,6 +1,9 @@
 #include "input/pad_remap.h"
 
 #include <algorithm>
+#include <cmath>
+
+#include <algorithm>
 
 namespace kuf::input {
 namespace {
@@ -102,6 +105,24 @@ PadState PadRemap::Apply(const PadState& in) const {
     }
   }
   return out;
+}
+
+void ApplyRadialDeadzone(int16_t* x, int16_t* y, int percent) {
+  if (percent <= 0) return;
+  const double fx = *x, fy = *y, full = 32767.0, zone = full * percent / 100.0;
+  const double length = std::hypot(fx, fy);
+  if (length <= zone) {
+    *x = *y = 0;
+    return;
+  }
+  const double scale = (std::min(length, full) - zone) / (full - zone) * full / length;
+  *x = static_cast<int16_t>(std::clamp(std::lround(fx * scale), -32768L, 32767L));
+  *y = static_cast<int16_t>(std::clamp(std::lround(fy * scale), -32768L, 32767L));
+}
+
+uint16_t ScaleVibration(uint16_t speed, int percent) {
+  if (percent >= 100) return speed;
+  return static_cast<uint16_t>(uint32_t(speed) * uint32_t(std::max(percent, 0)) / 100);
 }
 
 }  // namespace kuf::input

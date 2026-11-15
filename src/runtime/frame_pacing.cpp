@@ -32,6 +32,7 @@
 // GPU trace at the next frame showing a new tick, and its items' delivery at each tick start (K38).
 
 #include "coop/coop_runtime.h"
+#include "runtime/platform_env.h"
 #include "runtime/lobby_screen.h"
 #include "runtime/frame_pacing.h"
 #include "runtime/controls_screen.h"
@@ -55,8 +56,12 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#include "runtime/win32.h"
+#else
 #include <sys/uio.h>
 #include <unistd.h>
+#endif
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -289,14 +294,29 @@ std::vector<Region> GuestRegions(const uint8_t* base) {
   std::vector<Region> out;
   const uintptr_t vlo = reinterpret_cast<uintptr_t>(base), vhi = vlo + kVirtualEnd;
   const uintptr_t plo = vlo + kPhysicalOffset, phi = plo + kPhysicalSize;
-  std::ifstream maps("/proc/self/maps");
-  std::string line;
-  while (std::getline(maps, line)) {
-    unsigned long lo = 0, hi = 0;
-    char perms[8] = {};
-    if (std::sscanf(line.c_str(), "%lx-%lx %7s", &lo, &hi, perms) != 3 || perms[0] != 'r') {
-      continue;
+  // Each readable mapping [lo, hi): /proc/self/maps on Linux, VirtualQuery on Windows.
+  const auto each_readable = [](auto&& visit) {
+#if defined(_WIN32)
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (uintptr_t at = 0; ::VirtualQuery(reinterpret_cast<const void*>(at), &mbi, sizeof(mbi)) == sizeof(mbi);) {
+      const uintptr_t lo = reinterpret_cast<uintptr_t>(mbi.BaseAddress), hi = lo + mbi.RegionSize;
+      const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
+                             PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+      if (mbi.State == MEM_COMMIT && (mbi.Protect & readable) && !(mbi.Protect & PAGE_GUARD)) visit(lo, hi);
+      if (hi <= at) break;
+      at = hi;
     }
+#else
+    std::ifstream maps("/proc/self/maps");
+    std::string line;
+    while (std::getline(maps, line)) {
+      unsigned long lo = 0, hi = 0;
+      char perms[8] = {};
+      if (std::sscanf(line.c_str(), "%lx-%lx %7s", &lo, &hi, perms) == 3 && perms[0] == 'r') visit(lo, hi);
+    }
+#endif
+  };
+  each_readable([&](uintptr_t lo, uintptr_t hi) {
     auto add = [&](uintptr_t rlo, uintptr_t rhi, bool physical, uintptr_t origin) {
       const uintptr_t a = std::max<uintptr_t>(lo, rlo), b = std::min<uintptr_t>(hi, rhi);
       if (a < b) {
@@ -305,7 +325,7 @@ std::vector<Region> GuestRegions(const uint8_t* base) {
     };
     add(vlo, vhi, false, vlo);
     add(plo, phi, true, plo);
-  }
+  });
   return out;
 }
 
@@ -705,9 +725,16 @@ void NotePacketWriter(const uint8_t* base, const PPCContext& ctx, const char* wh
   // The outermost back chain points past the stack's mapped end: read with process_vm_readv, which fails there.
   const auto safe_load32 = [base](uint32_t a, uint32_t* out) {
     uint32_t raw = 0;
+#if defined(_WIN32)
+    SIZE_T got = 0;
+    if (!::ReadProcessMemory(::GetCurrentProcess(), base + a, &raw, sizeof(raw), &got) || got != sizeof(raw)) {
+      return false;
+    }
+#else
     iovec local{&raw, sizeof(raw)};
     iovec remote{const_cast<uint8_t*>(base) + a, sizeof(raw)};
     if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != sizeof(raw)) return false;
+#endif
     *out = __builtin_bswap32(raw);
     return true;
   };
@@ -1201,6 +1228,7 @@ void AfterTick(PPCContext& ctx, uint8_t* base, uint32_t sync) {
   bool restart = false;
   auto end = due;  // steps from here on are the next tick's frame
   auto step = std::chrono::duration_cast<Clock::duration>(period);  // between the frames of this tick
+  auto first = step;  // from the tick's frame to the first render-only frame
   if (rate % 30 == 0 && REXCVAR_GET(kuf_present_clock_align) &&
       !REXCVAR_GET(kuf_present_clock_keep_late_phase)) {  // (the K44 fault test keeps the old clock)
     // D6 (K49): a whole number of frames per tick: the steps on the tick's schedule (phase 0), so the frames are
@@ -1223,6 +1251,10 @@ void AfterTick(PPCContext& ctx, uint8_t* base, uint32_t sync) {
       }
       g_present_clock = handoff;  // the tick's frame: the loop below starts by stepping past it
       end = handoff + render_only * step + step / 2;
+      // M18: the drawn-closer steps start at the hand-off too. With the first step a full period, the last frame came
+      // period - step after the bound the steps were computed for and was dropped as late (1440p at 120: 531 of 900
+      // ticks lost their last frame; docs/PERFORMANCE.md 12.3).
+      first = step;
     } else {
       g_present_clock = scheduled + period;
       while (g_present_clock <= g_tick_began) g_present_clock += period;
@@ -1236,7 +1268,7 @@ void AfterTick(PPCContext& ctx, uint8_t* base, uint32_t sync) {
       g_clock_restarts.fetch_add(1, std::memory_order_relaxed);
     }
   }
-  g_present_clock += period;  // the tick's frame
+  g_present_clock += first;  // the tick's frame
   int frames = 1, late = 0, busy = 0;
   std::string steps;
   for (;; g_present_clock += step) {
@@ -1432,13 +1464,13 @@ void Configure(const std::filesystem::path& user_data_root) {
   if (g_target != 0) {
     // 1000 guest vblanks per second (the SDK's --vsync=false), so the console's present interval no longer limits the
     // frame rate. The cvar belongs to the GPU plugin, which loads later and applies REX_<NAME> environment values.
-    setenv("REX_VSYNC", "false", 1);
+    kuf::SetEnv("REX_VSYNC", "false");
     REXLOG_WARN("[kuf-pacing] D1 diagnostic --kuf_render_repeat: drawing the latest tick again at {} (repeated frames "
                 "are black; not for play)",
                 g_target < 0 ? std::string("an unlimited rate") : "up to " + std::to_string(g_target) + " fps");
   }
   if (Building()) {
-    setenv("REX_VSYNC", "false", 1);  // as above: the frames between ticks need more than two vblanks of 60
+    kuf::SetEnv("REX_VSYNC", "false");  // as above: the frames between ticks need more than two vblanks of 60
   }
   if (g_frame_rate != 0) {
     REXLOG_INFO("[kuf-pacing] render-only frames: up to {} frames per second between the game's 30 ticks",

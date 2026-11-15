@@ -16,6 +16,8 @@
 //     machine use distinct loopback addresses), and a broadcast is sent to each known peer instead.
 // With kuf_coop empty every override forwards to the SDK's implementation (dlsym RTLD_NEXT), unchanged.
 // Nothing here opens router ports, changes firewall settings or uses Xbox LIVE, Steam or any service.
+// Linux and Windows (M17F): the same code over the host's sockets (src/net/sock.h for the lobby; here BSD sockets,
+// which Winsock shares, with the few differences written out).
 
 #include "coop/coop_runtime.h"
 
@@ -44,14 +46,16 @@
 #include "net/session.h"
 #include "net/steam_lobby.h"
 
-#if !defined(_WIN32)
+#include "net/sock.h"
+#if defined(_WIN32)
+#include <windows.h>
+#include <psapi.h>
+#else
 #include <dlfcn.h>
 #include <fcntl.h>
-#include <netinet/in.h>
-#include <poll.h>
 #include <sys/ioctl.h>
-#include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <rex/system/kernel_state.h>
 #include <rex/system/xevent.h>
@@ -59,7 +63,6 @@
 #include <rex/system/xthread.h>
 
 #include "coop/coop_sock.h"
-#endif
 
 REXCVAR_DEFINE_STRING(kuf_coop, "", "KUF/Co-op (developer)",
                       "Developer co-op test: host | join at startup without the menus (empty: off; the menus' Create "
@@ -83,8 +86,6 @@ REXCVAR_DEFINE_STRING(kuf_steam_app_id, "", "KUF/Multiplayer",
                       "Steam invitations: an authorized App ID (empty: off; 480 Spacewar only for development tests)");
 REXCVAR_DEFINE_STRING(kuf_steam_api_library, "", "KUF/Multiplayer",
                       "Steam invitations: the path of libsteam_api.so from your own Steamworks SDK");
-
-#if !defined(_WIN32)
 
 REX_EXTERN(__imp__sub_827E9128);
 REX_EXTERN(__imp__sub_82668698);
@@ -120,8 +121,23 @@ uint32_t StackArg(const PPCContext& ctx, const uint8_t* base, int n) {  // argum
   return Load32(base, ctx.r1.u32 + 0x54 + uint32_t(n - 8) * 8);
 }
 
+// The runtime's own implementation of an import this file overrides: the next definition after the game's own.
+// Linux: dlsym(RTLD_NEXT). Windows: the first loaded module other than the game that exports it (the runtime DLL
+// exports every guest import, patch 0020), which is what RTLD_NEXT means there.
 GuestImportFn Original(const char* symbol) {
+#if defined(_WIN32)
+  void* fn = nullptr;
+  HMODULE modules[256];
+  DWORD bytes = 0;
+  const HMODULE self = GetModuleHandleW(nullptr);
+  if (EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &bytes)) {
+    for (DWORD i = 0; i < std::min<DWORD>(bytes / sizeof(HMODULE), 256) && !fn; ++i) {
+      if (modules[i] != self) fn = reinterpret_cast<void*>(GetProcAddress(modules[i], symbol));
+    }
+  }
+#else
   void* fn = dlsym(RTLD_NEXT, symbol);
+#endif
   if (!fn) REXLOG_ERROR("[kuf-coop] the runtime has no {}", symbol);
   return reinterpret_cast<GuestImportFn>(fn);
 }
@@ -598,13 +614,52 @@ void XamUserCheckPrivilege(PPCContext& ctx, uint8_t* base) {  // (user, privileg
 
 using rex::system::XSocket;
 
-void Fail(uint32_t wsa) { rex::system::XThread::SetLastError(wsa); }
-void FailErrno() { Fail(WsaErrorOf(errno)); }
+using kuf::net::sock::Socket;
+constexpr Socket kNoSocket = kuf::net::sock::kInvalid;
 
-int Fd(uint32_t handle) {
+void Fail(uint32_t wsa) { rex::system::XThread::SetLastError(wsa); }
+void FailErrno() { Fail(LastWsaError()); }
+
+Socket Fd(uint32_t handle) {
   auto s = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(handle);
-  return s ? int(s->native_handle()) : -1;
+  return s ? Socket(s->native_handle()) : kNoSocket;
 }
+
+// Winsock cannot tell whether a socket is non-blocking: the sockets the game made non-blocking (FIONBIO), so that an
+// accepted socket takes its listener's mode as on the console. Linux asks the descriptor.
+std::mutex g_nonblocking_mu;
+std::set<uint32_t> g_nonblocking;  // guest handles
+bool NonBlocking(uint32_t handle, Socket fd) {
+#if defined(_WIN32)
+  (void)fd;
+  std::lock_guard lock(g_nonblocking_mu);
+  return g_nonblocking.count(handle) != 0;
+#else
+  (void)handle;
+  return (fcntl(fd, F_GETFL) & O_NONBLOCK) != 0;
+#endif
+}
+int SetNonBlocking(uint32_t handle, Socket fd, bool on) {
+#if defined(_WIN32)
+  u_long v = on ? 1 : 0;
+  const int rc = ioctlsocket(fd, FIONBIO, &v);
+  if (rc == 0) {
+    std::lock_guard lock(g_nonblocking_mu);
+    if (on) g_nonblocking.insert(handle); else g_nonblocking.erase(handle);
+  }
+  return rc;
+#else
+  (void)handle;
+  const int flags = fcntl(fd, F_GETFL);
+  return flags < 0 ? -1 : fcntl(fd, F_SETFL, on ? flags | O_NONBLOCK : flags & ~O_NONBLOCK);
+#endif
+}
+#if defined(_WIN32)
+constexpr int kNoSignal = 0;  // Windows has no SIGPIPE
+#else
+constexpr int kNoSignal = MSG_NOSIGNAL;
+#endif
+char* Bytes(uint8_t* base, uint32_t a) { return reinterpret_cast<char*>(base + a); }
 
 sockaddr_in Native(uint32_t ip, uint16_t port) {
   sockaddr_in sin{};
@@ -616,10 +671,10 @@ sockaddr_in Native(uint32_t ip, uint16_t port) {
 
 // An unbound socket takes this instance's address first, so that peers see its connections and datagrams coming
 // from it (on one machine, every loopback address would otherwise send from 127.0.0.1).
-void BindOwnAddress(int fd) {
+void BindOwnAddress(Socket fd) {
   if (!R().bind_own) return;
   sockaddr_in sin{};
-  socklen_t len = sizeof(sin);
+  kuf::net::sock::AddrLen len = sizeof(sin);
   if (getsockname(fd, reinterpret_cast<sockaddr*>(&sin), &len) == 0 && sin.sin_port != 0) return;
   const sockaddr_in own = Native(R().ip, 0);
   bind(fd, reinterpret_cast<const sockaddr*>(&own), sizeof(own));
@@ -635,8 +690,8 @@ int Flags(uint32_t guest_flags) {
 
 #define KUF_SOCKET_OR_FORWARD(symbol, handle)              \
   if (!Enabled()) return KUF_FORWARD(symbol);              \
-  const int fd = Fd(handle);                               \
-  if (fd < 0) {                                            \
+  const Socket fd = Fd(handle);                            \
+  if (fd == kNoSocket) {                                   \
     Fail(kWsaENotSock);                                    \
     ctx.r3.u64 = uint64_t(-1);                             \
     return;                                                \
@@ -654,9 +709,10 @@ void Bind(PPCContext& ctx, uint8_t* base) {  // (caller, s, name, namelen)
   // Developer loopback instances bind their own address; otherwise the game's own choice (any address) stands.
   const sockaddr_in sin = Native(a->ip ? a->ip : r.bind_own ? r.ip : 0, ToHostPort(a->port, r.port_base));
   if (bind(fd, reinterpret_cast<const sockaddr*>(&sin), sizeof(sin)) != 0) {
-    REXLOG_WARN("[kuf-coop] bind {}:{} failed: {}", FormatIpv4(ntohl(sin.sin_addr.s_addr)), ntohs(sin.sin_port),
-                   std::strerror(errno));
-    FailErrno();
+    const uint32_t err = LastWsaError();
+    REXLOG_WARN("[kuf-coop] bind {}:{} failed: Winsock error {}", FormatIpv4(ntohl(sin.sin_addr.s_addr)),
+                ntohs(sin.sin_port), err);
+    Fail(err);
     ctx.r3.u64 = uint64_t(-1);
     return;
   }
@@ -678,10 +734,11 @@ void Connect(PPCContext& ctx, uint8_t* base) {  // (caller, s, name, namelen)
   const sockaddr_in sin = Native(a->ip, ToHostPort(a->port, R().port_base));
   REXLOG_INFO("[kuf-coop] connect to {}:{} (game port {})", FormatIpv4(a->ip), ntohs(sin.sin_port), a->port);
   if (connect(fd, reinterpret_cast<const sockaddr*>(&sin), sizeof(sin)) != 0) {
-    if (errno != EINPROGRESS && errno != EALREADY) {
-      REXLOG_INFO("[kuf-coop] connect {}:{}: {}", FormatIpv4(a->ip), ntohs(sin.sin_port), std::strerror(errno));
+    const uint32_t err = LastWsaError();
+    if (err != kWsaEWouldBlock && err != kWsaEAlready) {
+      REXLOG_INFO("[kuf-coop] connect {}:{}: Winsock error {}", FormatIpv4(a->ip), ntohs(sin.sin_port), err);
     }
-    FailErrno();
+    Fail(err);
     ctx.r3.u64 = uint64_t(-1);
     return;
   }
@@ -714,13 +771,12 @@ void Accept(PPCContext& ctx, uint8_t* base) {  // (caller, s, addr, addrlen)
     ctx.r3.u64 = uint64_t(-1);
     return;
   }
-  const int fd = int(socket->native_handle());
-  // Winsock gives the accepted socket the listener's blocking mode; Linux does not.
-  if (fcntl(int(listener->native_handle()), F_GETFL) & O_NONBLOCK) {
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
-  }
+  const Socket fd = Socket(socket->native_handle());
+  // Winsock gives the accepted socket the listener's blocking mode; Linux does not (and on Windows the mode is set
+  // here explicitly too, since the record of it is ours).
+  if (NonBlocking(ctx.r4.u32, Socket(listener->native_handle()))) SetNonBlocking(socket->handle(), fd, true);
   sockaddr_in from{};
-  socklen_t len = sizeof(from);
+  kuf::net::sock::AddrLen len = sizeof(from);
   getpeername(fd, reinterpret_cast<sockaddr*>(&from), &len);
   const Addr4 a{ntohl(from.sin_addr.s_addr), ToGamePort(ntohs(from.sin_port), R().port_base)};
   NotePeer(a.ip);
@@ -734,14 +790,14 @@ void Accept(PPCContext& ctx, uint8_t* base) {  // (caller, s, addr, addrlen)
 
 void Recv(PPCContext& ctx, uint8_t* base) {  // (caller, s, buf, len, flags)
   KUF_SOCKET_OR_FORWARD("__imp__NetDll_recv", ctx.r4.u32);
-  const ssize_t n = recv(fd, base + ctx.r5.u32, ctx.r6.u32, Flags(ctx.r7.u32));
+  const long n = long(recv(fd, Bytes(base, ctx.r5.u32), int(ctx.r6.u32), Flags(ctx.r7.u32)));
   if (n < 0) FailErrno();
   ctx.r3.u64 = uint64_t(int64_t(n));
 }
 
 void Send(PPCContext& ctx, uint8_t* base) {  // (caller, s, buf, len, flags)
   KUF_SOCKET_OR_FORWARD("__imp__NetDll_send", ctx.r4.u32);
-  const ssize_t n = send(fd, base + ctx.r5.u32, ctx.r6.u32, Flags(ctx.r7.u32) | MSG_NOSIGNAL);
+  const long n = long(send(fd, Bytes(base, ctx.r5.u32), int(ctx.r6.u32), Flags(ctx.r7.u32) | kNoSignal));
   if (n < 0) FailErrno();
   ctx.r3.u64 = uint64_t(int64_t(n));
 }
@@ -749,9 +805,9 @@ void Send(PPCContext& ctx, uint8_t* base) {  // (caller, s, buf, len, flags)
 void RecvFrom(PPCContext& ctx, uint8_t* base) {  // (caller, s, buf, len, flags, from, fromlen)
   KUF_SOCKET_OR_FORWARD("__imp__NetDll_recvfrom", ctx.r4.u32);
   sockaddr_in from{};
-  socklen_t len = sizeof(from);
-  const ssize_t n =
-      recvfrom(fd, base + ctx.r5.u32, ctx.r6.u32, Flags(ctx.r7.u32), reinterpret_cast<sockaddr*>(&from), &len);
+  kuf::net::sock::AddrLen len = sizeof(from);
+  const long n = long(recvfrom(fd, Bytes(base, ctx.r5.u32), int(ctx.r6.u32), Flags(ctx.r7.u32),
+                               reinterpret_cast<sockaddr*>(&from), &len));
   if (n < 0) {
     FailErrno();
     ctx.r3.u64 = uint64_t(-1);
@@ -784,11 +840,11 @@ void SendTo(PPCContext& ctx, uint8_t* base) {  // (caller, s, buf, len, flags, t
   } else {
     to.push_back(a->ip);
   }
-  ssize_t n = ssize_t(ctx.r6.u32);
+  long n = long(ctx.r6.u32);
   for (uint32_t ip : to) {
     const sockaddr_in sin = Native(ip, port);
-    const ssize_t sent = sendto(fd, base + ctx.r8.u32, ctx.r6.u32, Flags(ctx.r7.u32) | MSG_NOSIGNAL,
-                                reinterpret_cast<const sockaddr*>(&sin), sizeof(sin));
+    const long sent = long(sendto(fd, Bytes(base, ctx.r8.u32), int(ctx.r6.u32), Flags(ctx.r7.u32) | kNoSignal,
+                                  reinterpret_cast<const sockaddr*>(&sin), sizeof(sin)));
     if (sent < 0 && to.size() == 1) n = -1;
   }
   if (n < 0) FailErrno();
@@ -803,19 +859,24 @@ void SetSockOpt(PPCContext& ctx, uint8_t* base) {  // (caller, s, level, name, o
   switch (o.kind) {
     case SockOpt::kInt: {
       const int v = !val ? 0 : len >= 4 ? int(Load32(base, val)) : int(base[val]);
-      rc = setsockopt(fd, o.level, o.name, &v, sizeof(v));
+      rc = setsockopt(fd, o.level, o.name, reinterpret_cast<const char*>(&v), sizeof(v));
       break;
     }
     case SockOpt::kLinger: {  // Winsock: two u_shorts
       linger l{};
-      if (val && len >= 4) l = {Load16(base, val), Load16(base, val + 2)};
-      rc = setsockopt(fd, o.level, o.name, &l, sizeof(l));
+      if (val && len >= 4) l = {decltype(l.l_onoff)(Load16(base, val)), decltype(l.l_linger)(Load16(base, val + 2))};
+      rc = setsockopt(fd, o.level, o.name, reinterpret_cast<const char*>(&l), sizeof(l));
       break;
     }
     case SockOpt::kTimeout: {  // Winsock: milliseconds
       const uint32_t ms = val && len >= 4 ? Load32(base, val) : 0;
+#if defined(_WIN32)
+      const DWORD v = ms;  // the host's Winsock takes milliseconds too
+      rc = setsockopt(fd, o.level, o.name, reinterpret_cast<const char*>(&v), sizeof(v));
+#else
       timeval tv{time_t(ms / 1000), suseconds_t((ms % 1000) * 1000)};
       rc = setsockopt(fd, o.level, o.name, &tv, sizeof(tv));
+#endif
       break;
     }
     case SockOpt::kAccept:
@@ -837,17 +898,22 @@ void IoctlSocket(PPCContext& ctx, uint8_t* base) {  // (caller, s, cmd, argp)
     return;
   }
   int rc = -1;
+  uint32_t err = 0;
   if (cmd == kFionbio) {
-    const int flags = fcntl(fd, F_GETFL);
-    rc = flags < 0 ? -1 : fcntl(fd, F_SETFL, Load32(base, arg) ? flags | O_NONBLOCK : flags & ~O_NONBLOCK);
+    rc = SetNonBlocking(ctx.r4.u32, fd, Load32(base, arg) != 0);
   } else if (cmd == kFionread) {
+#if defined(_WIN32)
+    u_long avail = 0;
+    rc = ioctlsocket(fd, FIONREAD, &avail);
+#else
     int avail = 0;
     rc = ioctl(fd, FIONREAD, &avail);
+#endif
     if (rc == 0) Store32(base, arg, uint32_t(avail));
   } else {
-    errno = EINVAL;
+    err = kWsaEInval;
   }
-  if (rc != 0) FailErrno();
+  if (rc != 0) err ? Fail(err) : FailErrno();
   ctx.r3.u64 = rc == 0 ? 0 : uint64_t(-1);
 }
 
@@ -856,19 +922,23 @@ void Select(PPCContext& ctx, uint8_t* base) {
   if (!Enabled()) return KUF_FORWARD("__imp__NetDll_select");
   const uint32_t sets[3] = {ctx.r5.u32, ctx.r6.u32, ctx.r7.u32};
   std::vector<uint32_t> handles[3];
-  std::vector<pollfd> fds;
+  std::vector<kuf::net::sock::PollFd> fds;
   std::vector<uint32_t> owner;  // the handle of each pollfd
   const auto slot = [&](uint32_t h) -> int {
     for (size_t i = 0; i < owner.size(); ++i) {
       if (owner[i] == h) return int(i);
     }
-    const int fd = Fd(h);
-    if (fd < 0) return -1;
+    const Socket fd = Fd(h);
+    if (fd == kNoSocket) return -1;
     owner.push_back(h);
     fds.push_back({fd, 0, 0});
     return int(fds.size() - 1);
   };
+#if defined(_WIN32)
+  constexpr short kEvents[3] = {POLLIN, POLLOUT, 0};  // WSAPoll refuses POLLPRI; a failure shows as POLLERR anyway
+#else
   constexpr short kEvents[3] = {POLLIN, POLLOUT, POLLPRI};
+#endif
   for (int s = 0; s < 3; ++s) {
     if (!sets[s]) continue;
     handles[s] = ReadFdSet(base + sets[s]);
@@ -882,7 +952,7 @@ void Select(PPCContext& ctx, uint8_t* base) {
       fds[size_t(i)].events |= kEvents[s];
     }
   }
-  const int rc = poll(fds.data(), fds.size(), TimeoutMs(ctx.r8.u32 ? base + ctx.r8.u32 : nullptr));
+  const int rc = kuf::net::sock::Poll(fds.data(), fds.size(), TimeoutMs(ctx.r8.u32 ? base + ctx.r8.u32 : nullptr));
   if (rc < 0) {
     FailErrno();
     ctx.r3.u64 = uint64_t(-1);
@@ -1024,15 +1094,4 @@ KUF_COOP_HOOK(NetDll_sendto)
 KUF_COOP_HOOK(NetDll_setsockopt)
 KUF_COOP_HOOK(NetDll_ioctlsocket)
 KUF_COOP_HOOK(NetDll_select)
-#endif
-
-#else  // _WIN32: not available yet (the socket layer is POSIX)
-
-namespace kuf::coop {
-bool Enabled() { return false; }
-void Maintain() {}
-std::string PlayerName() { return "Player"; }
-GuestImportFn ImportOverride(const char*) { return nullptr; }
-}  // namespace kuf::coop
-
 #endif

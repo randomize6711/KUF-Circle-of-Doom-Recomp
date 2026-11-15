@@ -1,0 +1,26 @@
+# M18C (docs/PERFORMANCE.md 12.4): the game starts with a damaged shader/pipeline cache (tests/stability/
+# damage_shader_cache.py: both storage files cut in the middle of a record) and plays: the intact pipelines are
+# loaded, the ones whose shaders were lost are skipped in one info line (SDK patch 0022) and created again when drawn,
+# no errors. (A deleted cache is every other game test: they start without one.)
+[scenario]
+description = "M18C: a damaged shader/pipeline cache is loaded in part and play continues"
+seconds = 110
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+capture_frames = []
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 10 until gameplay press Return
+@gameplay+120 down W
+@gameplay+300 up W
+@gameplay+310 down L
+@gameplay+335 up L
+@gameplay+350 down W
+@gameplay+500 up W
+@gameplay+520 capture walked
+"""
+log_expect = ["stored pipelines whose shaders are not in the shader storage", "from Vulkan storage",
+              "[kuf-input] context: gameplay"]

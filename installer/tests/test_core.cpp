@@ -6,10 +6,14 @@
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#include <thread>
+#include <algorithm>
 
 #include <unistd.h>
 
 #include "core/localbuild.h"
+#include "core/platform.h"
+#include "core/sha256.h"
 #include "core/game_data.h"
 #include "core/install.h"
 #include "core/system_check.h"
@@ -33,6 +37,76 @@ std::string Validate(const fs::path& file) {
   return out;
 }
 }  // namespace
+
+TEST_CASE("SHA-256 matches FIPS 180-4 (no glib in the core)", "[setup][platform]") {
+  CHECK(Sha256Hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  CHECK(Sha256Hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  CHECK(Sha256Hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") ==
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+  Sha256 million;  // a million 'a's, in uneven pieces
+  const std::string piece(997, 'a');
+  size_t left = 1000000;
+  while (left) {
+    const size_t n = std::min(left, piece.size());
+    million.Update(piece.data(), n);
+    left -= n;
+  }
+  CHECK(million.HexDigest() == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+}
+
+TEST_CASE("Windows command-line quoting follows CommandLineToArgvW", "[setup][platform]") {
+  CHECK(QuoteWindowsArgument("plain") == "plain");
+  CHECK(QuoteWindowsArgument("") == "\"\"");
+  CHECK(QuoteWindowsArgument("C:\\Program Files\\KUF\\clang.exe") == "\"C:\\Program Files\\KUF\\clang.exe\"");
+  CHECK(QuoteWindowsArgument("a\"b") == "\"a\\\"b\"");
+  CHECK(QuoteWindowsArgument("ends with \\") == "\"ends with \\\\\"");
+  CHECK(QuoteWindowsArgument("x\\\"y z") == "\"x\\\\\\\"y z\"");
+  CHECK(QuoteWindowsArgument("C:\\no\\spaces\\") == "C:\\no\\spaces\\");  // not quoted: backslashes stay
+}
+
+TEST_CASE("paths with spaces and Unicode survive the UTF-8 round trip; files are written and read", "[setup][platform]") {
+  test::Sandbox s;
+  const std::string name = "Spiele \xC3\xA4\xC3\xB6\xC3\xBC \xE7\xA5\x9E \xF0\x9F\x8E\xAE";  // äöü 神 🎮
+  const fs::path dir = s.dir / PathFromUtf8(name);
+  CHECK(PathUtf8(dir).find(name) != std::string::npos);
+  fs::create_directories(dir);
+  CHECK(AtomicWrite(dir / "a b.txt", "hello"));
+  std::string back;
+  CHECK(ReadFile(dir / "a b.txt", &back));
+  CHECK(back == "hello");
+  CHECK(Sha256File(dir / "a b.txt") == Sha256Hex("hello"));
+  InFile in(dir / "a b.txt");
+  char two[2];
+  REQUIRE(in.ok());
+  CHECK(in.ReadAt(3, two, 2));
+  CHECK(std::string(two, 2) == "lo");
+  CHECK_FALSE(in.ReadAt(4, two, 2));  // past the end
+  CHECK(CopyRangeHashed(dir / "a b.txt", 1, 3, dir / "part", nullptr, nullptr) == Sha256Hex("ell"));
+  CHECK(CopyRangeHashed(dir / "a b.txt", 1, 30, dir / "short", nullptr, nullptr).empty());
+  CHECK_FALSE(fs::exists(dir / "short"));
+  CHECK_FALSE(fs::exists(dir / "short.part"));
+  CHECK(CanCreateIn(dir));
+  CHECK(FreeBytes(dir) > 0);
+}
+
+TEST_CASE("child processes: exit codes, output to the log, cancellation", "[setup][platform]") {
+  test::Sandbox s;
+  const fs::path log = s.dir / "log.txt";
+  ChildProcess c;
+  REQUIRE(StartProcess({"/bin/sh", "-c", "echo hello $KUF_X; exit 3"}, s.dir, log, {"KUF_X=there"}, &c));
+  int code = -1;
+  bool oom = true;
+  while (!PollProcess(&c, &code, &oom)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  CHECK(code == 3);
+  CHECK_FALSE(oom);
+  std::string text;
+  ReadFile(log, &text);
+  CHECK(text == "hello there\n");
+  REQUIRE(StartProcess({"/bin/sleep", "30"}, s.dir, log, {}, &c));
+  CHECK(c.running());
+  KillProcess(&c);
+  CHECK_FALSE(c.running());
+}
 
 TEST_CASE("shell and desktop-entry quoting", "[setup]") {
   CHECK(ShellQuote("/home/a b/it's") == "'/home/a b/it'\\''s'");

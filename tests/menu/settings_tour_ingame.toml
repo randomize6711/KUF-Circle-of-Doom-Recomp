@@ -1,0 +1,56 @@
+# M15A: the in-game Settings and status menus, by keyboard, from the Shadow Depths save: a capture of each, the rows'
+# rectangles from the scene dump. Baseline of the pages' layout (docs/SETTINGS.md).
+
+[scenario]
+description = "In-game tour: options menu, Settings pages, status menu and inventory"
+seconds = 150
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+expect_saves_unchanged = true
+args = ["--kuf_trace_menu_pointer=true", "--kuf_trace_scene_dump=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+250 press Escape
+@gameplay+340 capture options
+@gameplay+360 press Down
+@gameplay+390 press Down
+@gameplay+420 press Down
+@gameplay+450 press Down
+@gameplay+500 capture options_settings
+@gameplay+520 press Return
+@gameplay+620 capture categories
+@gameplay+640 press Down
+@gameplay+680 press Return
+@gameplay+760 capture camera
+@gameplay+780 press Escape
+@gameplay+840 press Down
+@gameplay+880 press Return
+@gameplay+960 capture audio
+@gameplay+980 press Escape
+@gameplay+1040 press Down
+@gameplay+1080 press Down
+@gameplay+1120 press Return
+@gameplay+1200 capture controller
+@gameplay+1220 press Escape
+@gameplay+1280 press Down
+@gameplay+1320 press Return
+@gameplay+1400 capture gameplay
+@gameplay+1420 press Escape
+@gameplay+1480 press Escape
+@gameplay+1560 press Escape
+@gameplay+1640 press Tab
+@gameplay+1740 capture status
+@gameplay+1770 press PageDown
+@gameplay+1860 capture status_tab2
+@gameplay+1890 press Escape
+@gameplay+1980 capture back_to_play
+"""
+capture_frames = []
+
+[format]
+width = 1280
+height = 720

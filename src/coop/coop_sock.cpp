@@ -3,9 +3,14 @@
 #include <algorithm>
 #include <cerrno>
 
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#endif
 
 namespace kuf::coop {
 namespace {
@@ -16,6 +21,14 @@ void Put32(uint8_t* p, uint32_t v) {
 }
 
 }  // namespace
+
+#if defined(_WIN32)
+uint32_t LastWsaError() {
+  const int err = WSAGetLastError();
+  return err == WSAEINPROGRESS ? kWsaEWouldBlock : uint32_t(err);
+}
+#else
+uint32_t LastWsaError() { return WsaErrorOf(errno); }
 
 uint32_t WsaErrorOf(int err) {
   switch (err) {
@@ -49,6 +62,7 @@ uint32_t WsaErrorOf(int err) {
     default: return kWsaEInval;
   }
 }
+#endif
 
 SockOpt MapSockOpt(uint32_t level, uint32_t name) {
   if (level == 0xFFFF) {  // SOL_SOCKET
@@ -63,7 +77,8 @@ SockOpt MapSockOpt(uint32_t level, uint32_t name) {
       case 0x1005: return {SockOpt::kTimeout, SOL_SOCKET, SO_SNDTIMEO};
       case 0x1006: return {SockOpt::kTimeout, SOL_SOCKET, SO_RCVTIMEO};
       case 0xFFFFFF7F:  // SO_DONTLINGER: Linux's default
-      case 0xFFFFFFFB:  // SO_EXCLUSIVEADDRUSE: Linux never shares a bound address without SO_REUSEADDR
+      case 0xFFFFFFFB:  // SO_EXCLUSIVEADDRUSE: Linux never shares a bound address without SO_REUSEADDR (and on
+                        // Windows the ports are the moved ones, kuf_coop_port_base, which nothing else uses)
       case 0x5801:      // the console's "insecure socket" options (no XNet encryption here)
       case 0x5802:
         return {SockOpt::kAccept, 0, 0};

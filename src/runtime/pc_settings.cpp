@@ -3,8 +3,12 @@
 
 #include "runtime/pc_settings.h"
 
+#if defined(_WIN32)
+#include "runtime/win32.h"
+#else
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -38,6 +42,10 @@ struct Key {
 
 bool ValidLevel(int64_t v) { return v >= kLevelMin && v <= kLevelMax; }
 bool ValidDeadzone(int64_t v) { return v >= kDeadzoneMin && v <= kDeadzoneMax && v % kDeadzoneStep == 0; }
+bool ValidStickVertical(int64_t v) {
+  return v >= kStickVerticalMin && v <= kStickVerticalMax && v % kStickVerticalStep == 0;
+}
+bool ValidVibration(int64_t v) { return v >= kVibrationMin && v <= kVibrationMax && v % kVibrationStep == 0; }
 bool ValidDistance(int64_t v) { return v >= kDistanceMin && v <= kDistanceMax && v % kDistanceStep == 0; }
 bool ValidFov(int64_t v) { return v == kFovOriginal || (v >= kFovMin && v <= kFovMax && v % kFovStep == 0); }
 bool ValidRange(int64_t v) { return std::find(std::begin(kVerticalRanges), std::end(kVerticalRanges), v) != std::end(kVerticalRanges); }
@@ -123,6 +131,12 @@ const std::vector<Key>& Keys() {
       IntKey("controller", "camera_sensitivity", &Settings::camera, &CameraSettings::stick_sensitivity, ValidLevel),
       IntKey("controller", "camera_deadzone_percent", &Settings::camera, &CameraSettings::stick_deadzone,
              ValidDeadzone),
+      BoolKey("mouse", "low_latency", &Settings::camera, &CameraSettings::low_latency_mouse),
+      IntKey("controller", "camera_vertical_percent", &Settings::camera, &CameraSettings::stick_vertical,
+             ValidStickVertical),
+      BoolKey("controller", "camera_acceleration", &Settings::camera, &CameraSettings::stick_acceleration),
+      IntKey("controller", "move_deadzone_percent", &Settings::camera, &CameraSettings::move_deadzone, ValidDeadzone),
+      IntKey("controller", "vibration_percent", &Settings::camera, &CameraSettings::vibration, ValidVibration),
       ModeKey(),
       IntKey("display", "width", &Settings::display, &DisplaySettings::width, ValidSize),
       IntKey("display", "height", &Settings::display, &DisplaySettings::height, ValidSize),
@@ -191,7 +205,38 @@ std::string Trim(std::string_view s) {
   return std::string(s);
 }
 
+#if defined(_WIN32)
+// Windows: written and flushed with FlushFileBuffers; a folder cannot be flushed (NTFS journals its entries).
+bool WriteAll(const std::filesystem::path& path, std::string_view text, std::string* error) {
+  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    *error = "cannot create " + path.string() + ": Windows error " + std::to_string(::GetLastError());
+    return false;
+  }
+  size_t done = 0;
+  while (done < text.size()) {
+    DWORD n = 0;
+    if (!::WriteFile(h, text.data() + done, DWORD(std::min<size_t>(text.size() - done, 1u << 30)), &n, nullptr) || n == 0) {
+      *error = "cannot write " + path.string() + ": Windows error " + std::to_string(::GetLastError());
+      ::CloseHandle(h);
+      return false;
+    }
+    done += n;
+  }
+  const bool synced = ::FlushFileBuffers(h) != 0;
+  if (!synced) *error = "cannot flush " + path.string() + ": Windows error " + std::to_string(::GetLastError());
+  ::CloseHandle(h);
+  return synced;
+}
+void SyncDirectory(const std::filesystem::path&) {}
+#else
 bool SyncFd(int fd) { return fd >= 0 && ::fsync(fd) == 0; }
+
+void SyncDirectory(const std::filesystem::path& dir) {  // the rename is durable once the directory is flushed
+  const int dfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  SyncFd(dfd);  // best effort
+  if (dfd >= 0) ::close(dfd);
+}
 
 bool WriteAll(const std::filesystem::path& path, std::string_view text, std::string* error) {
   const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
@@ -217,6 +262,7 @@ bool WriteAll(const std::filesystem::path& path, std::string_view text, std::str
   }
   return synced;
 }
+#endif
 
 }  // namespace
 
@@ -431,9 +477,7 @@ bool WriteFileAtomically(const std::filesystem::path& path, std::string_view tex
     std::filesystem::remove(tmp, ec);
     return false;
   }
-  const int dfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  SyncFd(dfd);  // the rename is durable once the directory is flushed (best effort)
-  if (dfd >= 0) ::close(dfd);
+  SyncDirectory(dir);
   return true;
 }
 

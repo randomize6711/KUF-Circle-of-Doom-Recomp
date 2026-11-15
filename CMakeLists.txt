@@ -16,14 +16,56 @@ add_compile_options("-fmacro-prefix-map=${CMAKE_SOURCE_DIR}/=")
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# The SDK and its own submodules must be checked out (a clone without --recursive has empty folders, and the
+# errors that follow name some header deep in the build).
+set(_kufcod_sdk "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/rexglue-sdk")
+set(_kufcod_missing)
+foreach(_kufcod_check CMakeLists.txt thirdparty/sdl3/CMakeLists.txt thirdparty/fmt/CMakeLists.txt
+        thirdparty/spdlog/CMakeLists.txt thirdparty/FFmpeg/configure thirdparty/libmspack/libmspack/mspack/lzxd.c
+        thirdparty/vulkan-headers/include/vulkan/vulkan.h thirdparty/simde/simde/simde-common.h
+        thirdparty/tomlplusplus/include/toml++/toml.hpp thirdparty/xxHash/xxhash.h thirdparty/o1heap/o1heap/o1heap.c)
+    if(NOT EXISTS "${_kufcod_sdk}/${_kufcod_check}")
+        list(APPEND _kufcod_missing "${_kufcod_check}")
+    endif()
+endforeach()
+if(_kufcod_missing)
+    message(FATAL_ERROR "The ReXGlue SDK or its submodules are not checked out (missing: ${_kufcod_missing}).\n"
+        "Run: git submodule update --init --recursive   (or tools/windows/build.sh on Windows, which does it)")
+endif()
+
 # Our SDK patches (patches/rexglue-sdk) must be applied to the submodule: tools/apply_sdk_patches.sh.
-execute_process(COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/apply_sdk_patches.sh --check
+# A Windows host cannot run the script itself: through Git for Windows' bash (not WSL's System32\bash.exe, which
+# would run it in another system with other paths).
+set(_kufcod_sh)
+if(CMAKE_HOST_WIN32)
+    find_package(Git QUIET)
+    set(_kufcod_git_hints)
+    if(GIT_EXECUTABLE)
+        get_filename_component(_kufcod_git_dir "${GIT_EXECUTABLE}" DIRECTORY)
+        list(APPEND _kufcod_git_hints "${_kufcod_git_dir}/../bin" "${_kufcod_git_dir}/../usr/bin" "${_kufcod_git_dir}")
+    endif()
+    find_program(KUFCOD_BASH bash HINTS ${_kufcod_git_hints} NO_DEFAULT_PATH)
+    if(NOT KUFCOD_BASH)
+        message(FATAL_ERROR "Git for Windows' bash.exe was not found beside git.exe: install Git for Windows "
+                            "(https://git-scm.com/download/win) and run CMake from Git Bash or with git on the PATH")
+    endif()
+    set(_kufcod_sh ${KUFCOD_BASH})
+endif()
+execute_process(COMMAND ${_kufcod_sh} ${CMAKE_CURRENT_SOURCE_DIR}/tools/apply_sdk_patches.sh --check
                 RESULT_VARIABLE _kufcod_patch_state OUTPUT_VARIABLE _kufcod_patch_out)
 if(NOT _kufcod_patch_state EQUAL 0)
     message(FATAL_ERROR "ReXGlue SDK patches missing; run tools/apply_sdk_patches.sh\n${_kufcod_patch_out}")
 endif()
 
 include(generated/rexglue.cmake)
+if(MINGW)
+    # Explicit exports (rex/hook.h REX_FUNC_EXPORT, patch 0020) turn the linker's automatic export off: keep it on.
+    target_link_options(rexruntime PRIVATE -Wl,--export-all-symbols)
+    target_link_options(rexgpu-xenos PRIVATE -Wl,--export-all-symbols)
+    # The runtime loads the GPU plugin by name (src/system/gpu_plugin_loader.cpp: rexgpu-<name><postfix>.dll on
+    # Windows, as MSVC names it); MinGW would add "lib" (the first Windows run: "Failed to load GPU plugin 'xenos'").
+    set_target_properties(rexgpu-xenos PROPERTIES PREFIX "")
+endif()
 
 # Only the runtime library, from the source archive and without the game (tools/package/rebuild_runtime.sh).
 option(KUFCOD_RUNTIME_ONLY "Configure only the SDK's libraries: no generated code is needed" OFF)
@@ -115,18 +157,23 @@ endif()
 # downloaded (never committed, never redistributed): KUF_STEAMWORKS_SDK, by default build/tools/steamworks_sdk_*/sdk
 # when present; without it the backend is built as "not available". Valve's library is never linked: it is loaded
 # at run time only when an App ID is configured.
-add_library(kuf_net STATIC src/net/crypto.cpp src/net/protocol.cpp src/net/session.cpp src/net/steam_lobby.cpp
-            src/net/steam_backend.cpp src/coop/coop_addr.cpp src/coop/coop_sock.cpp
-            src/coop/coop_xsession.cpp src/coop/lobby_service.cpp src/coop/steam_provider.cpp
-            src/coop/lobby_menu.cpp src/coop/text_field.cpp src/input/text_entry.cpp)
+# Linux and Windows alike (M17F): the sockets through src/net/sock.{h,cpp} (Winsock on Windows).
+set(KUF_NET_SOURCES src/net/protocol.cpp src/coop/coop_addr.cpp src/coop/coop_xsession.cpp src/coop/lobby_menu.cpp
+    src/coop/text_field.cpp src/input/text_entry.cpp src/net/sock.cpp src/net/crypto.cpp src/net/session.cpp
+    src/net/steam_lobby.cpp src/net/steam_backend.cpp src/coop/coop_sock.cpp src/coop/lobby_service.cpp
+    src/coop/steam_provider.cpp)
+add_library(kuf_net STATIC ${KUF_NET_SOURCES})
 target_include_directories(kuf_net PUBLIC src)
+if(WIN32)
+    target_link_libraries(kuf_net PUBLIC ws2_32 iphlpapi bcrypt)
+endif()
 if(NOT DEFINED KUF_STEAMWORKS_SDK)
     file(GLOB _kuf_sdk_dirs LIST_DIRECTORIES true "${CMAKE_CURRENT_SOURCE_DIR}/build/tools/steamworks_sdk_*/sdk")
     if(_kuf_sdk_dirs)
         list(GET _kuf_sdk_dirs -1 KUF_STEAMWORKS_SDK)
     endif()
 endif()
-if(KUF_STEAMWORKS_SDK AND EXISTS "${KUF_STEAMWORKS_SDK}/public/steam/steam_api_flat.h")
+if(NOT WIN32 AND KUF_STEAMWORKS_SDK AND EXISTS "${KUF_STEAMWORKS_SDK}/public/steam/steam_api_flat.h")
     message(STATUS "Steamworks SDK: ${KUF_STEAMWORKS_SDK} (the Steam lobby backend is built)")
     target_include_directories(kuf_net SYSTEM PRIVATE "${KUF_STEAMWORKS_SDK}/public")
     target_compile_definitions(kuf_net PRIVATE KUF_HAVE_STEAMWORKS=1)
@@ -135,6 +182,35 @@ else()
     message(STATUS "Steamworks SDK: not found (the Steam lobby backend is not built)")
 endif()
 target_link_libraries(kuf_cod PRIVATE kuf_net)
+if(MINGW)
+    target_link_options(kuf_cod PRIVATE -municode)  # the SDK's entry point is wWinMain (windowed_app_main_sdl.cpp)
+    # The guest's setjmp/longjmp (ppc_setjmp, ppc_longjmp in the generated header) only restore registers, as on
+    # Linux: mingw-w64's default x64 setjmp records the frame, and longjmp would unwind through the recompiled frames
+    # the SEH way. mingw-w64's own switch (setjmp.h) makes setjmp _setjmp(buf, NULL): no unwinding. (The Windows
+    # crash at the game's first setjmp was the jmp_buf's alignment: patch 0020, pch_h.inja.)
+    # (The generated code's own object library, kuf_cod_recomp, gets it after rexglue_setup_target below.)
+    target_compile_definitions(kuf_cod PRIVATE __USE_MINGW_SETJMP_NON_SEH)
+    # llvm-mingw's C++ runtime DLLs beside the programs that need them: the code generator (run during the build on
+    # a Windows host; without them it fails with 0xC0000135) and the game.
+    set(_kufcod_mingw_dlls "${KUFCOD_LLVM_MINGW}/x86_64-w64-mingw32/bin/libc++.dll"
+                           "${KUFCOD_LLVM_MINGW}/x86_64-w64-mingw32/bin/libunwind.dll")
+    foreach(_kufcod_dll IN LISTS _kufcod_mingw_dlls)
+        if(NOT EXISTS "${_kufcod_dll}")
+            message(FATAL_ERROR "llvm-mingw runtime DLL missing: ${_kufcod_dll} (KUFCOD_LLVM_MINGW=${KUFCOD_LLVM_MINGW})")
+        endif()
+    endforeach()
+    # Both write into <build>/bin (below); copied at configure time (a POST_BUILD step cannot be attached to the
+    # SDK's rexglue target from here).
+    file(COPY ${_kufcod_mingw_dlls} DESTINATION "${CMAKE_BINARY_DIR}/bin")
+    # UTF-8 process code page for the game and the code generator: their paths (options, logs, saves) are UTF-8
+    # strings, which Windows would otherwise read in the ANSI code page (a folder 'Ü' became 'Ãœ').
+    enable_language(RC)
+    include(cmake/windows/utf8_manifest.cmake)
+    kufcod_utf8_manifest(kuf_cod)
+    if(TARGET rexglue)
+        kufcod_utf8_manifest(rexglue)
+    endif()
+endif()
 
 # The version header, regenerated at every build (written only when the version changes).
 set(KUFCOD_VERSION_HEADER "${CMAKE_BINARY_DIR}/generated_include/kuf_version_generated.h")
@@ -157,6 +233,10 @@ if(KUFCOD_IMPORT_AUDIT)
 endif()
 
 rexglue_setup_target(kuf_cod GPU_PLUGINS xenos)
+if(MINGW AND TARGET kuf_cod_recomp)
+    # The generated code, where ppc_setjmp / ppc_longjmp are used: no SEH unwinding (see kuf_cod above).
+    target_compile_definitions(kuf_cod_recomp PRIVATE __USE_MINGW_SETJMP_NON_SEH)
+endif()
 
 # The SDK writes its binaries into its own source tree (thirdparty/rexglue-sdk/out/<platform>), shared by
 # every build configuration: a host build there replaced the static libraries a portable (Steam Runtime) build

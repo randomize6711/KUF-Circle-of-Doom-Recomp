@@ -358,6 +358,42 @@ any_of = "loot"
         self.assertEqual(self.failed(text), {"any_of[loot]"}, text)
         self.assertIn("[--] region_diff[gold changed]", text)
 
+    def test_edge_tolerance_ignores_glyph_edges_crossing_the_threshold(self):
+        # K24 follow-up (2026-11-09): Gold 100 unchanged, but the scene behind the panel got brighter and the
+        # digits' anti-aliased edges crossed the text threshold (17 pixels, mean difference 1.51 > 1.0).
+        open(self.exp, "w").write("""
+[[region_diff]]
+name = "gold changed"
+a = "before"
+b = "after"
+rect = [100, 20, 200, 40]
+metric = "text"
+edge_tolerance_px = 1
+min_mean_diff = 0.4
+""")
+        def screen(digit_x, edge):
+            img = np.full((H, W, 3), 40, np.uint8)
+            img[24:36, 110:130] = 230                      # "Gold:"
+            img[24:36, digit_x:digit_x + 8] = 230          # the digit
+            img[23, 110:130] = edge                        # anti-aliased edges, near the threshold (150)
+            img[36, digit_x:digit_x + 8] = edge
+            img[24:36, digit_x + 8] = edge
+            return img
+        def run(after_digit, edge_after, tolerance=True):
+            if not tolerance:
+                open(self.exp, "w").write(open(self.exp).read().replace("edge_tolerance_px = 1\n", ""))
+            write_captures(self.dir, [(100, screen(150, 140), {"label": "before"}),
+                                      (160, screen(after_digit, edge_after), {"label": "after"})])
+            return self.check()
+        status, text = run(150, 160)   # unchanged; only the edges crossed the threshold: no change
+        self.assertEqual(self.failed(text), {"region_diff[gold changed]"}, text)
+        status, text = run(170, 140)   # the digit moved: a change
+        self.assertEqual(status, 0, text)
+        status, text = run(170, 160)   # moved and brighter edges: still a change
+        self.assertEqual(status, 0, text)
+        status, text = run(150, 160, tolerance=False)  # without the tolerance the edges alone pass (the old rule)
+        self.assertEqual(status, 0, text)
+
     def test_right_aligned_text_compares_the_end_of_a_value(self):
         # "HP: c/m": the current value c has one or two digits, so the maximum m after the slash moves.
         open(self.exp, "w").write("""

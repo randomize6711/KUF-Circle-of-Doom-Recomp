@@ -22,9 +22,12 @@ import os
 import re
 import sys
 import tarfile
+import zipfile
 
 PRODUCT = "kuf-cod-recomp"
 NAME_RE = re.compile(r"^kuf-cod-recomp-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-(linux-x86_64)\.tar\.gz$")
+# The Windows portable edition's archive is also its update package (M17G: kuf-update, core/update/updater.h).
+WINDOWS_RE = re.compile(r"^(KUF-Circle-of-Doom-Portable)-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-(windows-x86_64)\.zip$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 
 
@@ -40,22 +43,34 @@ def main():
     a = ap.parse_args()
     name = os.path.basename(a.package)
     m = NAME_RE.match(name)
-    if not m:
-        sys.exit(f"{name}: not kuf-cod-recomp-<release version>-linux-x86_64.tar.gz (no build metadata)")
-    version, platform = m.groups()
-    with tarfile.open(a.package, "r:gz") as tar:
-        vfile = tar.extractfile(f"{name[:-len('.tar.gz')]}/VERSION")
-        inside = vfile.read().decode().strip() if vfile else None
-        try:
-            rfile = tar.extractfile(f"{name[:-len('.tar.gz')]}/REQUIRES")
-        except KeyError:
-            rfile = None
-        requires = {}
-        for line in (rfile.read().decode().splitlines() if rfile else []):
-            key, _, value = line.partition(" ")
-            if key not in ("glibc", "glibcxx", "glibcxx-bundled") or not re.fullmatch(r"\d+(\.\d+)+", value):
-                sys.exit(f"{name}: REQUIRES line {line!r}")
-            requires[key.replace("-", "_")] = value
+    w = WINDOWS_RE.match(name)
+    if not m and not w:
+        sys.exit(f"{name}: not kuf-cod-recomp-<release version>-linux-x86_64.tar.gz or "
+                 "KUF-Circle-of-Doom-Portable-<release version>-windows-x86_64.zip (no build metadata)")
+    requires = {}
+    if w:
+        prefix, version, platform = w.groups()
+        with zipfile.ZipFile(a.package) as z:
+            try:
+                inside = z.read(f"{prefix}/Runtime/VERSION").decode().strip()
+            except KeyError:
+                inside = None
+    else:
+        version, platform = m.groups()
+        prefix = PRODUCT
+        with tarfile.open(a.package, "r:gz") as tar:
+            vfile = tar.extractfile(f"{name[:-len('.tar.gz')]}/VERSION")
+            inside = vfile.read().decode().strip() if vfile else None
+            try:
+                rfile = tar.extractfile(f"{name[:-len('.tar.gz')]}/REQUIRES")
+            except KeyError:
+                rfile = None
+            requires = {}
+            for line in (rfile.read().decode().splitlines() if rfile else []):
+                key, _, value = line.partition(" ")
+                if key not in ("glibc", "glibcxx", "glibcxx-bundled") or not re.fullmatch(r"\d+(\.\d+)+", value):
+                    sys.exit(f"{name}: REQUIRES line {line!r}")
+                requires[key.replace("-", "_")] = value
     if inside != version:
         sys.exit(f"{name}: VERSION inside is {inside!r}, not {version!r}")
     if a.min_installed and not VERSION_RE.match(a.min_installed):
@@ -84,7 +99,7 @@ def main():
     if requires:
         manifest["requires"] = requires
     out = a.out or os.path.join(os.path.dirname(os.path.abspath(a.package)),
-                                f"{PRODUCT}-{version}-{platform}.update.json")
+                                f"{prefix}-{version}-{platform}.update.json")
     with open(out, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=1, sort_keys=True)
         f.write("\n")

@@ -1,0 +1,30 @@
+# M15.1: where the game thread stalls, from the start to a minute of play (docs/INPUT.md "Combat input and movement").
+# Every stall of 50 ms or more between input polls ([kuf-input-stall]), single waits for the GPU of 20 ms or more
+# ([kuf-gpu-wait] long), the pipelines being created. A run with an empty cache against one with a filled cache
+# (menu_test.py --cache-from) separates what the pipeline cache changes. Not registered in ctest: an investigation.
+
+[scenario]
+description = "The game thread's stalls: title, menus, the load, the first minute of play"
+seconds = 105
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_frame_rate=60", "--kuf_trace_input_latency=true", "--kuf_trace_gpu_waits=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+100 down W
+@gameplay+200 up W
+@gameplay+300 down S
+@gameplay+400 up S
+@gameplay+500 press MouseLeft
+@gameplay+800 press MouseLeft
+@gameplay+900 capture play
+"""
+capture_frames = []
+
+[format]
+width = 1280
+height = 720

@@ -1,0 +1,68 @@
+Kingdom Under Fire: Circle of Doom Recomp 0.8.0-rc.3 (experimental pre-release)
+
+**This is an experimental pre-release for testing and feedback.** Expect bugs. Please report installation problems, crashes and gameplay regressions (see "Feedback" below).
+
+This release contains no game files, no code of the game and no console keys. The setup makes the native game on your own computer, from your own files, with tools it brings along. You do not need a compiler or a terminal, nothing is installed on your system, and nothing is uploaded.
+
+## Before you download: you need an unencrypted default.xex
+
+You need your own copy of the original Xbox 360 game (base version 0.0.0.1, without title update). The setup now accepts it as an extracted folder or as a disc image (`.iso`), and it recognises a retail copy. **But a retail copy's `default.xex` is encrypted, and this setup does not decrypt it** (docs/RETAIL_FILES.md). It then asks for an unencrypted `default.xex` of the same version in a second field, and installs the rest of the game from your dump. This project does not provide a way to decrypt it.
+
+## What's new
+
+- **M15.2, game-file import:** choose a folder, an Xbox 360 disc image (`.iso`) or the `default.xex` itself. The setup reads disc images itself (nothing is extracted next to your files), matches file names regardless of case, ignores `$SystemUpdate`, and says exactly what is wrong with an unsupported copy: another game, another version or region, a title update, or a damaged image.
+- **M15 and M15.1, mouse and controller:** every Settings page has its rows on the left and a description on the right; sliders and the mouse wheel work in the menus; new camera and controller options; combat input and movement were measured and tidied; an optional Low Latency mouse look (Camera > Low Latency, **off by default**, still being tested).
+- **M14 performance improvements remain:** lower CPU use, fewer Vulkan stalls and shorter first-time effect stutters (0.8.0-rc.2's notes).
+
+## Supported systems
+
+- 64-bit (x86_64) Linux with glibc 2.31 or newer (for example Ubuntu 20.04, Debian 11, Fedora 32, SteamOS 3, Arch and later).
+- A Vulkan driver, GTK 3 (for the setup) and about 5.5 GB of free space (about 4.5 GB stays in use).
+- Windows and macOS are not supported.
+
+## Installing
+
+1. Download `KingdomUnderFire-CircleOfDoom-Setup-0.8.0-rc.3-x86_64.AppImage` and check it against `SHA256SUMS` (`sha256sum -c SHA256SUMS --ignore-missing`).
+2. Make it executable (file manager: Properties > Permissions > Allow executing, or `chmod +x`) and open it.
+3. **Game Files:** **Browse…** for a folder, or **File…** for a disc image or `default.xex`. For a retail copy, also choose an unencrypted `default.xex` in the second field.
+4. Choose the installation folder and the shortcuts (application menu, desktop, "Add to Steam"), then Install.
+
+The setup checks and copies your game files, generates the native code, compiles it and creates the shortcuts. Cancel is safe, and an interrupted attempt continues where it stopped. Running the setup again offers **Repair or Reinstall** and **Uninstall** (your saves are kept unless you choose otherwise).
+
+## Steam Deck
+
+**Not yet tested on a physical Steam Deck**, so these steps are unconfirmed.
+
+1. Switch to Desktop Mode (Steam button > Power > Switch to Desktop).
+2. Download the AppImage into `Downloads` with a browser, or copy it over.
+3. In Dolphin, right-click it > Properties > Permissions, tick "Is executable", then double-click it.
+4. Choose your game files (the SD card is fine) and, for a retail copy, the unencrypted `default.xex`. Keep the default installation folder `~/Games/Kingdom Under Fire - Circle of Doom`.
+5. Leave "Add to Steam" ticked. Steam must be closed: the setup asks, so use Steam > Exit, then Retry.
+6. Install, with the Deck plugged in. It compiles on the Deck; how long that takes has not been measured.
+7. Start Steam again and return to Gaming Mode. The game is in your library under Non-Steam.
+
+If the shortcut is missing: in Desktop Mode, Steam > Games > Add a Non-Steam Game to My Library > Browse, and choose `kuf-cod` in the installation folder.
+
+## Updates, saves
+
+**Updates:** a pre-release is offered to an installed game only with `channel = prerelease` in `update.conf` in the installation folder. Updates are signed and verified; a failed update leaves your version in place. Installations older than 0.8.0-rc.2 cannot update to it: run this setup instead (Repair keeps the game files, saves and settings).
+
+**Saves and settings** stay in `~/.local/share/kuf-cod-recomp/data` and `~/.config/kuf-cod-recomp`.
+
+## Feedback
+
+Report problems at https://github.com/randomize6711/KUF-Circle-of-Doom-Recomp/issues: what you did, what happened, your Linux distribution and graphics card, and the logs. `~/"Games/Kingdom Under Fire - Circle of Doom"/kuf-cod --collect-logs` packs them (no saves or game files are included); the AppImage with `--check-system` prints what the setup checks.
+
+## Known limitations
+
+- **An encrypted retail `default.xex` is not decrypted** (see above). Only the base version is supported; title updates are not.
+- **Disc images:** the reader is tested with test images built to the format at all four layouts, **not yet with a real dumped `.iso`**. Please report whether yours works.
+- **Steam Deck:** not tested on a physical Deck or on SteamOS itself (only Valve's Steam Runtime 3 image); no Deck "Verified" status; compile time on the Deck unknown.
+- **Low Latency** mouse look (off by default) can show a few frames of black at sharp corners in a fast turn (K78).
+- The first start compiles shaders, so the first minutes of play stutter more (K76).
+- K1: see docs/KNOWN_ISSUES.md. K75, K77: Vulkan validation reports with no visible effect known.
+- Online co-op is not available.
+
+The project's own work is under the MIT licence, which grants nothing in the game itself (NOTICE). It uses FFmpeg and libmspack under the GNU LGPL. Licences and sources: `kuf-cod --licenses`, `licenses/THIRD-PARTY-NOTICES.txt` in the package, and the `-source.tar.xz` and `-toolchain-sources.tar` assets of this release.
+
+This is an unofficial fan project, not affiliated with or endorsed by the game's publishers.

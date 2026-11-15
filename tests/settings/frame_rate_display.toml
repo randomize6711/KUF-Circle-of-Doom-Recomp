@@ -2,6 +2,8 @@
 # a simulated 21:9 monitor (as display_menu). The display page: Mode Windowed, a smaller size, Widescreen Off and On
 # (at once), down to Apply (the last row) and Keep (the window becomes 1920x1080); Up six times to FPS (120 shown).
 # Gameplay before and after: up to 120 frames per second (the swapchain recreated, the frame rate kept; one limiter).
+# M15.1: Settings opens directly on the categories: Display, Camera, Audio, Mouse & Keyboard, Controller, Gameplay,
+# Restore Defaults (K66). What this route checks is unchanged; where the text above names older rows, these replace them.
 
 [scenario]
 description = "Display mode, size and widescreen changed at 120 fps: the frame rate kept"
@@ -25,17 +27,6 @@ script = """
 @gameplay+780 press Down
 @gameplay+830 press Down
 @gameplay+930 press Return
-@gameplay+1080 press Down
-@gameplay+1110 press Down
-@gameplay+1140 press Down
-@gameplay+1170 press Down
-@gameplay+1200 press Down
-@gameplay+1230 press Down
-@gameplay+1260 press Down
-@gameplay+1290 press Down
-@gameplay+1390 press Return
-@gameplay+1540 press Down
-@gameplay+1570 press Down
 @gameplay+1600 press Return
 @gameplay+1760 capture display_page
 @gameplay+1790 press Left
@@ -53,7 +44,8 @@ script = """
 @gameplay+2270 press Down
 @gameplay+2300 press Down
 @gameplay+2330 press Down
-@gameplay+2360 press Return
+@gameplay+2345 press Down
+@gameplay+2375 press Return
 @gameplay+2460 press Return
 @gameplay+2560 capture kept
 @gameplay+2590 press Up
@@ -62,11 +54,11 @@ script = """
 @gameplay+2680 press Up
 @gameplay+2710 press Up
 @gameplay+2740 press Up
+@gameplay+2770 press Up
 @gameplay+2810 capture fps_row
 @gameplay+2840 press Escape
 @gameplay+2940 press Escape
 @gameplay+3040 press Escape
-@gameplay+3140 press Escape
 @gameplay+3340 log mark play_c
 @gameplay+3350 down W
 @gameplay+3650 log mark play_d

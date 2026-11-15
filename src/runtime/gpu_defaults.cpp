@@ -14,6 +14,7 @@
 // GPU time per frame 10.58 -> 8.58 ms, 87.3 -> 101.5 fps; the gameplay frames are bit-identical
 // (render.direct_load_check).
 #include "runtime/gpu_defaults.h"
+#include "runtime/platform_env.h"
 
 #include <cstdlib>
 #include <string>
@@ -31,7 +32,7 @@ void SetDefault(const char* env_name, const char* value) {
     REXLOG_INFO("[kuf-gpu] {} from the environment: {}", env_name, std::getenv(env_name));
     return;
   }
-  setenv(env_name, value, 1);
+  kuf::SetEnv(env_name, value);
 }
 
 }  // namespace

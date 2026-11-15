@@ -26,7 +26,9 @@ runs from the build tree with `build/installer/kuf-setup --assets build/installe
 |---|---|
 | The wizard (GTK 3, CSS theme; no animations) | `src/gui/main.cpp`, `assets/theme.css` |
 | Installing, repairing, uninstalling (transactional) | `src/core/install.cpp` |
-| The game files: the supported version's list (SHA-256, size, path of the 137 files the game reads; `$SystemUpdate` not needed) and the checks | `assets/game_v1.tsv`, `src/core/game_data.cpp` |
+| The game files: the supported version's list (SHA-256, size, path of the 137 files the game reads; `$SystemUpdate` not needed; `@` lines: the title, media and version, the retail executable's SHA-256) and the checks, from a folder or a disc image | `assets/game_v1.tsv`, `src/core/game_data.cpp` |
+| Xbox 360 disc images (XDVDFS, the setup's own reader) | `src/core/xiso.cpp` |
+| Retail default.xex decryption (AES-128, own implementation; off by default and never in a release: `KUF_SETUP_RETAIL_DECRYPTION`, docs/RETAIL_FILES.md) | `src/core/xex_decrypt.cpp`, `src/retail_key.cpp` |
 | Steam (installations, profiles, `shortcuts.vdf`) | `src/core/steam.cpp`, `src/core/vdf.cpp` |
 | XDG folders, quoting, verified copies, system requirements | `src/core/util.cpp` |
 | Original artwork (the icon: a sword in a bronze ring; the divider) | `assets/*.svg` (rendered to PNG by the build) |
@@ -90,12 +92,17 @@ explicit confirmation. The original game files are never touched.
   unknown formats left untouched, profiles); installing, repairing, uninstalling in disposable folders (failures leave
   nothing, cancelling, paths with spaces, quotes and `$`). `HOME` / `XDG_*` point into temporary folders: the real
   desktop, menu, Steam and saves are never touched.
-- `build/installer/kuf_setup_e2e PAYLOAD ASSETS GAME ROOT` installs for real into a disposable folder (about 4 GB)
+- `[retail]` cases (`tests/test_retail.cpp`): executables identified (game, version, title update, retail, encryption),
+  folders matched ignoring case, a separate executable, disc images written by the test at all four partition offsets,
+  damaged images refused. With `KUF_TEST_RETAIL_DIR` (and `KUF_TEST_PLAIN_XEX`) the real retail folder is checked, only read.
+- `build/installer/kuf_setup_e2e PAYLOAD ASSETS GAME ROOT [EXECUTABLE]` installs for real into a disposable folder (about
+  4 GB; GAME a folder or disc image, EXECUTABLE a separate unencrypted default.xex; `KUF_E2E_JOBS` limits the build)
   and `--uninstall ROOT` removes it; run with `HOME` / `XDG_*` in a temporary folder.
 - `kuf-setup --walkthrough DIR` goes through the window's real flow by pressing its own buttons, including the installation,
   without a person at the screen (`GDK_BACKEND=broadway`; `KUF_SETUP_SHOT_GAME`, `KUF_SETUP_WALK_ROOT`, optional
-  `KUF_SETUP_WALK_REFUSED` and `KUF_SETUP_WALK_CANCEL`; `HOME` / `XDG_*` in a temporary folder): pictures and a log in DIR.
+  `KUF_SETUP_SHOT_EXE`, `KUF_SETUP_WALK_REFUSED` and `KUF_SETUP_WALK_CANCEL`; `HOME` / `XDG_*` in a temporary folder): pictures and a log in DIR.
 - `kuf-setup --screenshot DIR` draws each page into PNGs (`GDK_BACKEND=broadway` with `broadwayd :7`: no screen).
+  `KUF_SETUP_SHOT_RETAIL` (a retail dump) and `KUF_SETUP_SHOT_EXE` add the game page refusing it, then accepting it.
   With `KUF_SETUP_SHOT_SIZE=1280x709 KUF_SETUP_SHOT_SCREEN=1280x756` (the Steam Deck's screen less the desktop's
   panel and the header bar) it also writes `layout.txt`: per page whether the content fits the width and whether it
   scrolls, and whether the visible window fits the screen (M11: all pages fit, none scrolls).
@@ -105,6 +112,7 @@ explicit confirmation. The original game files are never touched.
 - Releases are portable builds (docs/STEAM_DECK.md "Portable build"): the game needs glibc 2.31 or newer (it
   carries its own libstdc++), the setup glibc 2.31 and GTK 3 (its libstdc++ linked in). The setup refuses cleanly
   where the game cannot run.
-- Only the original game's base version is accepted (default.xex v1, unencrypted: docs/LOCAL_BUILD.md "Decryption keys");
-  the game files are copied (about 4 GB).
+- Only the original game's base version is accepted (default.xex v1); the game files are copied (about 4 GB). A retail
+  folder or disc image is recognised and its encrypted default.xex decrypted into the installation (docs/RETAIL_FILES.md;
+  built with -DKUF_SETUP_RETAIL_DECRYPTION=OFF it needs a separate unencrypted default.xex instead). A picked default.xex stands for its folder.
 - Menu artwork from the player's own game files is not used: the setup has its own artwork only.

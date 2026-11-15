@@ -114,10 +114,22 @@ endmacro()
 # codegen, including one a project assembles itself rather than taking the
 # library rexglue_setup_target() builds. The stamp comes first: the DEPFILE
 # names it.
+#
+# A cross build (for example Windows from Linux) runs the build machine's code
+# generator, never the target's program: REXGLUE_HOST_REXGLUE names it. The
+# output is plain C++, the same on every system.
+if(CMAKE_CROSSCOMPILING AND NOT CMAKE_SYSTEM_NAME STREQUAL CMAKE_HOST_SYSTEM_NAME)
+    if(NOT REXGLUE_HOST_REXGLUE OR NOT EXISTS "${REXGLUE_HOST_REXGLUE}")
+        message(FATAL_ERROR "A cross build needs -DREXGLUE_HOST_REXGLUE=<a native build>/bin/rexglue")
+    endif()
+    set(_rexglue_codegen_tool "${REXGLUE_HOST_REXGLUE}")
+else()
+    set(_rexglue_codegen_tool $<TARGET_FILE:rex::rexglue>)
+endif()
 add_custom_command(
     OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/generated/default/codegen.build.stamp"
            ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
-    COMMAND $<TARGET_FILE:rex::rexglue> codegen ${CMAKE_CURRENT_SOURCE_DIR}/kuf_cod_manifest.toml
+    COMMAND ${_rexglue_codegen_tool} codegen ${CMAKE_CURRENT_SOURCE_DIR}/kuf_cod_manifest.toml
     DEPFILE "${CMAKE_CURRENT_SOURCE_DIR}/generated/default/codegen.d"
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Generating recompiled code for kuf_cod"

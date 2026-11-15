@@ -5,18 +5,23 @@
 # the update tests. The player's real installation, saves and settings are compared before and after, never used.
 #
 #   tools/package/local_install_test.sh RELEASE_DIR GAME_DIR RUN [--rc1-package TARBALL] [--retail-xex FILE]
+#       [--retail-dir DIR] [--iso FILE]
 #
 # GAME_DIR holds the game with an unencrypted default.xex; it is only read, and copies for the failure cases are reflinks.
-# --retail-xex: an encrypted default.xex for the refusal test (only read). Output: build/local-install-test/<RUN>/.
+# --retail-xex: an encrypted default.xex for the game-check test (only read). --retail-dir: a retail disc dump (encrypted
+# default.xex, $SystemUpdate), --iso: an Xbox 360 disc image of it; both only read, each installed with GAME_DIR's
+# unencrypted default.xex as the separate executable (M15.2). Output: build/local-install-test/<RUN>/.
 # Exit 0 when every check passed.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REL="$(realpath "$1")"; GAME="$(realpath "$2")"; RUN="$3"; shift 3
-RC1="" RETAIL=""
+RC1="" RETAIL="" RETAIL_DIR="" ISO=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --rc1-package) RC1="$(realpath "$2")"; shift 2 ;;
     --retail-xex) RETAIL="$(realpath "$2")"; shift 2 ;;
+    --retail-dir) RETAIL_DIR="$(realpath "$2")"; shift 2 ;;
+    --iso) ISO="$(realpath "$2")"; shift 2 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -101,7 +106,7 @@ reflinked "$T/refuse/missing"
 rm -f "${T:?}/refuse/missing/Data/Material/CodShaders.ccz"
 refused "a missing game file" "$T/refuse/missing" "missing"
 mkdir -p "$T/refuse/empty"
-refused "an empty folder" "$T/refuse/empty" "no default.xex"
+refused "an empty folder" "$T/refuse/empty" "default.xex was not found"
 say "4. unsupported game versions"
 reflinked "$T/refuse/other"
 python3 -I - "$T/refuse/other/default.xex" <<'PY'
@@ -110,14 +115,20 @@ d = bytearray(open(sys.argv[1], "rb").read())
 d[-100] ^= 1
 open(sys.argv[1], "wb").write(d)
 PY
-refused "another version of default.xex" "$T/refuse/other" "unsupported game version"
+refused "a modified default.xex" "$T/refuse/other" "content differs from the supported release"
 if [[ -n "$RETAIL" ]]; then
   reflinked "$T/refuse/encrypted"
   rm -f "${T:?}/refuse/encrypted/default.xex"
   cp --reflink=auto "$RETAIL" "$T/refuse/encrypted/default.xex"
-  refused "an encrypted (retail) default.xex" "$T/refuse/encrypted" "encrypted"
-  OUT="$(box "$T/refuse/home" "$T/refuse/encrypted" -- "${SETUP[@]}" 2>&1)"
-  check "the refusal says no keys are carried" '[[ "$OUT" == *"no console decryption keys"* ]]'
+  # Decision of 2026-11-08 (2), docs/RETAIL_FILES.md: the setup decrypts a retail default.xex (the full installations
+  # are in the M15.2 section). Here only the game check: accepted for decryption, then stopped by the small target
+  # (the free-space check comes after the game check), nothing written.
+  OUT="$(box "$T/refuse/home" "$T/refuse/encrypted" --size $((3 << 30)) --tmpfs /home/player/Small -- \
+    /setup.AppImage --install-to /home/player/Small/KUF --game-dir /game --ignore-graphics-check --no-menu 2>&1)"; RC=$?
+  echo "    $(echo "$OUT" | grep '^game files:' | cut -c1-150)"
+  check "an encrypted (retail) default.xex: accepted, decrypted during the installation" \
+    '[[ "$OUT" == *"encrypted default.xex: decrypted during the installation"* && "$OUT" == *"not enough free space"* && $RC -ne 0 ]]'
+  check "an encrypted (retail) default.xex: nothing written before the installation" '[[ ! -e "$T/refuse/home/Games" ]]'
 else
   echo "  [not run] an encrypted default.xex (no --retail-xex)"
 fi
@@ -165,8 +176,9 @@ echo "    left behind: $(ls -A "$K/Games" | tr '\n' ' '); $KEPT objects"
 check "killed: no installation" '[[ ! -e "$K/Games/KUF" ]]'
 check "killed: finished objects kept" '[[ "$KEPT" -ge 15 ]]'
 MARK="$K/mark"; touch "$MARK"; sleep 2
-box "$K" "$GAME" -- "${SETUP[@]}" --jobs 4 > "$T/crash.log" 2>&1; RC=$?
+box "$K" "$GAME" -- "${SETUP[@]}" --game-dir /game/default.xex --jobs 4 > "$T/crash.log" 2>&1; RC=$?  # the executable picked
 tail -1 "$T/crash.log" | cut -c1-130 | sed 's/^/    /'
+check "default.xex picked directly: its folder used" 'grep -q "^game files: a folder" "$T/crash.log"'
 check "the next attempt installs" '[[ $RC -eq 0 && -x "$K/Games/KUF/current/bin/kuf_cod" ]]'
 OLD="$(find "$K/Games/KUF/build-cache" -name '*.o' ! -newer "$MARK" | wc -l)"
 check "it reused the objects of the killed attempt ($OLD of 162)" '[[ "$OLD" -ge 15 ]]'
@@ -207,7 +219,8 @@ check "137 game files" '[[ "$(find "$R/game" -type f | wc -l)" -eq 137 ]]'
 check "no generated source left" '[[ -z "$(find "$R" -name "kuf_cod_recomp.*.cpp" -print -quit)" ]]'
 check "no staging or build folder left next to it" '[[ "$(ls -A "$H/Games")" == KUF ]]'
 check "saves and settings unchanged" 'data_hash "$H" | cmp -s - "$T/clean.before"'
-sha256sum "$R/current/bin/kuf_cod" | cut -c1-16 | sed 's/^/    program SHA-256: /'
+CLEAN_PROG="$(sha256sum < "$R/current/bin/kuf_cod")"
+echo "    program SHA-256: ${CLEAN_PROG:0:16}"
 OTHER="$(sha256sum "$K/Games/KUF/current/bin/kuf_cod" | cut -d' ' -f1)"
 check "reproducible: the same program as the recovered installation's" '[[ "$OTHER" == "$(sha256sum "$R/current/bin/kuf_cod" | cut -d" " -f1)" ]]'
 
@@ -288,34 +301,34 @@ printf 'repo = test/kuf\napi = http://127.0.0.1:%s\n' "$PORT" >> "$R/update.conf
 KU() { HOME="$H" XDG_DATA_HOME="$H/.local/share" XDG_CONFIG_HOME="$H/.config" timeout 900 python3 -I "$R/current/kuf_update.py" --install-root "$R" "$@"; }
 data_hash "$H" > "$U/data.before"
 
-make_version 0.8.0-rc.90 "" ; index 0.8.0-rc.90
+make_version ${V}.90 "" ; index ${V}.90
 MARK="$H/mark3"; touch "$MARK"; sleep 2
 start=$(date +%s); OUT="$(KU --json update --yes 2>&1)"; RC=$?; took=$(( $(date +%s) - start ))
 echo "    same generation: $took s; $(echo "$OUT" | tail -1 | cut -c1-120)"
-check "update installed" '[[ $RC -eq 0 && "$(readlink "$R/current")" == "versions/0.8.0-rc.90" ]]'
+check "update installed" '[[ $RC -eq 0 && "$(readlink "$R/current")" == "versions/${V}.90" ]]'
 check "only linked: no object compiled" '[[ -z "$(find "$R/build-cache" -name "*.o" -newer "$MARK" -print -quit)" ]]'
 check "the new version has its program" '[[ -x "$R/current/bin/kuf_cod" ]]'
 check "the previous version is kept" '[[ -x "$R/versions/$V/bin/kuf_cod" ]]'
 
-make_version 0.8.0-rc.91 "" 'printf "#!/bin/sh\nexit 1\n" > builder/toolchain/llvm' ; index 0.8.0-rc.91
+make_version ${V}.91 "" 'printf "#!/bin/sh\nexit 1\n" > builder/toolchain/llvm' ; index ${V}.91
 OUT="$(KU --json update --yes 2>&1)"; RC=$?
 echo "    broken compiler, same generation: $(echo "$OUT" | tail -1 | cut -c1-160)"
-check "a failed build refuses the update; the old version stays current" '[[ $RC -ne 0 && "$(readlink "$R/current")" == "versions/0.8.0-rc.90" && -x "$R/current/bin/kuf_cod" ]]'
-check "nothing staged is left" '[[ ! -e "$R/versions/0.8.0-rc.91" && -z "$(find "$R/versions" -maxdepth 1 -name ".staging-*" -print -quit)" ]]'
+check "a failed build refuses the update; the old version stays current" '[[ $RC -ne 0 && "$(readlink "$R/current")" == "versions/${V}.90" && -x "$R/current/bin/kuf_cod" ]]'
+check "nothing staged is left" '[[ ! -e "$R/versions/${V}.91" && -z "$(find "$R/versions" -maxdepth 1 -name ".staging-*" -print -quit)" ]]'
 
-make_version 0.8.0-rc.92 "$(printf 'b%.0s' {1..64})" ; index 0.8.0-rc.92
+make_version ${V}.92 "$(printf 'b%.0s' {1..64})" ; index ${V}.92
 start=$(date +%s); OUT="$(KU --json update --yes 2>&1)"; RC=$?; took=$(( $(date +%s) - start ))
 echo "    changed generation: $took s; $(echo "$OUT" | tail -1 | cut -c1-120)"
-check "a changed generation regenerates, compiles, then switches" '[[ $RC -eq 0 && "$(readlink "$R/current")" == "versions/0.8.0-rc.92" && -x "$R/current/bin/kuf_cod" ]]'
+check "a changed generation regenerates, compiles, then switches" '[[ $RC -eq 0 && "$(readlink "$R/current")" == "versions/${V}.92" && -x "$R/current/bin/kuf_cod" ]]'
 check "the old generation's objects are gone" '[[ "$(ls "$R/build-cache" | grep -vc build.log)" -eq 1 ]]'
 
-make_version 0.8.0-rc.93 ""; cp "$U/rel/kuf-cod-recomp-0.8.0-rc.93-linux-x86_64.tar.gz.sig" "$U/keep.sig"
-printf 'x' >> "$U/rel/kuf-cod-recomp-0.8.0-rc.93-linux-x86_64.tar.gz"; index 0.8.0-rc.93
+make_version ${V}.93 ""; cp "$U/rel/kuf-cod-recomp-${V}.93-linux-x86_64.tar.gz.sig" "$U/keep.sig"
+printf 'x' >> "$U/rel/kuf-cod-recomp-${V}.93-linux-x86_64.tar.gz"; index ${V}.93
 OUT="$(KU --json update --yes 2>&1)"; RC=$?
-check "a tampered package is refused (signature or SHA-256)" '[[ $RC -ne 0 && "$(readlink "$R/current")" == "versions/0.8.0-rc.92" ]]'
+check "a tampered package is refused (signature or SHA-256)" '[[ $RC -ne 0 && "$(readlink "$R/current")" == "versions/${V}.92" ]]'
 
 OUT="$(KU --json rollback 2>&1)"; RC=$?
-check "rollback to the previous version" '[[ $RC -eq 0 && "$(readlink "$R/current")" == "versions/0.8.0-rc.90" ]]'
+check "rollback to the previous version" '[[ $RC -eq 0 && "$(readlink "$R/current")" == "versions/${V}.90" ]]'
 check "saves and settings unchanged through all of it" 'data_hash "$H" | cmp -s - "$U/data.before"'
 
 if [[ -n "$RC1" ]]; then
@@ -326,7 +339,7 @@ if [[ -n "$RC1" ]]; then
   HOME="$O/home" XDG_DATA_HOME="$O/home/.local/share" "$OLDP/install.sh" --root "$O/root" --signers "$KEYDIR/allowed_signers" --repo test/kuf \
     --api "http://127.0.0.1:$PORT" > "$O/install.log" 2>&1
   echo "channel = prerelease" >> "$O/root/update.conf"
-  make_version 0.8.0-rc.94 ""; index 0.8.0-rc.94
+  make_version ${V}.94 ""; index ${V}.94
   OLDV="$(readlink "$O/root/current")"
   OUT="$(HOME="$O/home" XDG_DATA_HOME="$O/home/.local/share" python3 -I "$O/root/current/kuf_update.py" --install-root "$O/root" --json update --yes 2>&1)"; RC=$?
   echo "    $(echo "$OUT" | tail -1 | cut -c1-170)"
@@ -334,6 +347,49 @@ if [[ -n "$RC1" ]]; then
 fi
 kill "$SERVER" 2>/dev/null; wait "$SERVER" 2>/dev/null
 rm -rf "${KEYDIR:?}"  # the throwaway key
+
+# ---- M15.2: a retail dump and a disc image: decrypted by the setup, and with a separate unencrypted default.xex -------
+retail_check() {  # name, the installation's log: the checks of an installation from a retail source
+  local name="$1" log="$2"
+  tail -1 "$log" | cut -c1-130 | sed 's/^/    /'
+  M="$home/Games/KUF"
+  check "$name: installed, program made" '[[ $RC -eq 0 && -x "$M/current/bin/kuf_cod" ]]'
+  check "$name: the installed default.xex is the supported unencrypted one" 'cmp -s "$M/game/default.xex" "$GAME/default.xex"'
+  check "$name: 137 game files, the same as the clean installation's, no \$SystemUpdate" \
+    '[[ "$(find "$M/game" -type f | wc -l)" -eq 137 && ! -e "$M/game/\$SystemUpdate" ]] && diff -q <(cd "$M/game" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) <(cd "$R/game" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) >/dev/null'
+  check "$name: the same program as the clean installation's" '[[ "$(sha256sum < "$M/current/bin/kuf_cod")" == "$CLEAN_PROG" ]]'
+  box "$home" "$GAME" -- /setup.AppImage --remove /home/player/Games/KUF > "$T/m152-$name-remove.log" 2>&1; RC=$?
+  check "$name: uninstalled" '[[ $RC -eq 0 && ! -e "$M/versions" ]]'
+  rm -rf "${home:?}/Games"
+}
+retail_install() {  # name, bwrap source binding (src path), the path inside
+  local name="$1" src="$2" inside="$3"
+  home="$T/m152-$1/home"
+  mkdir -p "$home"; fixture_home "$home"
+  # Alone: the setup decrypts the encrypted default.xex (docs/RETAIL_FILES.md, decision of 2026-11-08 (2)).
+  box "$home" "$GAME" --ro-bind "$src" "$inside" -- /setup.AppImage --install-to /home/player/Games/KUF \
+    --game-dir "$inside" --ignore-graphics-check --no-menu --jobs 4 > "$T/m152-$name.log" 2>&1; RC=$?
+  retail_check "$name (decrypted by the setup)" "$T/m152-$name.log"
+  box "$home" "$GAME" --ro-bind "$src" "$inside" -- /setup.AppImage --install-to /home/player/Games/KUF --game-dir "$inside" \
+    --executable /game/default.xex --ignore-graphics-check --no-menu --jobs 4 > "$T/m152-$name-exe.log" 2>&1; RC=$?
+  retail_check "$name + separate unencrypted default.xex" "$T/m152-$name-exe.log"
+}
+if [[ -n "$RETAIL_DIR" ]]; then
+  say "M15.2 a retail disc dump (encrypted default.xex, \$SystemUpdate)"
+  find "$RETAIL_DIR" -type f -printf '%p %s %T@\n' | LC_ALL=C sort | sha256sum > "$T/retail.before"
+  retail_install retail-folder "$RETAIL_DIR" /retail
+  check "the retail folder unchanged" 'find "$RETAIL_DIR" -type f -printf "%p %s %T@\n" | LC_ALL=C sort | sha256sum | cmp -s - "$T/retail.before"'
+else
+  echo "  [not run] a retail disc dump (no --retail-dir)"
+fi
+if [[ -n "$ISO" ]]; then
+  say "M15.2 an Xbox 360 disc image"
+  sha256sum < "$ISO" > "$T/iso.before"
+  retail_install disc-image "$ISO" /disc.iso
+  check "the disc image unchanged" 'sha256sum < "$ISO" | cmp -s - "$T/iso.before"'
+else
+  echo "  [not run] a disc image (no --iso)"
+fi
 
 # ---- uninstall, and the real data -----------------------------------------------------------------------------------
 say "uninstall (saves kept)"

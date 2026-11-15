@@ -285,3 +285,10 @@ TEST_CASE("recentring waits, then eases back to the default view", "[camera]") {
   CHECK(offset < 0.8 * 0.1);
   CHECK(offset > 0);
 }
+
+TEST_CASE("stick acceleration: 1 at first, up to its maximum after its time, never beyond", "[camera]") {
+  CHECK(kuf::camera::StickBoost(0) == 1.0);
+  CHECK(std::abs(kuf::camera::StickBoost(kuf::camera::kStickBoostSeconds / 2) - 1.25) < 1e-9);
+  CHECK(kuf::camera::StickBoost(kuf::camera::kStickBoostSeconds) == kuf::camera::kStickBoostMax);
+  CHECK(kuf::camera::StickBoost(100) == kuf::camera::kStickBoostMax);
+}

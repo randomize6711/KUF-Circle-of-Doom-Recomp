@@ -26,6 +26,7 @@
 #include <unistd.h>
 
 #include "core/game_data.h"
+#include "core/xex_decrypt.h"
 #include "core/install.h"
 #include "core/steam.h"
 #include "core/system_check.h"
@@ -61,8 +62,11 @@ struct App {
   GtkWidget* game_entry = nullptr;
   GtkWidget* game_status = nullptr;
   GtkWidget* game_details = nullptr;
+  GtkWidget* exe_box = nullptr;  // the separate unencrypted default.xex, for a dump whose own one is encrypted
+  GtkWidget* exe_entry = nullptr;
   bool game_ok = false;
   fs::path game_dir;
+  fs::path exe_path;
   // Location
   GtkWidget* root_entry = nullptr;
   GtkWidget* root_status = nullptr;
@@ -234,19 +238,31 @@ void CheckGame(App* a) {
     return;
   }
   a->game_dir = setup::FindGameRoot(text);
-  const setup::GameCheck c = setup::CheckGameFolder(a->game_dir, a->manifest);
+  const std::string exe_text = gtk_entry_get_text(GTK_ENTRY(a->exe_entry));
+  a->exe_path = exe_text.empty() ? fs::path() : fs::path(exe_text);
+  const setup::GameSource source = setup::GameSource::Open(a->game_dir);
+  const setup::GameCheck c = setup::CheckGame(source, a->manifest, a->exe_path);
+  const bool iso = c.kind == setup::GameSource::Kind::kIso;
+  // The separate executable's field: shown for a dump whose default.xex is encrypted, or once something is in it.
+  const bool offer_exe = setup::NeedsSeparateExecutable(c.dump_verdict) || !exe_text.empty();
+  gtk_widget_set_visible(a->exe_box, offer_exe);
+  const std::string what = iso ? "disc image" : c.retail_layout ? "retail disc dump" : "folder";
   std::string status, details;
+  auto refuse = [&](const std::string& head, const std::string& why) {
+    status = "<span foreground='#ff8a6a'>✗ " + Esc(head) + "</span> " + Esc(why);
+  };
   if (!c.folder_ok) {
-    status = "<span foreground='#ff8a6a'>✗ This folder cannot be read.</span>";
-  } else if (!c.executable_found) {
-    status = "<span foreground='#ff8a6a'>✗ No game here:</span> default.xex was not found in this folder.";
-  } else if (c.executable_encrypted) {
-    status = "<span foreground='#ff8a6a'>✗ This default.xex is encrypted.</span> This setup contains no console "
-             "decryption keys and cannot decrypt it. It can only use an unencrypted default.xex; the installation "
-             "guide explains why.";
+    refuse(iso ? "This disc image cannot be used." : "This folder cannot be read.", iso ? c.source_error : "");
+  } else if (c.separate && c.separate_verdict != setup::Executable::kSupported) {
+    refuse("The separate default.xex cannot be used.", setup::GameCheckProblem(c, a->manifest));
+  } else if (!c.separate && c.dump_verdict == setup::Executable::kMissing) {
+    refuse("No game here:", "default.xex was not found in this " + what + ".");
+  } else if (!c.separate && setup::NeedsSeparateExecutable(c.dump_verdict)) {
+    refuse(c.dump_verdict == setup::Executable::kRetailEncrypted ? "Retail copy recognised, but encrypted."
+                                                                 : "This default.xex is encrypted.",
+           setup::ExecutableMessage(c.dump_verdict, c.dump_xex, a->manifest) + " The installation guide explains why.");
   } else if (!c.executable_known) {
-    status = "<span foreground='#ff8a6a'>✗ Unsupported game version.</span> This default.xex is not the supported "
-             "release (the original Xbox 360 game, base version). Title updates and other versions are not supported.";
+    refuse("Unsupported game version.", setup::ExecutableMessage(c.verdict, c.dump_xex, a->manifest));
   } else if (!c.missing.empty() || !c.wrong_size.empty()) {
     status = "<span foreground='#ff8a6a'>✗ Game files are missing or damaged</span> (" +
              std::to_string(c.missing.size()) + " missing, " + std::to_string(c.wrong_size.size()) +
@@ -261,19 +277,40 @@ void CheckGame(App* a) {
     if (shown > 6) details += "… and " + std::to_string(shown - 6) + " more";
   } else {
     a->game_ok = true;
-    status = "<span foreground='#9fd38a'>✓ Compatible game files found.</span>";
+    status = "<span foreground='#9fd38a'>✓ Compatible game files found</span> (" + Esc(what) +
+             (c.separate  ? ", with your separate unencrypted default.xex"
+              : c.decrypt ? "; its encrypted default.xex is decrypted during the installation"
+                          : "") +
+             ").";
     details = std::to_string(a->manifest.files.size()) + " files, " + setup::HumanBytes(c.bytes) + " — " +
               a->manifest.name + ".\nEach file is checked against the supported version while it is copied; your "
-              "folder is only read, never changed.";
+              "game files are only read, never changed.";
   }
   gtk_label_set_markup(GTK_LABEL(a->game_status), status.c_str());
   gtk_label_set_text(GTK_LABEL(a->game_details), details.c_str());
   UpdateButtons(a);
 }
 
-void ChooseFolder(App* a, GtkWidget* entry, const char* title) {
-  GtkWidget* d = gtk_file_chooser_dialog_new(title, GTK_WINDOW(a->window), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-                                             "_Cancel", GTK_RESPONSE_CANCEL, "_Select", GTK_RESPONSE_ACCEPT, nullptr);
+void ChooseFolder(App* a, GtkWidget* entry, const char* title,
+                  GtkFileChooserAction action = GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, const char* pattern = nullptr) {
+  GtkWidget* d = gtk_file_chooser_dialog_new(title, GTK_WINDOW(a->window), action, "_Cancel", GTK_RESPONSE_CANCEL,
+                                             "_Select", GTK_RESPONSE_ACCEPT, nullptr);
+  if (pattern) {
+    // `pattern`: one or more patterns separated by ';'.
+    GtkFileFilter* filter = gtk_file_filter_new();
+    std::string list = pattern;
+    for (size_t at = 0; at <= list.size();) {
+      const size_t end = std::min(list.find(';', at), list.size());
+      if (end > at) gtk_file_filter_add_pattern(filter, list.substr(at, end - at).c_str());
+      at = end + 1;
+    }
+    gtk_file_filter_set_name(filter, pattern);
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(d), filter);
+    GtkFileFilter* all = gtk_file_filter_new();
+    gtk_file_filter_add_pattern(all, "*");
+    gtk_file_filter_set_name(all, "All files");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(d), all);
+  }
   const std::string current = gtk_entry_get_text(GTK_ENTRY(entry));
   const fs::path start = current.empty() ? setup::HomeDir() : setup::ExistingAncestor(current);
   gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(d), start.c_str());
@@ -463,6 +500,7 @@ void StartInstall(App* a) {
   plan.root = RootPath(a);
   plan.package = a->payload;
   plan.game_source = a->game_dir;
+  plan.executable = a->exe_path;
   plan.manifest = a->manifest;
   plan.setup_binary = a->exe;
   plan.setup_assets = a->assets;
@@ -597,8 +635,7 @@ GtkWidget* BuildWelcome(App* a) {
   }
   GtkWidget* text = Label(
       "This setup installs the native Linux version of Kingdom Under Fire: Circle of Doom, rebuilt from the original "
-      "Xbox 360 game. You need your own copy of the original game files (the folder with an unencrypted "
-      "<b>default.xex</b>): they are checked and copied into the installation, then the native program is generated and "
+      "Xbox 360 game. You need your own copy of the original game files (an extracted folder or a disc image): they are checked and copied into the installation, then the native program is generated and "
       "compiled here from them (a few minutes, no extra tools needed). Your original folder is never changed and "
       "nothing is uploaded.",
       "body", true, 0.5);
@@ -622,13 +659,50 @@ GtkWidget* BuildWelcome(App* a) {
   return box;
 }
 
+// Drag and drop (M16B): a folder, a disc image or default.xex dropped on the window fills in the game files and shows
+// the Game Files page with its check; nothing is installed or changed until the player goes on.
+void OnDrop(GtkWidget*, GdkDragContext* ctx, gint, gint, GtkSelectionData* data, guint, guint time, App* a) {
+  bool taken = false;
+  if (a->page == kWelcome || a->page == kGame || a->page == kLocation || a->page == kOptions) {
+    gchar** uris = gtk_selection_data_get_uris(data);
+    if (uris && uris[0]) {
+      if (gchar* file = g_filename_from_uri(uris[0], nullptr, nullptr)) {
+        ShowPage(a, kGame);
+        gtk_entry_set_text(GTK_ENTRY(a->game_entry), file);
+        g_free(file);
+        taken = true;
+      }
+    }
+    g_strfreev(uris);
+  }
+  gtk_drag_finish(ctx, taken, FALSE, time);
+}
+
+void AcceptDrops(GtkWidget* w, App* a) {
+  gtk_drag_dest_set(w, GTK_DEST_DEFAULT_ALL, nullptr, 0, GDK_ACTION_COPY);
+  gtk_drag_dest_add_uri_targets(w);
+  g_signal_connect(w, "drag-data-received", G_CALLBACK(OnDrop), a);
+}
+
 GtkWidget* BuildGame(App* a) {
   GtkWidget* box = PageBox("Your Original Game Files");
   gtk_box_pack_start(GTK_BOX(box),
-                     Label("Select the folder with your legally obtained game files: the folder that contains an unencrypted "
-                           "<b>default.xex</b>. Ordinary retail copies are encrypted and cannot be used.",
+                     Label(setup::RetailDecryptionAvailable()
+                               ? "Select your legally obtained game files: the folder that contains <b>default.xex</b>, "
+                                 "its <b>default.xex</b> itself, or an Xbox 360 disc image (.iso). A retail copy works as it is: its encrypted "
+                                 "default.xex is decrypted during the installation."
+                               : "Select your legally obtained game files: the folder that contains <b>default.xex</b>, "
+                                 "its <b>default.xex</b> itself, or an Xbox 360 disc image (.iso). A retail copy is recognised, but its default.xex "
+                                 "is encrypted and this setup cannot decrypt it: it then also needs an unencrypted "
+                                 "<b>default.xex</b> of the same version.",
                            "body"),
                      FALSE, FALSE, 0);
+  // The drop zone: the whole window accepts drops (AcceptDrops on the window); this says so.
+  GtkWidget* zone = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+  gtk_box_pack_start(GTK_BOX(zone), Label("<b>Drag your game files here</b>", "body"), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(zone), Label("a game folder, an Xbox 360 disc image (.iso) or default.xex", "muted"),
+                     FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(box), Panel(zone), FALSE, FALSE, 0);
   GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
   a->game_entry = gtk_entry_new();
   gtk_entry_set_placeholder_text(GTK_ENTRY(a->game_entry), "/path/to/your game files");
@@ -636,7 +710,26 @@ GtkWidget* BuildGame(App* a) {
   GtkWidget* browse = gtk_button_new_with_mnemonic("_Browse…");
   AddClass(browse, "small");
   gtk_box_pack_start(GTK_BOX(row), browse, FALSE, FALSE, 0);
+  GtkWidget* browse_iso = gtk_button_new_with_mnemonic("_File…");
+  AddClass(browse_iso, "small");
+  gtk_box_pack_start(GTK_BOX(row), browse_iso, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(box), row, FALSE, FALSE, 0);
+  // The separate unencrypted default.xex (docs/RETAIL_IMPORT_PLAN.md A4), hidden until a dump needs it.
+  a->exe_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+  gtk_box_pack_start(GTK_BOX(a->exe_box), Label("Unencrypted <b>default.xex</b> of the same version:", "body"), FALSE,
+                     FALSE, 0);
+  GtkWidget* exe_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+  a->exe_entry = gtk_entry_new();
+  gtk_entry_set_placeholder_text(GTK_ENTRY(a->exe_entry), "/path/to/default.xex");
+  gtk_box_pack_start(GTK_BOX(exe_row), a->exe_entry, TRUE, TRUE, 0);
+  GtkWidget* browse_exe = gtk_button_new_with_mnemonic("B_rowse…");
+  AddClass(browse_exe, "small");
+  gtk_box_pack_start(GTK_BOX(exe_row), browse_exe, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(a->exe_box), exe_row, FALSE, FALSE, 0);
+  gtk_widget_show_all(a->exe_box);  // its children shown now; the box itself stays out of the window's show_all
+  gtk_widget_hide(a->exe_box);
+  gtk_widget_set_no_show_all(a->exe_box, TRUE);
+  gtk_box_pack_start(GTK_BOX(box), a->exe_box, FALSE, FALSE, 0);
   GtkWidget* inner = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
   a->game_status = Label("Choose the folder that contains <b>default.xex</b>.", "body");
   a->game_details = Label("", "muted");
@@ -646,6 +739,17 @@ GtkWidget* BuildGame(App* a) {
   g_signal_connect_swapped(a->game_entry, "changed", G_CALLBACK(+[](App* app) { CheckGame(app); }), a);
   g_signal_connect(browse, "clicked", G_CALLBACK(+[](GtkButton*, App* app) {
                      ChooseFolder(app, app->game_entry, "Select your game files (the folder with default.xex)");
+                   }),
+                   a);
+  g_signal_connect(browse_iso, "clicked", G_CALLBACK(+[](GtkButton*, App* app) {
+                     ChooseFolder(app, app->game_entry, "Select your Xbox 360 disc image (.iso) or default.xex",
+                                  GTK_FILE_CHOOSER_ACTION_OPEN, "*.iso;*.ISO;*.xex;*.XEX");
+                   }),
+                   a);
+  g_signal_connect_swapped(a->exe_entry, "changed", G_CALLBACK(+[](App* app) { CheckGame(app); }), a);
+  g_signal_connect(browse_exe, "clicked", G_CALLBACK(+[](GtkButton*, App* app) {
+                     ChooseFolder(app, app->exe_entry, "Select an unencrypted default.xex",
+                                  GTK_FILE_CHOOSER_ACTION_OPEN, "*.xex");
                    }),
                    a);
   return box;
@@ -799,6 +903,7 @@ GtkWidget* BuildMaintenance(App* a) {
 void BuildWindow(App* a) {
   a->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   AddClass(a->window, "kuf");
+  AcceptDrops(a->window, a);
   gtk_window_set_title(GTK_WINDOW(a->window), "Kingdom Under Fire: Circle of Doom — Setup");
   GtkWidget* header = gtk_header_bar_new();  // themed (theme.css), the same on every desktop
   gtk_header_bar_set_title(GTK_HEADER_BAR(header), "Circle of Doom — Setup");  // the taskbar has the full name
@@ -970,6 +1075,14 @@ void Screenshots(App* a, const fs::path& dir) {
   ShowPage(a, kGame);
   gtk_entry_set_text(GTK_ENTRY(a->game_entry), setup::Env("KUF_SETUP_SHOT_GAME").c_str());
   shot("2-game");
+  if (!setup::Env("KUF_SETUP_SHOT_RETAIL").empty()) {  // a retail dump: refused alone, accepted with an executable
+    gtk_entry_set_text(GTK_ENTRY(a->game_entry), setup::Env("KUF_SETUP_SHOT_RETAIL").c_str());
+    shot("2b-game-retail");
+    gtk_entry_set_text(GTK_ENTRY(a->exe_entry), setup::Env("KUF_SETUP_SHOT_EXE").c_str());
+    shot("2c-game-retail-executable");
+    gtk_entry_set_text(GTK_ENTRY(a->exe_entry), "");
+    gtk_entry_set_text(GTK_ENTRY(a->game_entry), setup::Env("KUF_SETUP_SHOT_GAME").c_str());
+  }
   ShowPage(a, kLocation);
   CheckLocation(a);
   shot("3-location");
@@ -1076,6 +1189,7 @@ gboolean WalkStep(gpointer data) {
         }
         w->log += std::string("refused: ") + gtk_label_get_text(GTK_LABEL(a->game_status)) + "\n";
       }
+      gtk_entry_set_text(GTK_ENTRY(a->exe_entry), setup::Env("KUF_SETUP_SHOT_EXE").c_str());
       gtk_entry_set_text(GTK_ENTRY(a->game_entry), setup::Env("KUF_SETUP_SHOT_GAME").c_str());
       break;
     case 3:
@@ -1133,7 +1247,7 @@ gboolean WalkStep(gpointer data) {
 int main(int argc, char** argv) {
   // Unattended (no window): --install-to / --remove (unattended.cpp).
   if (setup::IsUnattended(argc, argv)) return setup::RunUnattended(argc, argv, SelfExe());
-  fs::path assets_arg, payload_arg, uninstall_arg, shot_dir, walk_dir;
+  fs::path assets_arg, payload_arg, uninstall_arg, shot_dir, walk_dir, game_arg;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--assets" && i + 1 < argc) assets_arg = argv[++i];
@@ -1141,6 +1255,7 @@ int main(int argc, char** argv) {
     else if (a == "--uninstall" && i + 1 < argc) uninstall_arg = argv[++i];
     else if (a == "--screenshot" && i + 1 < argc) shot_dir = argv[++i];
     else if (a == "--walkthrough" && i + 1 < argc) walk_dir = argv[++i];
+    else if (!a.empty() && a[0] != '-') game_arg = argv[i];  // game files dropped onto the setup (its file manager)
   }
   App app;
   // Before GTK starts any thread: the Vulkan check forks (core/system_check.cpp).
@@ -1182,6 +1297,9 @@ int main(int argc, char** argv) {
     Message(&app, GTK_MESSAGE_ERROR, "The setup's game package is missing",
             "This copy of the setup cannot install the game (it has no game package).");
     return 1;
+  } else if (!game_arg.empty()) {
+    ShowPage(&app, kGame);
+    gtk_entry_set_text(GTK_ENTRY(app.game_entry), game_arg.c_str());
   } else {
     ShowPage(&app, kWelcome);
   }

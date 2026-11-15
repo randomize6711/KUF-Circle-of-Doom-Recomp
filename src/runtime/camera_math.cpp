@@ -33,6 +33,10 @@ double LevelSpeed(int level, double step, double max) {
 
 double MouseRadiansPerCount(int level) { return Radians(LevelSpeed(level, kMouseStepDegrees, kMouseMaxDegrees)); }
 
+double StickBoost(double held_seconds) {
+  return 1.0 + (kStickBoostMax - 1.0) * std::clamp(held_seconds / kStickBoostSeconds, 0.0, 1.0);
+}
+
 double StickRadiansPerSecond(int level) { return Radians(LevelSpeed(level, kStickStepDegrees, kStickMaxDegrees)); }
 
 double VerticalFovFor(double key_vertical, int horizontal_degrees) {

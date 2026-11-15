@@ -6,7 +6,27 @@ Implemented in M6B (camera), M6C (display) and M6D D5 (frame rate); later milest
 
 ## In the game
 
-**M7 menu overhaul (not yet tested in the game: docs/KNOWN_ISSUES.md K63):** there is no separate PC Settings any
+**M15A: two columns.** Every Settings page has the rows on the left and the selected row's description in a column on the
+right (`--kuf_descriptions=false`: the wide rows without it). The rows, their frames, sliders, toggles and selector are
+narrowed in the layout (a copy in memory; title rows 176-803 with widgets at 470-790, in-game rows 461-968 with widgets at
+755-955 and the panel 50 pixels wider to the right); the game takes a slider's full width from its bar when the menu binds,
+so its range and steps stay. Hovering anywhere on a row, also over its slider or its empty part, selects it and shows its
+description (`RowPointerX`); a keyboard or a controller shows the selected row's the same way. The text is set only when
+the selection changes, so it does not flicker, and wraps inside the column. The dark images of the rows' labels are now kept
+on their own rows (`PlaceRows`): some sat 15 to 45 pixels off and showed as stray bars over the scene in game.
+
+**Sliders with the mouse (M15A verified, `menu.sliders`, `menu.sliders_ultrawide`, `menu.ingame_mouse`):** a click on the
+track sets the value there, a drag follows the pointer and updates the value and the label while it moves; the row under
+the pointer does not change meanwhile. The drag belongs to the press: it continues outside the slider and outside the 16:9
+image (the side bars of an ultrawide window: the value stops at its end), a release anywhere only ends it and acts on
+nothing else, and losing the window's focus ends it. Values stay on the setting's own range and steps (they are reached by
+the menu's own Left / Right).
+
+**The wheel (M15A):** in the menus each notch goes straight to the focused control's handler at the next tick, all notches
+at once (bounds, paging, the list following the selection and sounds are the menu's). It was a virtual D-pad press per
+notch, 67 ms each, which lagged behind a quick flick. A menu whose handler does not move gets the presses as before.
+
+**M7 menu overhaul (scripted runs in the game since M15A; K63):** there is no separate PC Settings any
 more. Both Settings menus open on one category list, by function, and the game's own eight options live in those
 categories next to the port's:
 
@@ -22,10 +42,10 @@ categories next to the port's:
 | Category | Rows (game: the game's own option, its widget and its code) |
 |---|---|
 | Display | Mode, Resolution (with the refresh rate in Fullscreen), Monitor, Widescreen, then VSync, FPS, Interpolation, World Objects, Animation, Effects, Render (resolution scale), Brightness (game); Apply (last; the 15-second confirmation) |
-| Camera | Distance, Field of View, Vertical Range, Recentering, Modern Camera |
+| Camera | Distance, Field of View, Vertical Range, Recentering, Modern Camera, Low Latency |
 | Audio | SFX, Music, Voice (game) |
 | Mouse & Keyboard | Mouse Horizontal, Mouse Vertical, Mouse Y-Axis, Key Bindings (opens the page) |
-| Controller | Stick Sensitivity, Stick Dead Zone, Controller Buttons (opens the page), Camera Normal / Inverted (game: the controller's vertical axis), Vibration (game) |
+| Controller | Stick Settings (opens the page: Stick Horizontal, Stick Vertical, Camera Dead Zone, Move Dead Zone, Acceleration), Controller Buttons (opens the page), Camera Normal / Inverted (game: the controller's vertical axis), Vibration (game), Strength |
 | Gameplay | Prompts, Skin (game), Blood (game) |
 | Restore Defaults | (below the list) |
 
@@ -54,11 +74,9 @@ categories closes Settings (the game's own Back: its options saved if changed; t
 Before the overhaul (M7 feature 3 to the UI polish) the menus had a **PC Settings** row below the game's own rows,
 opening a category page with **Controls**, **Camera**, **Display**, **Key Bindings**, **Controller Buttons** and
 **Restore Defaults**; the tables below list the PC rows by their old pages. **Descriptions (M7 UX fix
-4; placed below the list in the UI polish):** a region of its own below the last row (or Restore Defaults) and above
-the button help, as wide as the rows, explains the selected row (what it does, and its cost or compatibility where it
-has one) in the game's small left-aligned font; hovering a row selects it, so the description follows the pointer,
-the keyboard and a controller alike. It never overlaps a row, a slider or the panel's logo (a text control cloned
-from the help line; src/runtime/pc_settings_menu.cpp `Describe`; `--kuf_descriptions=false` leaves it out). Every page uses the game's own panel, rows, fonts, highlight, sliders, button help and menu sounds, and works
+4; in the right-hand column since M15A, above):** explain the selected row (what it does, and its cost or compatibility
+where it has one) in the game's small left-aligned font over a dark backdrop; a text control cloned from the help line
+(src/runtime/pc_settings_menu.cpp `Describe`). Every page uses the game's own panel, rows, fonts, highlight, sliders, button help and menu sounds, and works
 with a controller (D-pad, left stick, A, B), the keyboard (arrow keys, Enter, Escape) and the mouse (hover selects a
 row, left click = select, right click = back, wheel = up/down), as the game's own Settings rows. Values change at once
 (Left / Right); rows that show their value in the label also step with Select (forward, wrapping), so the mouse alone
@@ -118,6 +136,21 @@ takes effect at the next start. The frame-rate rows apply at once, also during p
 without frames between ticks while it switches); World Objects, Animation and Effects act only with Interpolation On
 and FPS above 30. Select steps any row forward (wrapping), so the mouse alone can set them. The SDK's own `--vsync` is
 something else: the guest vblank rate (docs/HIGH_FPS.md).
+
+**M15B rows** (all in the same `pc_settings.toml`; a file from before keeps its values, the new keys get these defaults, which
+are the earlier behaviour):
+
+| Row | File key | Values | Default |
+|---|---|---|---|
+| Low Latency (Camera) | `mouse.low_latency` | On / Off: docs/CAMERA.md section 9 | Off |
+| Stick Vertical | `controller.camera_vertical_percent` | 20 to 150 % of the horizontal speed, steps of 5 | 65 (as before) |
+| Camera Dead Zone (was Stick Dead Zone) | `controller.camera_deadzone_percent` | as before: the right stick | 25 |
+| Move Dead Zone | `controller.move_deadzone_percent` | 0 to 50 % of the left stick's travel, steps of 5: radial, exactly 0 inside, movement starts from 0 at its edge | 0 (the stick as reported) |
+| Acceleration | `controller.camera_acceleration` | On: the right stick's camera speed grows up to 50 % over half a second at full deflection (real time, the same at any frame rate) | Off |
+| Strength | `controller.vibration_percent` | 0 to 100 %, steps of 10: the motors' speed the game asks for; the game's Vibration toggle stays the on / off | 100 |
+
+Stick Sensitivity is now labelled Stick Horizontal (the same setting and key). Nothing was added for mouse smoothing or a
+menu cursor sensitivity: the mouse has no smoothing to switch, and the menu cursor is the system's.
 
 **Restore Defaults** sets Controls (with Prompts), Camera, the frame rate, Key Bindings and Controller Buttons to their
 defaults (the display rows stay: they change the window and have their own Apply and confirmation).

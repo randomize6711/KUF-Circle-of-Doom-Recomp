@@ -7,6 +7,8 @@
 # and On, Effects Off. Back to the categories, Back saves; gameplay at 60
 # with the objects and effects not interpolated. frame_rate_check.py: every change reached the scheduler, the guest
 # vblank followed, each held rate drawn, the game isolated. The next run (frame_rate_persist) starts from the file.
+# M15.1: Settings opens directly on the categories: Display, Camera, Audio, Mouse & Keyboard, Controller, Gameplay,
+# Restore Defaults (K66). What this route checks is unchanged; where the text above names older rows, these replace them.
 
 [scenario]
 description = "Frame-rate page: FPS 30 -> 60 -> 120 -> 30 and 120 -> Unlimited -> 60, interpolation rows, saved"
@@ -26,17 +28,6 @@ script = """
 @gameplay+500 press Down
 @gameplay+550 press Down
 @gameplay+650 press Return
-@gameplay+800 press Down
-@gameplay+830 press Down
-@gameplay+860 press Down
-@gameplay+890 press Down
-@gameplay+920 press Down
-@gameplay+950 press Down
-@gameplay+980 press Down
-@gameplay+1010 press Down
-@gameplay+1110 press Return
-@gameplay+1260 press Down
-@gameplay+1290 press Down
 @gameplay+1320 press Return
 @gameplay+1420 press Down
 @gameplay+1450 press Down
@@ -89,7 +80,6 @@ script = """
 @gameplay+4820 press Escape
 @gameplay+4920 press Escape
 @gameplay+5020 press Escape
-@gameplay+5120 press Escape
 @gameplay+5320 log mark play_a
 @gameplay+5330 down W
 @gameplay+5630 log mark play_b

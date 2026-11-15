@@ -52,6 +52,10 @@ std::string Sha256File(const fs::path& path);
 // nothing is left at `to`).
 std::string CopyHashed(const fs::path& from, const fs::path& to, const std::function<void(uint64_t)>& progress,
                        const std::function<bool()>& cancelled);
+// The same for `length` bytes of `from` from `offset` (a file inside a disc image); kToEnd: to the end of the file.
+constexpr uint64_t kToEnd = ~uint64_t(0);
+std::string CopyRangeHashed(const fs::path& from, uint64_t offset, uint64_t length, const fs::path& to,
+                            const std::function<void(uint64_t)>& progress, const std::function<bool()>& cancelled);
 
 // The game package's system requirements (its REQUIRES file, written by package_linux.sh from the binaries;
 // payload/requires.txt in the AppImage): "glibc 2.31", "glibcxx 3.4.33" and, when the package carries its own

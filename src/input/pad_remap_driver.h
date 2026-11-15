@@ -33,13 +33,17 @@ class PadRemapDriver final : public rex::input::InputDriver {
                                  rex::input::X_INPUT_CAPABILITIES* out_caps) override {
     return inner_->GetDeviceCapabilities(id, flags, out_caps);
   }
-  X_RESULT SetDeviceVibration(rex::input::DeviceId id, rex::input::X_INPUT_VIBRATION* vibration) override {
-    return inner_->SetDeviceVibration(id, vibration);
-  }
+  // The game's vibration at the player's strength (M15B); nothing while the window has no focus.
+  X_RESULT SetDeviceVibration(rex::input::DeviceId id, rex::input::X_INPUT_VIBRATION* vibration) override;
   X_RESULT GetDeviceKeystroke(rex::input::DeviceId id, uint32_t flags,
                               rex::input::X_INPUT_KEYSTROKE* out_keystroke) override {
     return inner_->GetDeviceKeystroke(id, flags, out_keystroke);
   }
+
+  // Stops every controller's motors (the window lost the focus: the game may run on without touching them, and SDL's
+  // rumble lasts until it is told otherwise).
+  void StopVibration();
+  void SetFocused(bool focused);
 
   // A controller is connected.
   bool HasDevices();
@@ -56,6 +60,7 @@ class PadRemapDriver final : public rex::input::InputDriver {
  private:
   std::unique_ptr<rex::input::InputDriver> inner_;
   std::mutex mutex_;
+  std::atomic<bool> focused_{true};
   PadRemap remap_;
   bool capturing_ = false;
   std::optional<PadButton> captured_;

@@ -64,7 +64,8 @@ KUFCOD_RELEASE_VERSION="$VERSION" systemd-run --user --scope -q -p MemoryMax=14G
 # The local builder the package carries (the setup's build tree: built as the setup, against the sysroot).
 SETUP_BUILD="$ROOT/build/installer"
 cmake -S "$ROOT/installer" -B "$SETUP_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DCMAKE_TOOLCHAIN_FILE="$ROOT/cmake/steamrt3-sniper.cmake" -DKUFCOD_STATIC_LIBSTDCXX=ON >/dev/null
+  -DCMAKE_TOOLCHAIN_FILE="$ROOT/cmake/steamrt3-sniper.cmake" -DKUFCOD_STATIC_LIBSTDCXX=ON \
+  -DKUF_SETUP_RETAIL_DECRYPTION=ON >/dev/null  # the setup and launcher decrypt (docs/RETAIL_FILES.md)
 ninja -C "$SETUP_BUILD" -j"${JOBS:-4}" kuf-localbuild >/dev/null
 DEST="$OUT/v$VERSION"
 rm -rf "$DEST"; mkdir -p "$DEST"

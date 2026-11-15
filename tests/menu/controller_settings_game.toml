@@ -1,0 +1,42 @@
+# M15B: the settings of tests/menu/controller_settings.toml after a restart, in gameplay with a virtual pad: a left stick
+# at 20 % inside Move Dead Zone 25 % does not move the character; at full travel it does; a focus loss during the walk makes the
+# held stick neutral and the walk stops; the focus back, the stick still held counts again; released, it stops (M15C). The walk
+# is kept short: further on the game asks "Move to the previous region?". Checked from the player's position per frame: tests/gameplay/move_check.py.
+
+[scenario]
+description = "Move Dead Zone and focus in gameplay with a virtual pad (settings from the previous run)"
+seconds = 80
+pc_settings_from_run = "controller_settings"
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+expect_saves_unchanged = true
+args = ["--kuf_frame_rate=120", "--kuf_trace_presentation=true"]
+script = """
+100 pad connect
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+200 log mark inside
+@gameplay+210 pad axis leftx -6500
+@gameplay+300 pad axis leftx 0
+@gameplay+310 pad axis leftx -32767
+@gameplay+320 log mark moving
+@gameplay+345 log mark focus
+@gameplay+345 focus off
+@gameplay+360 log mark lost
+@gameplay+395 log mark lost_end
+@gameplay+395 focus on
+@gameplay+405 log mark back
+@gameplay+435 log mark back_end
+@gameplay+435 pad axis leftx 0
+@gameplay+470 log mark released
+@gameplay+500 log mark released_end
+@gameplay+520 capture done
+"""
+capture_frames = []
+
+[format]
+width = 1280
+height = 720

@@ -25,6 +25,7 @@
 #include <rex/ppc/func.h>
 
 #include "runtime/frame_pacing.h"
+#include "input/kuf_input_driver.h"
 #include "runtime/modern_camera.h"
 #include "runtime/pc_settings.h"
 #include "runtime/presentation_math.h"
@@ -49,6 +50,8 @@ REXCVAR_DEFINE_INT32(kuf_presentation_test_offset, 0, "KUF/Debug",
 REXCVAR_DEFINE_BOOL(kuf_trace_presentation, false, "KUF/Debug",
                     "M6D: log every presented frame's interpolation: alpha, camera, player, the world objects' counts "
                     "and every object cut (tests)");
+REXCVAR_DEFINE_BOOL(kuf_trace_camera_lead, false, "KUF/Debug",
+                    "M15.1: log every presented frame's eye against the pivot ([kuf-cam-lead], tests/camera/lead_check.py)");
 REXCVAR_DEFINE_BOOL(kuf_trace_presentation_objects, false, "KUF/Debug",
                     "M6D D4a: with --kuf_trace_presentation, also every world object of every tick as written and of "
                     "every presented frame (large logs; tests)");
@@ -877,6 +880,50 @@ void DecideInterval() {
 
 std::string Fmt(const Vec3& v) { return fmt::format("({:.2f},{:.2f},{:.2f})", v.x, v.y, v.z); }
 
+// Low latency mouse look (M15B, docs/CAMERA.md): the view a frame shows is the interpolated one turned further by what the
+// tick's interpolation still holds back of the mouse movement it took in, and by the movement that came after it (the
+// next tick takes that in, so the turn is continuous across ticks). Only the presented camera changes: the game's camera
+// and everything it simulates never see it. Not across a discontinuity, nor where the collision has just pulled the
+// camera in (the turn could not be held there); the game's limits on the vertical angle hold.
+constexpr double kMaxLateTurn = 3.0 * M_PI / 180.0;  // radians: the view's lead over the last tick's collision
+Mat4 LowLatencyLook(const Mat4& view, const Snapshot& a, const Snapshot& b, const Interval& i, bool interpolated,
+                    double alpha) {
+  const auto settings = kuf::pc::CurrentCamera();
+  const bool testing = kuf::camera::TestMouseStep();  // tests/camera/late_look.toml: counts between ticks
+  Mat4 out = view;
+  if (settings.low_latency_mouse && b.view_info.modern && !i.camera_cut) {
+    double yaw = 0, pitch = 0;
+    kuf::camera::PendingMouseLook(&yaw, &pitch);
+    double elevation = -pitch;
+    if (interpolated) {
+      yaw += (1 - alpha) * b.view_info.mouse_yaw;
+      if (b.view_info.mouse_pitch != 0) {
+        elevation += (1 - alpha) * (kuf::presentation::PivotElevation(b.camera, b.view_info.pivot) -
+                                    kuf::presentation::PivotElevation(a.camera, a.view_info.pivot));
+      }
+    }
+    if (i.pulled_in) elevation = 0;
+    // The game's collision runs at the ticks, so a late turn can carry the eye into what the next tick pulls it out of
+    // (K78: black frames at a wall in a fast turn). Limited, the eye stays about as near the collision as without Low
+    // Latency; a turn faster than this per tick waits for the tick for the rest.
+    yaw = std::clamp(yaw, -kMaxLateTurn, kMaxLateTurn);
+    elevation = std::clamp(elevation, -kMaxLateTurn, kMaxLateTurn);
+    if (yaw != 0 || elevation != 0) {
+      out = kuf::presentation::TurnAroundPivot(view, b.view_info.pivot, yaw, elevation,
+                                               settings.vertical_range * M_PI / 180.0);
+    }
+  }
+  if (testing) kuf::camera::TestMouseLog(kuf::presentation::Azimuth(kuf::presentation::Forward(out)));
+  if (REXCVAR_GET(kuf_trace_camera_lead) && b.view_info.modern) {
+    const Vec3 eye = kuf::presentation::Position(out), pivot = b.view_info.pivot;
+    const Vec3 offset{eye.x - pivot.x, eye.y - pivot.y, eye.z - pivot.z};
+    REXLOG_INFO("[kuf-cam-lead] alpha {:.3f} azimuth {:.5f} dist {:.2f} height {:.2f} pivot {:.1f} {:.1f} {:.1f} pulled {} cut {}",
+                interpolated ? alpha : 1.0, kuf::presentation::Azimuth(offset), std::hypot(offset.x, offset.y, offset.z),
+                offset.y, pivot.x, pivot.y, pivot.z, int(i.pulled_in), int(i.camera_cut != nullptr));
+  }
+  return out;
+}
+
 // Writes the frame's presentation; returns the game time it shows (ticks).
 double Write(uint8_t* base, double frame_alpha, bool tick_frame) {
   // The sweep's parts (tests): the world objects alone, or the skeletal poses alone, between the ticks.
@@ -906,6 +953,7 @@ double Write(uint8_t* base, double frame_alpha, bool tick_frame) {
       view = kuf::presentation::InterpolateCamera(ta, tb, alpha, i.turn, i.pulled_in);
       if (i.fov) fov = float(a.fov + (b.fov - a.fov) * alpha);
     }
+    view = LowLatencyLook(view, a, b, i, camera, alpha);
     if (offset != 0) {
       view[13] += offset;
       fov += 0.1f;

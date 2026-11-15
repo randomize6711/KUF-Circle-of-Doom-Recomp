@@ -24,6 +24,9 @@ void OnTick(PPCContext& ctx, uint8_t* base);
 // Also the game's choice widgets (the selector's arrows, the toggles' halves): a click selects the row and gives it
 // Left / Right; `moved` (no button): hover over a widget selects its row.
 bool PointerSlider(PPCContext& ctx, uint8_t* base, int32_t px, int32_t py, bool click, bool held, bool moved = false);
+// M15A: the x to plan the pointer's row from. On a Settings page, over a row's frame beyond its label: inside the label
+// (the row counts over its whole width); otherwise px.
+int32_t RowPointerX(PPCContext& ctx, uint8_t* base, int32_t px, int32_t py);
 // The guest address of the PC Settings row's label for its text number, or 0.
 uint32_t TextOverride(uint32_t number);
 

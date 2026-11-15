@@ -10,9 +10,9 @@
 // translucent: what is behind stays visible, dimmed), the nine panel images drawn twice (more opaque), and three
 // footer texts, one per entry, shown instead of the footer with the keyboard and mouse (clickable each).
 //
-// The inventory (scene 0x003): category tabs 0x301001-03 (shown when not the current one) and 0x301004-06 (the
-// current one), 50 x 42 in a line; the game changes the category with LT / RT (its texts 1008 / 1009 beside the tabs).
-// A click on a tab presses LT or RT as often as the tabs between.
+// The equipment screen (scene 0x003): category tabs 0x301001-03 (shown when not the current one) and 0x301004-06 (the
+// current one), 50 x 42 in a line, driven by the game's Left / Right events (StatusPointer). The inventory's three tabs
+// (scene 0x009, 0x901001-03) are not interactive in the game: LT / RT reach the scene as codes 14 / 15 and change nothing.
 
 #include <algorithm>
 #include <array>
@@ -424,7 +424,10 @@ bool StatusPointer(PPCContext& ctx, uint8_t* base, uint32_t menu, int32_t px, in
   const int32_t last = std::min<int32_t>(int32_t(Load32(base, menu + kLastRowAt)), 8);
   for (int32_t r = 0; r <= last; ++r) {
     const uint32_t row = Load32(base, menu + kRowsAt + 4 * uint32_t(r));
-    if (!kuf::menu_pointer::GuestReadable(row, 64) || !Shown(base, row)) continue;
+    // The selected row's button is hidden under the highlight (state 0x102): it counts as much as the others, or a
+    // click on the row hover has just selected does nothing (M15A, found by tests/menu/ingame_mouse.toml).
+    const bool selected = int32_t(Load32(base, menu + kSelected)) == r;
+    if (!kuf::menu_pointer::GuestReadable(row, 64) || (!Shown(base, row) && !selected)) continue;
     Rect hit = RectOf(base, row);
     if (r > 0) {
       hit.x -= kRowReachLeft;

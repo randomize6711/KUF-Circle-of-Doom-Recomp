@@ -94,6 +94,9 @@ void Timed(char kind, PPCContext& ctx, uint8_t* base, uint32_t behind, F&& call)
   call();
   const auto end = Clock::now();
   const uint64_t ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count());
+  if (ns >= 20000000) {  // a single wait long enough to be felt (M15.1)
+    REXLOG_INFO("[kuf-gpu-wait] long: {} site {:08X} {:.1f} ms", kind, site, double(ns) / 1e6);
+  }
   std::lock_guard lock(g_mutex);
   Site& s = g_sites[{kind, site}];
   ++s.calls;
@@ -130,6 +133,7 @@ REX_HOOK_RAW(sub_8215B768) {
   const auto begin = Clock::now();
   __imp__sub_8215B768(ctx, base);
   const uint64_t ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - begin).count());
+  if (ns >= 20000000) REXLOG_INFO("[kuf-gpu-wait] long: lock site {:08X} {:.1f} ms", caller, double(ns) / 1e6);
   std::lock_guard lock(g_mutex);
   LockSite& s = g_locks[{caller, type, flags}];
   ++s.calls;

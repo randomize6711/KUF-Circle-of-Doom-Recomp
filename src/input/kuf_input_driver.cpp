@@ -1,5 +1,7 @@
 #include "input/kuf_input_driver.h"
 
+#include "input/pad_remap_driver.h"
+
 #include "input/game_input_hooks.h"
 #include "input/key_routing.h"
 #include "runtime/menu_pointer.h"
@@ -26,6 +28,8 @@ REXCVAR_DEFINE_BOOL(kuf_keyboard, true, "KUF/Input", "Keyboard and mouse drive g
 REXCVAR_DEFINE_BOOL(kuf_mouse_wheel, true, "KUF/Input", "Mouse wheel presses D-pad up/down, one press per detent");
 REXCVAR_DEFINE_BOOL(kuf_menu_pointer, true, "KUF/Input",
                     "In the game's menus the pointer selects the row under it and a left click confirms it (M7)");
+REXCVAR_DEFINE_BOOL(kuf_trace_input_latency, false, "KUF/Debug",
+                    "M15C: log the time from each key event to the game's poll that sees it ([kuf-input-latency])");
 REXCVAR_DEFINE_BOOL(kuf_mouse_look, true, "KUF/Input",
                     "In gameplay, capture the pointer and turn the camera with the mouse (released in menus)");
 REXCVAR_DEFINE_DOUBLE(kuf_mouse_sensitivity, 1.0, "KUF/Input", "Mouse look sensitivity");
@@ -293,6 +297,20 @@ X_RESULT KufInputDriver::GetDeviceState(DeviceId id, rex::input::X_INPUT_STATE* 
   std::lock_guard lock(mutex_);
   SyncContextLocked();
   MenuPointerLocked();
+  if (REXCVAR_GET(kuf_trace_input_latency)) {
+    // The game thread's stalls, whether or not a key event falls into one (M15.1: normally a poll per tick, 33 ms).
+    const auto now = std::chrono::steady_clock::now();
+    if (const double gap = std::chrono::duration<double, std::milli>(now - last_poll_at_).count();
+        last_poll_at_.time_since_epoch().count() != 0 && gap >= 50.0) {
+      REXLOG_INFO("[kuf-input-stall] {:.1f} ms between polls", gap);
+    }
+    last_poll_at_ = now;
+  }
+  if (REXCVAR_GET(kuf_trace_input_latency) && key_event_at_.time_since_epoch().count() != 0) {
+    REXLOG_INFO("[kuf-input-latency] {:.2f} ms",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - key_event_at_).count());
+    key_event_at_ = {};
+  }
   // While a runtime overlay has the input (is_active false), the game sees a neutral pad; the poll still
   // runs so taps made for the overlay do not reach the game afterwards.
   PadState s = pad_.Poll();
@@ -491,7 +509,32 @@ void KufInputDriver::OnMouseWheel(rex::ui::MouseEvent& e) {
   const int32_t detents = wheel_accum_ / kDetent;
   wheel_accum_ -= detents * kDetent;
   SyncContextLocked();
-  if (!key_capture_) pad_.Wheel(detents);
+  WheelLocked(detents);
+}
+
+void KufInputDriver::WheelLocked(int detents) {
+  if (key_capture_) return;
+  // In the menus the steps go to the focused control's own handler at the next tick, all at once (menu_pointer.cpp), as
+  // the pointer's do: a virtual D-pad press takes two polls per notch (67 ms), so a quick flick lagged behind the wheel.
+  if (pad_.context() == Context::kMenu && REXCVAR_GET(kuf_menu_pointer) && pad_.focused() && is_active()) {
+    wheel_steps_ = std::clamp(wheel_steps_ + detents, -kMaxWheelSteps, kMaxWheelSteps);
+    return;
+  }
+  pad_.Wheel(detents);
+}
+
+int KufInputDriver::TakeWheelSteps() {
+  std::lock_guard lock(mutex_);
+  SyncContextLocked();
+  const int steps = wheel_steps_;
+  wheel_steps_ = 0;
+  // The context changed since the wheel moved: dropped, as a context change drops queued wheel steps.
+  return pad_.context() == Context::kMenu && !key_capture_ ? steps : 0;
+}
+
+void KufInputDriver::WheelAsPresses(int detents) {
+  std::lock_guard lock(mutex_);
+  pad_.Wheel(detents);
 }
 
 void KufInputDriver::OnGotFocus(rex::ui::UISetupEvent&) { InjectFocus(true); }
@@ -500,6 +543,7 @@ void KufInputDriver::OnLostFocus(rex::ui::UISetupEvent&) { InjectFocus(false); }
 
 void KufInputDriver::InjectKey(HostKey key, bool down) {
   std::lock_guard lock(mutex_);
+  if (REXCVAR_GET(kuf_trace_input_latency) && down) key_event_at_ = std::chrono::steady_clock::now();
   SyncContextLocked();
   if (down) kuf::prompts::NoteDevice(kuf::input::PromptDevice::kKeyboard);
   if (down && CaptureLocked(key)) {
@@ -519,7 +563,7 @@ void KufInputDriver::InjectWheel(int detents) {
   std::lock_guard lock(mutex_);
   kuf::prompts::NoteDevice(kuf::input::PromptDevice::kKeyboard);
   SyncContextLocked();
-  if (!key_capture_) pad_.Wheel(detents);
+  WheelLocked(detents);
 }
 
 void KufInputDriver::InjectFocus(bool focused) {
@@ -529,6 +573,11 @@ void KufInputDriver::InjectFocus(bool focused) {
                 focused ? "" : ": all keys released");
   }
   pad_.SetFocused(focused);
+  if (auto* pads = PadRemapDriver::Instance()) pads->SetFocused(focused);
+  if (!focused) {  // a press whose release may never arrive here: no drag or click survives the focus change
+    left_taken_ = click_pending_ = false;
+    wheel_steps_ = wheel_accum_ = 0;
+  }
 }
 
 void KufInputDriver::InjectMouseMove(int32_t x, int32_t y, int32_t window_width, int32_t window_height) {
@@ -539,6 +588,10 @@ void KufInputDriver::InjectMouseMove(int32_t x, int32_t y, int32_t window_width,
 }
 
 void KufInputDriver::UpdatePointer(int32_t x, int32_t y, int32_t window_width, int32_t window_height) {
+  if (left_taken_) {  // a press in the menus (a slider's drag): it follows the pointer outside the image too
+    pointer_valid_ = WindowToGuestClamped(window_width, window_height, x, y, kGuestWidth, kGuestHeight, &pointer_);
+    return;
+  }
   pointer_valid_ = WindowToGuest(window_width, window_height, x, y, kGuestWidth, kGuestHeight, &pointer_);
 }
 
@@ -614,6 +667,11 @@ void KufInputDriver::SetDirectMouseLook(bool direct) {
 void KufInputDriver::TakeMouseLook(double* dx, double* dy) {
   std::lock_guard lock(mutex_);
   pad_.TakeLook(dx, dy);
+}
+
+void KufInputDriver::PeekMouseLook(double* dx, double* dy) const {
+  std::lock_guard lock(mutex_);
+  pad_.PeekLook(dx, dy);
 }
 
 bool KufInputDriver::MouseCaptured() const {

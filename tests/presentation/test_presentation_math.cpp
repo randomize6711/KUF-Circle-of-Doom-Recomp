@@ -618,3 +618,21 @@ TEST_CASE("parts (D4b-3): a bone swinging about its anchor moves on the arc, not
   CHECK(Distance(ArcPosition(a, {0, 0, 20}, 0.5), {0, 0, 0}) == Approx(15.0).margin(1e-9));  // the distance linearly
   CHECK(Distance(ArcPosition(a, {-10, 0, 0}, 0.5), {0, 0, 0}) < 1e-9);  // opposite: no way round is known, linearly
 }
+
+TEST_CASE("low latency look: a turn around the pivot keeps the aim and the distance; the limits hold", "[presentation]") {
+  const Vec3 pivot{10, 50, 20};
+  const Vec3 forward{std::sin(0.4) * std::cos(0.2), -std::sin(0.2), std::cos(0.4) * std::cos(0.2)};
+  const Vec3 eye{pivot.x - forward.x * 300, pivot.y - forward.y * 300, pivot.z - forward.z * 300};
+  const Mat4 m = LookAt(forward, eye);
+  const Mat4 same = TurnAroundPivot(m, pivot, 0, 0, 1.4);
+  for (int i = 0; i < 16; ++i) CHECK(std::abs(same[i] - m[i]) < 1e-3);
+  const Mat4 t = TurnAroundPivot(m, pivot, 0.3, 0, 1.4);
+  CHECK(std::abs(std::remainder(Azimuth(Forward(t)) - Azimuth(Forward(m)) - 0.3, 2 * M_PI)) < 1e-5);
+  const Vec3 e = Position(t);
+  const double d = std::hypot(e.x - pivot.x, e.y - pivot.y, e.z - pivot.z);
+  CHECK(std::abs(d - 300) < 1e-2);
+  CHECK(LookAtError(t) < 1e-3);
+  const double el = PivotElevation(m, pivot);
+  CHECK(std::abs(PivotElevation(TurnAroundPivot(m, pivot, 0, 0.1, 1.4), pivot) - el - 0.1) < 1e-5);
+  CHECK(std::abs(PivotElevation(TurnAroundPivot(m, pivot, 0, 5.0, 1.4), pivot) - 1.4) < 1e-5);
+}

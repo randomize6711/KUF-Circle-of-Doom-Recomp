@@ -1,0 +1,26 @@
+# M15B: the delay of the mouse in the view at 120 frames per second, low latency mouse look off: a synthetic mouse
+# (--kuf_test_look_rate: 450 counts per second, turning one way for a second and back, delivered between ticks), every
+# frame's view logged and compared with the counts by tests/camera/late_look_check.py. Synthetic: no physical mouse.
+
+[scenario]
+description = "Mouse delay in the view at 120 fps, low latency off (synthetic mouse)"
+seconds = 75
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+expect_saves_unchanged = true
+args = ["--kuf_frame_rate=120", "--kuf_test_look_rate=450", "--kuf_pc_settings=mouse.low_latency=false"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+200 log mark start
+@gameplay+400 capture middle
+@gameplay+800 log mark end
+"""
+capture_frames = []
+
+[format]
+width = 1280
+height = 720

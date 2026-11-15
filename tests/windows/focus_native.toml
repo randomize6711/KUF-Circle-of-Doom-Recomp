@@ -1,0 +1,40 @@
+# Windows acceptance (M17, docs/WINDOWS_TEST.md B4): real Alt+Tab (the harness presses Alt+Tab with SendInput when the
+# marks below appear in the log, waits, and presses it again to come back) in gameplay and in the in-game menu, in the
+# default display mode (borderless). The game must keep running (every scripted item applied), report the focus lost
+# and gained, and release the mouse outside. Run by tools/windows/acceptance; checked with menu_test.py --verify-only.
+
+[scenario]
+description = "Windows: Alt+Tab out and back in gameplay and in the in-game menu (borderless)"
+seconds = 260
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+300 log mark alt_tab_gameplay
+@gameplay+1500 capture after_gameplay_return
+@gameplay+1600 press Escape
+@gameplay+1700 log mark alt_tab_menu
+@gameplay+2900 capture after_menu_return
+@gameplay+3000 press Escape
+@gameplay+3100 down W
+@gameplay+3300 up W
+@gameplay+3400 log mark end
+"""
+capture_frames = []
+log_sequence = [
+    "log mark alt_tab_gameplay",
+    "[kuf-input] window focus lost",
+    "[kuf-input] window focus gained",
+    "log mark alt_tab_menu",
+    "[kuf-input] window focus lost",
+    "[kuf-input] window focus gained",
+    "log mark end",
+]
+
+[windows]
+display = "native"
+alt_tab = [ { after = "log mark alt_tab_gameplay", away_seconds = 5 }, { after = "log mark alt_tab_menu", away_seconds = 5 } ]

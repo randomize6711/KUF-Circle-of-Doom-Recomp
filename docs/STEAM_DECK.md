@@ -52,8 +52,8 @@ tools/toolchain/old_runtime_test.sh build/packages/kuf-cod-recomp-*.tar.gz   # t
   or linking libstdc++.
 
 ## 3. Install on a Steam Deck
-**You need the game's files on the Deck, with an unencrypted `default.xex`.** Retail copies are encrypted and are
-refused (docs/RETAIL_FILES.md). This has not been tried on a physical Deck yet (section 7).
+**You need your own game files on the Deck** (a retail dump or disc image works as it is: the setup decrypts its
+`default.xex`, docs/RETAIL_FILES.md). This has not been tried on a physical Deck yet (section 7).
 
 1. Desktop Mode (Power > Switch to Desktop). Download the AppImage from the GitHub release page in a browser, or copy
    it over with a USB stick or a network share, into e.g. `~/Downloads`.

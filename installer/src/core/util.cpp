@@ -1,5 +1,6 @@
 #include "core/util.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -7,14 +8,15 @@
 #include <sstream>
 #include <vector>
 
-#include <fcntl.h>
-#include <sys/statvfs.h>
-#include <unistd.h>
+#include <random>
 
+#if defined(__linux__)
 #include <gnu/libc-version.h>
 #include <link.h>
+#endif
 
-#include <glib.h>
+#include "core/platform.h"
+#include "core/sha256.h"
 
 namespace kuf::setup {
 
@@ -23,10 +25,7 @@ std::string Env(const char* name) {
   return v ? std::string(v) : std::string();
 }
 
-fs::path HomeDir() {
-  const std::string home = Env("HOME");
-  return home.empty() ? fs::path(g_get_home_dir()) : fs::path(home);
-}
+fs::path HomeDir() { return PlatformHomeDir(); }
 
 fs::path XdgDataHome() {
   const std::string v = Env("XDG_DATA_HOME");
@@ -122,44 +121,38 @@ fs::path ExistingAncestor(const fs::path& path) {
 }
 
 uint64_t FreeBytes(const fs::path& path) {
-  struct statvfs st {};
-  if (statvfs(ExistingAncestor(path).c_str(), &st) != 0) return 0;
-  return uint64_t(st.f_bavail) * st.f_frsize;
+  std::error_code ec;
+  const fs::space_info s = fs::space(ExistingAncestor(path), ec);
+  return ec ? 0 : uint64_t(s.available);
 }
 
 bool CanCreateIn(const fs::path& path) {
   const fs::path dir = ExistingAncestor(path);
-  std::string tmpl = (dir / ".kuf-setup-write-test-XXXXXX").string();
-  std::vector<char> buf(tmpl.begin(), tmpl.end());
-  buf.push_back('\0');
-  const int fd = mkstemp(buf.data());
-  if (fd < 0) return false;
-  close(fd);
-  unlink(buf.data());
-  return true;
+  std::error_code ec;
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    const fs::path test = dir / (".kuf-setup-write-test-" + std::to_string(std::random_device{}()));
+    if (fs::exists(test, ec)) continue;
+    OutFile f;
+    if (!f.Create(test, true)) return false;
+    f.Close();
+    fs::remove(test, ec);
+    return true;
+  }
+  return false;
 }
 
 bool AtomicWrite(const fs::path& path, std::string_view content, fs::perms mode) {
-  const fs::path tmp = path.string() + ".kuf-setup-tmp";
+  fs::path tmp = path;
+  tmp += ".kuf-setup-tmp";
+  std::error_code ec;
   {
-    const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0) return false;
-    size_t done = 0;
-    while (done < content.size()) {
-      const ssize_t n = write(fd, content.data() + done, content.size() - done);
-      if (n <= 0) {
-        close(fd);
-        unlink(tmp.c_str());
-        return false;
-      }
-      done += size_t(n);
-    }
-    if (fsync(fd) != 0 || close(fd) != 0) {
-      unlink(tmp.c_str());
+    OutFile f;
+    if (!f.Create(tmp, true)) return false;
+    if (!f.Write(content.data(), content.size()) || !f.Sync() || !f.Close()) {
+      fs::remove(tmp, ec);
       return false;
     }
   }
-  std::error_code ec;
   fs::permissions(tmp, mode, ec);
   fs::rename(tmp, path, ec);
   if (ec) {
@@ -179,37 +172,34 @@ bool ReadFile(const fs::path& path, std::string* out) {
 }
 
 std::string Sha256File(const fs::path& path) {
-  const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
-  if (fd < 0) return {};
-  GChecksum* sum = g_checksum_new(G_CHECKSUM_SHA256);
+  InFile in(path);
+  if (!in.ok()) return {};
+  Sha256 sum;
   std::vector<unsigned char> buf(1 << 20);
-  bool ok = true;
   for (;;) {
-    const ssize_t n = read(fd, buf.data(), buf.size());
-    if (n < 0) {
-      ok = false;
-      break;
-    }
+    const int64_t n = in.Read(buf.data(), buf.size());
+    if (n < 0) return {};
     if (n == 0) break;
-    g_checksum_update(sum, buf.data(), gssize(n));
+    sum.Update(buf.data(), size_t(n));
   }
-  close(fd);
-  std::string hex = ok ? g_checksum_get_string(sum) : "";
-  g_checksum_free(sum);
-  return hex;
+  return sum.HexDigest();
 }
 
 std::string CopyHashed(const fs::path& from, const fs::path& to, const std::function<void(uint64_t)>& progress,
                        const std::function<bool()>& cancelled) {
-  const fs::path part = to.string() + ".part";
-  const int in = open(from.c_str(), O_RDONLY | O_CLOEXEC);
-  if (in < 0) return {};
-  const int out = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-  if (out < 0) {
-    close(in);
-    return {};
-  }
-  GChecksum* sum = g_checksum_new(G_CHECKSUM_SHA256);
+  return CopyRangeHashed(from, 0, kToEnd, to, progress, cancelled);
+}
+
+std::string CopyRangeHashed(const fs::path& from, uint64_t offset, uint64_t length, const fs::path& to,
+                            const std::function<void(uint64_t)>& progress, const std::function<bool()>& cancelled) {
+  fs::path part = to;
+  part += ".part";
+  InFile in(from);
+  if (!in.ok()) return {};
+  if (offset != 0 && !in.Seek(offset)) return {};
+  OutFile out;
+  if (!out.Create(part)) return {};
+  Sha256 sum;
   std::vector<unsigned char> buf(4 << 20);
   bool ok = true;
   for (;;) {
@@ -217,30 +207,24 @@ std::string CopyHashed(const fs::path& from, const fs::path& to, const std::func
       ok = false;
       break;
     }
-    const ssize_t n = read(in, buf.data(), buf.size());
-    if (n < 0) {
+    if (length == 0) break;
+    const int64_t n = in.Read(buf.data(), size_t(std::min<uint64_t>(buf.size(), length)));
+    if (n < 0 || (n == 0 && length != kToEnd)) {  // a range that ends past the file is a failure
       ok = false;
       break;
     }
     if (n == 0) break;
-    g_checksum_update(sum, buf.data(), gssize(n));
-    ssize_t done = 0;
-    while (done < n) {
-      const ssize_t w = write(out, buf.data() + done, size_t(n - done));
-      if (w <= 0) {
-        ok = false;
-        break;
-      }
-      done += w;
+    if (length != kToEnd) length -= uint64_t(n);
+    sum.Update(buf.data(), size_t(n));
+    if (!out.Write(buf.data(), size_t(n))) {
+      ok = false;
+      break;
     }
-    if (!ok) break;
     if (progress) progress(uint64_t(n));
   }
-  close(in);
-  if (ok && fsync(out) != 0) ok = false;
-  if (close(out) != 0) ok = false;
-  std::string hex = ok ? g_checksum_get_string(sum) : "";
-  g_checksum_free(sum);
+  if (ok && !out.Sync()) ok = false;
+  if (!out.Close()) ok = false;
+  std::string hex = ok ? sum.HexDigest() : "";
   std::error_code ec;
   if (ok) {
     fs::rename(part, to, ec);
@@ -275,9 +259,16 @@ int CompareVersions(std::string_view a, std::string_view b) {
   return 0;
 }
 
+#if defined(__linux__)
 std::string HostGlibc() { return gnu_get_libc_version(); }
+#else
+std::string HostGlibc() { return ""; }  // not a glibc system (Windows): no glibc requirement applies
+#endif
 
 std::string HostGlibcxx() {
+#if !defined(__linux__)
+  return "";
+#else
   // The loaded libstdc++.so.6's file: its version names (GLIBCXX_3.4.N) are in its .gnu.version_d strings.
   std::string path;
   dl_iterate_phdr(
@@ -311,6 +302,7 @@ std::string HostGlibcxx() {
     if (best.empty() || CompareVersions(v, best) > 0) best = v;
   }
   return best;
+#endif
 }
 
 std::vector<std::string> CompatibilityProblems(const Requirements& need, const std::string& glibc,

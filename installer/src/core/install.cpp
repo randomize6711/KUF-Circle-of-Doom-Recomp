@@ -1,4 +1,5 @@
 #include "core/install.h"
+#include "core/xex_decrypt.h"
 
 #include <algorithm>
 #include <chrono>
@@ -68,6 +69,63 @@ bool CopyChecked(const fs::path& from, const fs::path& to, const std::string& sh
   }
   const auto perms = fs::status(from, ec).permissions();
   if (!ec) fs::permissions(to, perms & fs::perms(0755), ec);
+  return true;
+}
+
+// The dump's encrypted default.xex, decrypted into the installation (core/xex_decrypt.h): read again and compared with
+// the file checked before, decrypted in memory, its image compared with the supported one, then written through a
+// temporary file in the same folder (mode 0600 until it is complete), renamed into place. Nothing is written beside the
+// player's files or in /tmp; a failure or Cancel leaves no partial file.
+bool DecryptInto(const GameSource& source, const GameFile& f, const std::string& file_sha, const fs::path& to,
+                 const std::function<void(uint64_t)>& progress, const std::atomic<bool>& cancel, std::string* error) {
+  std::error_code ec;
+  fs::create_directories(to.parent_path(), ec);
+  std::string data;
+  if (!source.Read(source.Find(f.path), &data, kMaxXexBytes)) {
+    *error = "Could not read default.xex from " + source.path().string() + ".";
+    return false;
+  }
+  if (InspectXexData(data).file_sha256 != file_sha) {
+    *error = "default.xex changed while the setup was running.";
+    return false;
+  }
+  if (cancel) {
+    *error = "Installation cancelled.";
+    return false;
+  }
+  if (DecryptRetailXex(&data) != XexDecrypt::kOk || InspectXexData(data).image_sha256 != f.sha256) {
+    *error = "default.xex could not be decrypted to the supported version.";
+    return false;
+  }
+  if (!AtomicWrite(to, data, fs::perms(0644))) {
+    *error = "Could not write " + to.string() + ".";
+    return false;
+  }
+  if (progress) progress(f.size);
+  return true;
+}
+
+// The same from the game source (a folder or a disc image); the copy's permissions are set by the caller.
+bool CopySourceChecked(const GameSource& source, const std::string& rel, const fs::path& to, const std::string& sha,
+                       const std::function<void(uint64_t)>& progress, const std::atomic<bool>& cancel,
+                       std::string* error) {
+  std::error_code ec;
+  fs::create_directories(to.parent_path(), ec);
+  const GameSource::Entry e = source.Find(rel);
+  const std::string got = e.found ? source.Copy(e, to, progress, [&] { return cancel.load(); }) : "";
+  if (cancel) {
+    *error = "Installation cancelled.";
+    return false;
+  }
+  if (got.empty()) {
+    *error = "Could not copy " + rel + " from " + source.path().string() + " to " + to.string() + ".";
+    return false;
+  }
+  if (got != sha) {
+    fs::remove(to, ec);
+    *error = "The file " + rel + " does not match the supported game version (or is damaged).";
+    return false;
+  }
   return true;
 }
 
@@ -247,17 +305,9 @@ Result Install(const Plan& plan, const ProgressFn& progress, const std::atomic<b
                                                  : "This installation folder cannot be used.");
   }
   const bool repair = target == Target::kExisting;
-  const GameCheck check = CheckGameFolder(plan.game_source, plan.manifest);
-  if (!check.Ok()) {
-    return fail(!check.folder_ok          ? "The game folder cannot be read."
-                : check.executable_encrypted
-                    ? "This default.xex is encrypted. This setup contains no console decryption keys and cannot decrypt "
-                      "it; it can only use an unencrypted default.xex."
-                : !check.executable_known ? "The game folder does not hold the supported game version (default.xex)."
-                                          : "Game files are missing or have the wrong size (" +
-                                                std::to_string(check.missing.size() + check.wrong_size.size()) +
-                                                " files).");
-  }
+  const GameSource source = GameSource::Open(plan.game_source);
+  const GameCheck check = CheckGame(source, plan.manifest, plan.executable);
+  if (!check.Ok()) return fail(GameCheckProblem(check, plan.manifest));
   std::vector<std::pair<std::string, std::string>> package_files;
   const std::string version = PackageVersion(plan.package);
   if (version.empty() || !PackageFiles(plan.package, &package_files)) {
@@ -334,14 +384,19 @@ Result Install(const Plan& plan, const ProgressFn& progress, const std::atomic<b
       continue;
     }
     std::string error;
-    if (!CopyChecked(plan.game_source / f.path, to, is_xex ? Sha256File(plan.game_source / f.path) : f.sha256,
-                     [&](uint64_t n) {
-                       done += n;
-                       report(kGameData, double(done) / double(plan.manifest.total), f.path);
-                     },
-                     cancel, &error)) {
-      return abort(error);
-    }
+    const auto step = [&](uint64_t n) {
+      done += n;
+      report(kGameData, double(done) / double(plan.manifest.total), f.path);
+    };
+    // The executable: the separate one when given, else the dump's; it was judged by its image above, and is
+    // copied checked against the file hash taken then (a change in between is caught).
+    const bool ok = is_xex && !plan.executable.empty()
+                        ? CopyChecked(plan.executable, to, check.separate_xex.file_sha256, step, cancel, &error)
+                    : is_xex && check.decrypt
+                        ? DecryptInto(source, f, check.dump_xex.file_sha256, to, step, cancel, &error)
+                        : CopySourceChecked(source, f.path, to, is_xex ? check.dump_xex.file_sha256 : f.sha256, step,
+                                            cancel, &error);
+    if (!ok) return abort(error);
     fs::permissions(to, fs::perms(0644), ec);  // the copy is the installation's, not read-only like a disc
   }
 

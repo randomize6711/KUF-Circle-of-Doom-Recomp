@@ -8,13 +8,15 @@ own files, with tools it carries. Nothing is uploaded; nothing is installed on t
 | the setup, the runtime libraries, the code generator | `bin/kuf_cod` or any translated game code |
 | a compiler and linker (Clang, LLD), C and C++ headers and link inputs | generated C++ or objects made from it |
 | the project's own code, prebuilt (`builder/lib/libkuf_own.a`) | game files, or data from `default.xex` |
-| licences and complete corresponding source | console decryption keys |
+| licences and complete corresponding source | console keys (below) |
 
 `tools/package/audit_release.py` fails a release that breaks any of these (below).
 
 ## What happens during an installation
 
-1. The game folder is checked: every file by size, `default.xex` by the SHA-256 of its decompressed memory image.
+1. The game files (a folder or an Xbox 360 disc image) are checked: every file by size, `default.xex` by its identity
+   (title, media, version) and the SHA-256 of its decompressed memory image. A retail dump's encrypted `default.xex`
+   is recognised and replaced by a separate unencrypted one, which the player gives (docs/RETAIL_IMPORT_PLAN.md).
 2. The game files are copied into the installation, each checked by SHA-256. The original folder is only read.
 3. `bin/rexgluerd codegen` writes C++ from `default.xex` and the tracked `config/v1` (about 170 MB, removed afterwards).
 4. Clang compiles the 162 generated files into `<install>/build-cache/<id>/obj` (about 60 MB, kept).
@@ -40,15 +42,17 @@ the updater regenerates and compiles before it switches versions. Generated code
 
 ## Decryption keys
 
-Retail copies of `default.xex` are encrypted. **The setup does not decrypt them.** No release component contains a
-console key, and none downloads, derives or asks for one: the SDK's key tables are deleted by pattern
-(`tools/apply_sdk_patches.sh`, so that no patch quotes them), and patch 0019 removes the code that used them. The XEX
-loader accepts only an unencrypted executable and refuses others with a message; title-update patches, whose keys derive
-from the console keys, are not supported.
+Retail copies of `default.xex` are encrypted. **Releases do not decrypt them** (docs/RETAIL_FILES.md). The setup has
+its own decryption code (`installer/src/core/xex_decrypt.cpp`), but it is built in only with
+`-DKUF_SETUP_RETAIL_DECRYPTION=ON` (off by default since 2026-11-08), which reads the retail XEX key from the pinned
+SDK's git history into a header in the build folder. A setup built that way is for local use only; the release scripts
+build with it off and the audit refuses any file holding the key, the setup included.
 
-See docs/RETAIL_FILES.md for why, and what would change it. So the setup needs a `default.xex` that is already unencrypted. An encrypted copy is recognised and refused with an
-explanation. This project does not provide a way to decrypt one, and this is the main limitation of this design: a
-player whose copy is encrypted cannot use this release.
+Everything else is as before: the SDK's key tables are deleted by pattern (`tools/apply_sdk_patches.sh`, so that no
+patch quotes them), and patch 0019 removes the code that used them. The XEX loader of the runtime and code generator
+accepts only an unencrypted executable; title-update patches are not supported. The setup and the portable launchers decrypt a retail `default.xex`
+(the default and every release since docs/RETAIL_FILES.md "Decision of 2026-11-08 (2)"); built with
+`-DKUF_SETUP_RETAIL_DECRYPTION=OFF` they need a separately supplied unencrypted `default.xex` instead.
 
 The audit knows the keys only by their SHA-256, so it can look for them without containing them.
 

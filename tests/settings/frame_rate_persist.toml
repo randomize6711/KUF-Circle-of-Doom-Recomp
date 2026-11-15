@@ -2,6 +2,8 @@
 # frame_rate_menu wrote (60 fps, world objects and effects not interpolated; ctest orders them). The game draws 60
 # frames per second from the first gameplay frame, without a command-line flag; the frame-rate page shows 60. FPS
 # Left: 30 (the original pacing again, at once); World Objects and Effects On. Back saves; gameplay at 30.
+# M15.1: Settings opens directly on the categories: Display, Camera, Audio, Mouse & Keyboard, Controller, Gameplay,
+# Restore Defaults (K66). What this route checks is unchanged; where the text above names older rows, these replace them.
 
 [scenario]
 description = "Frame-rate settings loaded after a restart and used without command-line flags; changed back to 30"
@@ -26,17 +28,6 @@ script = """
 @gameplay+880 press Down
 @gameplay+930 press Down
 @gameplay+1030 press Return
-@gameplay+1180 press Down
-@gameplay+1210 press Down
-@gameplay+1240 press Down
-@gameplay+1270 press Down
-@gameplay+1300 press Down
-@gameplay+1330 press Down
-@gameplay+1360 press Down
-@gameplay+1390 press Down
-@gameplay+1490 press Return
-@gameplay+1640 press Down
-@gameplay+1670 press Down
 @gameplay+1700 press Return
 @gameplay+1800 press Down
 @gameplay+1830 press Down
@@ -55,7 +46,6 @@ script = """
 @gameplay+2590 press Escape
 @gameplay+2690 press Escape
 @gameplay+2790 press Escape
-@gameplay+2890 press Escape
 @gameplay+3090 log mark play_c
 @gameplay+3100 down W
 @gameplay+3400 log mark play_d

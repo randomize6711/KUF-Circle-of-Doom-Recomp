@@ -1,8 +1,6 @@
-# Apply without keeping (M6C), on the simulated monitor (Apply is the last row since the M7 UI polish: eleven Downs
-# from Mode, eleven Ups back): Windowed, Apply, then Back: the previous display
-# (borderless) comes back at once (the rows show it again); Windowed and Apply again, and wait: after 15 s it
-# reverts by itself. Nothing is saved (no
-# pc_settings.toml is written).
+# Apply without keeping (M6C; route since K66, M15.1), on the simulated monitor (Apply is the last row: twelve Downs from Mode,
+# twelve Ups back): Windowed, Apply, then Back: the previous display (borderless) comes back at once (the rows show it again);
+# Windowed and Apply again, and wait: after 15 s it reverts by itself. Nothing is saved (no pc_settings.toml is written).
 
 [scenario]
 description = "Display page: Back and the 15 s timeout restore the previous display; nothing saved"
@@ -22,17 +20,6 @@ script = """
 @gameplay+500 press Down
 @gameplay+550 press Down
 @gameplay+650 press Return
-@gameplay+800 press Down
-@gameplay+830 press Down
-@gameplay+860 press Down
-@gameplay+890 press Down
-@gameplay+920 press Down
-@gameplay+950 press Down
-@gameplay+980 press Down
-@gameplay+1010 press Down
-@gameplay+1110 press Return
-@gameplay+1230 press Down
-@gameplay+1260 press Down
 @gameplay+1290 press Return
 @gameplay+1760 capture display_page
 @gameplay+1790 press Left
@@ -47,7 +34,8 @@ script = """
 @gameplay+2060 press Down
 @gameplay+2090 press Down
 @gameplay+2120 press Down
-@gameplay+2150 press Return
+@gameplay+2135 press Down
+@gameplay+2165 press Return
 @gameplay+2250 capture keep
 @gameplay+2280 press Escape
 @gameplay+2380 capture reverted
@@ -63,7 +51,8 @@ script = """
 @gameplay+2660 press Up
 @gameplay+2690 press Up
 @gameplay+2720 press Up
-@gameplay+2750 press Left
+@gameplay+2735 press Up
+@gameplay+2765 press Left
 @gameplay+2780 press Down
 @gameplay+2810 press Down
 @gameplay+2840 press Down
@@ -75,14 +64,14 @@ script = """
 @gameplay+3020 press Down
 @gameplay+3050 press Down
 @gameplay+3080 press Down
-@gameplay+3110 press Return
+@gameplay+3095 press Down
+@gameplay+3125 press Return
 @gameplay+4330 log mark waited
 @gameplay+4340 press Up
 @gameplay+4430 capture after_timeout
 @gameplay+4460 press Escape
 @gameplay+4510 press Escape
 @gameplay+4560 press Escape
-@gameplay+4660 press Escape
 """
 capture_frames = []
 expect_saves_unchanged = true

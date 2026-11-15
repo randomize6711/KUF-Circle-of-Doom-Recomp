@@ -1,12 +1,10 @@
-# PC Settings > Display page in-game with the keyboard (M6C), on a simulated 21:9 monitor (--kuf_display_modes:
+# The Display page in-game with the keyboard (M6C; route since K66, M15.1), on a simulated 21:9 monitor (--kuf_display_modes:
 # 3440x1440 at 100 and 60 Hz, 2560x1080, 1920x1080, 1280x720; offscreen runs have no real monitor). CONTINUE from
-# build/m6-saves/celine-shadows-depths-1; options menu, Settings, PC Settings; the categories, Down twice to Display
-# (M7 feature 3), Return: Mode Borderless, Size 3440x1440 (the desktop), Monitor 1 Simulated, Widescreen
-# On, Apply. Mode Left: Windowed (the size becomes the largest window smaller than the desktop, 2560x1080); Size
-# Left: 1920x1080; Widescreen Right then Left (off, on: at once, no confirmation); down to Apply (the last row since
-# the M7 UI polish; the list scrolls): the window becomes
-# 1920x1080 and the row asks "Keep?"; Select keeps it. Back saves: pc_settings.toml [display] windowed 1920x1080.
-# The next run (display_persist) starts from that file.
+# build/m6-saves/celine-shadows-depths-1; options menu, Settings: the categories, Return on Display: Mode Borderless, Size
+# 3440x1440 (the desktop), Monitor 1 Simulated, Widescreen On, Apply. Mode Left: Windowed (the size becomes the largest window
+# smaller than the desktop, 2560x1080); Size Left: 1920x1080; Widescreen Right then Left (off, on: at once, no confirmation);
+# down to Apply (the last row; the list scrolls): the window becomes 1920x1080 and the row asks "Keep?"; Select keeps it.
+# Back saves: pc_settings.toml [display] windowed 1920x1080. The next run (display_persist) starts from that file.
 
 [scenario]
 description = "Display page: mode, size, widescreen, apply and keep, saved"
@@ -26,17 +24,6 @@ script = """
 @gameplay+500 press Down
 @gameplay+550 press Down
 @gameplay+650 press Return
-@gameplay+800 press Down
-@gameplay+830 press Down
-@gameplay+860 press Down
-@gameplay+890 press Down
-@gameplay+920 press Down
-@gameplay+950 press Down
-@gameplay+980 press Down
-@gameplay+1010 press Down
-@gameplay+1110 press Return
-@gameplay+1230 press Down
-@gameplay+1260 press Down
 @gameplay+1290 press Return
 @gameplay+1760 capture display_page
 @gameplay+1790 press Left
@@ -57,14 +44,14 @@ script = """
 @gameplay+2360 press Down
 @gameplay+2390 press Down
 @gameplay+2420 press Down
-@gameplay+2450 press Return
+@gameplay+2435 press Down
+@gameplay+2465 press Return
 @gameplay+2550 capture keep
 @gameplay+2580 press Return
 @gameplay+2680 capture kept
 @gameplay+2710 press Escape
 @gameplay+2760 press Escape
 @gameplay+2810 press Escape
-@gameplay+2910 press Escape
 @gameplay+3110 capture gameplay
 """
 capture_frames = []

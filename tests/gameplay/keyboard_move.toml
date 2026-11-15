@@ -1,0 +1,70 @@
+# M15C: keyboard movement, from the Shadow Depths save at 120 frames per second, the player's position per frame: W, W+D, D,
+# A+D (opposite keys), W with A+D, S+A; then W held through opening and closing the status menu, released in the menu (no
+# stuck movement afterwards); W held and the focus lost (the walk stops; the key must be pressed again: its release may have happened elsewhere). Checked by tests/gameplay/move_check.py.
+
+[scenario]
+description = "Keyboard movement: straight and diagonal, opposite keys, a release inside a menu, focus loss"
+seconds = 110
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+expect_saves_unchanged = true
+args = ["--kuf_frame_rate=120", "--kuf_trace_presentation=true"]
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1300 repeat 60 until gameplay press Return
+@gameplay+200 log mark w
+@gameplay+200 down W
+@gameplay+260 log mark w_end
+@gameplay+260 up W
+@gameplay+300 log mark sd
+@gameplay+300 down S
+@gameplay+300 down D
+@gameplay+360 log mark sd_end
+@gameplay+360 up S
+@gameplay+360 up D
+@gameplay+400 log mark a
+@gameplay+400 down A
+@gameplay+460 log mark a_end
+@gameplay+460 up A
+@gameplay+500 log mark opposite
+@gameplay+500 down A
+@gameplay+500 down D
+@gameplay+560 log mark opposite_end
+@gameplay+560 up A
+@gameplay+560 up D
+@gameplay+600 log mark wad
+@gameplay+600 down W
+@gameplay+600 down A
+@gameplay+600 down D
+@gameplay+660 log mark wad_end
+@gameplay+660 up W
+@gameplay+660 up A
+@gameplay+660 up D
+@gameplay+700 log mark menu_hold
+@gameplay+700 down S
+@gameplay+730 press Tab
+@gameplay+800 up S
+@gameplay+840 press Escape
+@gameplay+920 log mark after_menu
+@gameplay+980 log mark after_menu_end
+@gameplay+1000 down W
+@gameplay+1010 log mark focus
+@gameplay+1030 log mark focus_lost_at
+@gameplay+1030 focus off
+@gameplay+1045 log mark focus_lost
+@gameplay+1075 log mark focus_lost_end
+@gameplay+1075 focus on
+@gameplay+1085 log mark focus_back
+@gameplay+1115 log mark focus_back_end
+@gameplay+1115 up W
+@gameplay+1125 press W
+@gameplay+1260 capture done
+"""
+capture_frames = []
+
+[format]
+width = 1280
+height = 720

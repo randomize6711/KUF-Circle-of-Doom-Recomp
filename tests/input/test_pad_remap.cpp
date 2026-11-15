@@ -1,6 +1,8 @@
 // Controller buttons in gameplay (M7 feature 5): src/input/pad_remap.h.
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
+
 #include "input/pad_remap.h"
 
 using namespace kuf::input;
@@ -103,4 +105,36 @@ TEST_CASE("host key names read back as the same key", "[pad_remap]") {
   REQUIRE(HostKeyLabel(ParseHostKey("MouseLeft")) == "Mouse L");
   REQUIRE(HostKeyLabel(ParseHostKey("MouseX1")) == "Mouse 4");
   REQUIRE(HostKeyName(0).empty());
+}
+
+TEST_CASE("left stick dead zone: nothing inside, no jump at its edge, full travel stays, direction kept", "[input][pad]") {
+  int16_t x = 8000, y = 8000;
+  ApplyRadialDeadzone(&x, &y, 0);
+  CHECK(x == 8000);
+  CHECK(y == 8000);
+  x = 3000, y = -3000;  // length 4243 inside 25 %: exactly 0 (no drift)
+  ApplyRadialDeadzone(&x, &y, 25);
+  CHECK(x == 0);
+  CHECK(y == 0);
+  x = 8300, y = 0;  // just outside 8192: small, not a jump to 8192
+  ApplyRadialDeadzone(&x, &y, 25);
+  CHECK(x > 0);
+  CHECK(x < 300);
+  CHECK(y == 0);
+  x = 32767, y = 0;
+  ApplyRadialDeadzone(&x, &y, 25);
+  CHECK(x == 32767);
+  x = -20000, y = 20000;  // the direction stays
+  ApplyRadialDeadzone(&x, &y, 10);
+  CHECK(x == -y);
+  x = -32768, y = -32768;  // beyond full travel on a square gate: limited, in range
+  ApplyRadialDeadzone(&x, &y, 50);
+  CHECK(std::hypot(double(x), double(y)) <= 32768.0);
+}
+
+TEST_CASE("vibration strength: 100 % leaves the game's value, 0 % stops", "[input][pad]") {
+  CHECK(ScaleVibration(65535, 100) == 65535);
+  CHECK(ScaleVibration(1234, 100) == 1234);
+  CHECK(ScaleVibration(65535, 0) == 0);
+  CHECK(ScaleVibration(50000, 50) == 25000);
 }

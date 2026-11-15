@@ -116,7 +116,7 @@ belong to the runtime's overlays. `--kuf_keyboard=false` turns keyboard and mous
 | Mouse | Menus | Gameplay |
 |---|---|---|
 | Movement | pointer (free) | **camera** (pointer captured) |
-| Wheel | one menu step per notch | D-pad (no single-player use) |
+| Wheel | one menu step per notch, straight to the menu's handler (M15A) | D-pad (no single-player use) |
 | Left click | confirm (Start at "Press START") | A weapon (primary attack) |
 | Right click | back (B) | X weapon (secondary attack) |
 | Middle click | right stick click | centre the camera |
@@ -147,10 +147,15 @@ with the keyboard): the highlight follows the pointer within one tick (33 ms, `-
 steps and the time since the movement). The first version pressed a virtual D-pad once per row, a press and a release
 poll each at the game's 30 polls per second (67 ms per row, 400 ms over six rows): that was the sluggishness. A menu
 whose handler does not move (none seen) still gets the virtual presses. A click selects the row under it and
-confirms with A in the same tick; a click on no row is a plain A (dialogs), as before, except beside a message box
-(scene 0x025: the Quit Game and storage questions), where it does nothing (UX fix 6). The pointer itself is the
+confirms with A in the same tick. A click beside the rows of a menu or dialog does nothing (M7 UI follow-up: as an A it
+confirmed the level-up dialog or a message box from outside); only a screen with no focused control gets the plain A. The pointer itself is the
 system cursor (no smoothing, acceleration or dead zone); the game's highlight changes at its 30 Hz menu tick. Hover acts only when the
-mouse moves, so it never fights the keyboard or a controller. List boxes (the options list, the language list) select
+mouse moves, so it never fights the keyboard or a controller. **M15A:** the path has no smoothing or acceleration of its
+own and no queue; what remains is the game's 30 Hz menu tick (a movement waits at most one tick, 33 ms). The wheel's notches
+take the same direct path (docs/SETTINGS.md). The pointer's position stays valid outside the image while the left button
+is held by a menu (a slider's drag); a focus loss ends such a press. On the equipment screen a click on the row hover has
+just selected now opens it (the selected row's button is hidden under the highlight and was not hit-tested: a click did
+nothing). The inventory's three tabs are not interactive in the game itself (LT / RT reach the scene and change nothing). List boxes (the options list, the language list) select
 the visible row under the pointer; the wheel still scrolls them. Unknown layouts (no focused button or list box)
 keep the plain M4 behaviour.
 
@@ -210,7 +215,14 @@ selection, and stops as soon as a press does not either.
   keyboard or mouse handler), and prints its identity. The by-id link is stable across event renumbering.
   An Xbox Elite Series 2 (USB `045e:0b00`) works through SDL's evdev path with that one node (no hidraw,
   no udev; no hotplug inside the sandbox). Automated tests use SDL virtual gamepads (no device access).
-- Controller input reaches the game only while its window has focus (SDL's default), like the keyboard.
+- Controller input reaches the game only while its window has focus, like the keyboard: `PadRemapDriver` gives a neutral
+  state without the focus whatever the platform layer reports (M15C), and stops the motors when the focus goes (SDL's rumble
+  would run on: the game may not touch them again).
+- **Steam Input and several devices (M15B, by reading the merge, not on a Deck):** the SDK's input system merges the devices of
+  a guest user (buttons OR, sticks the larger magnitude), so a keyboard, a mouse and a controller used together neither double a
+  press nor add analog values. Controller N is guest user N and the game reads user 0 in single player, so a physical pad
+  next to Steam's virtual one does not double input either. Switching devices needs no restart (prompts follow within a
+  selection move; `menu.prompts_keyboard`). Trackpad or gyro emulated by Steam as a mouse arrives as mouse counts.
 
 ## Testing
 - `kuf_input_tests` (ctest `input.*`): translation, press/release, latching, repeat, focus, wheel, accept,
@@ -243,3 +255,50 @@ tools/run_sandboxed.sh -t 600 -n m4-manual --gpu --window --audio \
 ```
 Grants: the Wayland socket, the session's PulseAudio socket (PipeWire), one controller node. Still no
 network, read-only game folder, writes only to `build/runs/m4-manual/`, bounded logs, 10-minute hard limit.
+
+## Combat input and movement (M15C): measured, what changed and what did not
+
+**The path.** A key, mouse button or controller state goes from the host event straight into the state the game polls once per
+tick (30 per second, `sub_825EAD58`). `--kuf_trace_input_latency` logs the time from a key event to that poll: on 1929 events
+at varying moments between ticks, median 17.7 ms, 95th percentile 33.3 ms, as a 30 Hz poll gives with no queue on top. The
+slow samples: one of 284 ms, 0.3 s after play began, and before play one of 217 ms and two of about 75 ms, each while the
+log shows other work (new graphics pipelines being created, for the 284 ms one); that link is not proven. Nothing was changed: going below one tick means changing the game's
+simulation rate, which M15 does not touch. What follows a press (wind-up, animation locks, cooldowns) is the game's.
+
+**Frame rate.** `tests/gameplay/input_ticks.toml` at 30, 60, 120 and uncapped: weapon A and X (held and tapped), Dash, Pick Up,
+an item, keys together: all 97 game input events on the same ticks (`input_ticks_check.py`). Movement and camera:
+`presentation.interpolated_matches_30` and the camera routes.
+
+**Keyboard movement** (`tests/gameplay/keyboard_move.toml`, `move_check.py`; positions per frame at 120 fps): W 590 units per
+second, S + D diagonally 584 (ratio 0.99: the game limits the stick's length itself, so W + D gives no extra speed and nothing
+was changed); A + D cancel; W + A + D walks as W; OS key repeat is ignored (unit test). A key released inside a menu leaves no
+movement behind.
+
+**Focus.** Losing the focus releases every key and button, drops pending mouse movement and wheel notches, ends a menu press
+(M15A), makes controllers neutral and stops their motors. Measured: walking with W 617 units per second, the focus lost, 0; the
+key must then be pressed again (its release may have happened in another window). A held stick walks 432 units per second, 0
+without the focus, 407 again with it, 0 when released. No synthetic key release is sent anywhere: this is the port's own state.
+Scripted focus changes; the Steam overlay and a real Alt-Tab under a compositor were not run.
+
+## Gaps between input polls (M15.1): where the 284, 217 and 75 ms came from
+
+The M15 latency trace showed three large samples. `tests/perf/input_stalls.toml` with `--kuf_trace_input_latency` and
+`--kuf_trace_gpu_waits` logs every gap of 50 ms or more between polls and every GPU wait or lock of 20 ms or more, from which
+thread and at which log line. Two runs on an empty shader cache and two on a filled one, 60 fps; the scenario sends no test
+mouse or key tapping. The stalls repeat within milliseconds between runs. Each is a gap between polls, so the event handling
+itself is not the delay: the game's thread was busy or waiting and the input waited with it.
+
+| When | Gap between polls, empty cache | Filled cache | Origin |
+|---|---|---|---|
+| First frame | 476, 483 ms | 444 ms | start-up: the render thread waits 436-467 ms for the GPU with 0 pipelines built |
+| Before the start prompt (the 217 ms) | 242-246 ms | the same | start-up work on the game thread: no GPU wait, no pipeline |
+| Reaching the menu (the 75 ms) | about 75 ms | the same | right after the menu's layout loads and the save device opens: no GPU wait, no pipeline |
+| Loading into play | 309, 268, 60, 56 ms | the same | the loading screen's work |
+| First second of play (the 284 ms) | 286, 92, 86, 95 ms; render waits 176, 55, 83, 92 ms; 57 pipelines | 137, 92 ms; render wait 33 ms; 0 pipelines | about 60 % pipelines first used (K76); about 230 ms remains with a filled cache and is not pipelines |
+| Region load, +30 s | 316, 298, 83 ms | the same | the game loads the region, and the first second's pattern follows |
+| Ordinary play in between | none of 50 ms or more | none | polls follow the game's ticks: 936 samples, median 17.6 ms, 95th percentile 33.2 ms |
+
+So in ordinary play nothing stalls input. The large values belong to starting, loading and first use, and only part of one
+of them to shader compilation. No change was made: what remains is the game's own loading on its own thread, no small change
+would remove it, and nothing there is new with M15. The trace measures the sandbox with a synthetic scenario and no display;
+it says where the gaps are, not how they feel.

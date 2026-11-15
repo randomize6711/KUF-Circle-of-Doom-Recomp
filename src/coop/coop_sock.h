@@ -1,4 +1,4 @@
-// Native co-op: the game's Winsock calls on Linux sockets (docs/MULTIPLAYER.md "Co-op runtime"). Pure (no guest
+// Native co-op: the game's Winsock calls on the host's sockets (Linux, Windows) (docs/MULTIPLAYER.md "Co-op runtime"). Pure (no guest
 // memory): tests/net.
 //
 // The game uses the console's Winsock conventions: SOL_SOCKET is 0xFFFF and its option numbers are Winsock's,
@@ -21,8 +21,13 @@ constexpr uint32_t kWsaEIntr = 10004, kWsaEBadF = 10009, kWsaEAcces = 10013, kWs
                    kWsaENetUnreach = 10051, kWsaEConnAborted = 10053, kWsaEConnReset = 10054,
                    kWsaENoBufs = 10055, kWsaEIsConn = 10056, kWsaENotConn = 10057, kWsaEShutdown = 10058,
                    kWsaETimedOut = 10060, kWsaEConnRefused = 10061, kWsaEHostUnreach = 10065;
+#if !defined(_WIN32)
 // A Linux errno as the console's error (a connect in progress is WSAEWOULDBLOCK, as Winsock reports it).
 uint32_t WsaErrorOf(int err);
+#endif
+// The last socket error of this thread as the console's error: Linux maps errno (WsaErrorOf); Windows' Winsock
+// codes are the console's own, except that a connect in progress is WSAEWOULDBLOCK on both.
+uint32_t LastWsaError();
 
 // ioctlsocket commands.
 constexpr uint32_t kFionbio = 0x8004667E, kFionread = 0x4004667F;

@@ -1,16 +1,14 @@
-# The camera's distance and field of view (M6B final settings; the Camera page of the categories, M7 feature 3),
-# in-game with the keyboard: CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only; the run gets a copy),
-# options menu (Escape), Settings, Down to PC Settings, Return: the categories; Down to Camera, Return (the labels show
-# the values: Distance 100%, Field of View 58). Distance +3 (130%), Down, Field of View +4 (Original -> 60 -> 65 -> 70
-# -> 75); Down three times to Modern Camera, Down does nothing. Back (Camera selected), Down to Display, Return (the
-# display page; tests/display covers it), Back, Up to Camera, Return: the changed values shown. Back, Back saves and
-# returns to the Settings page with its own labels. Back, Back: gameplay with the new camera: the orbit distance 130 %
-# of the game's (requested 919 units) and the projection 75 degrees horizontally (vertical 0.8149 rad at the screen's
-# 16:9). The next run (pc_settings_view_persist) starts from this run's pc_settings.toml.
+# The camera's distance and field of view (M6B final settings; categories since M7; K66, M15.1), in-game with the keyboard:
+# CONTINUE from build/m6-saves/celine-shadows-depths-1 (read only; the run gets a copy), options menu (Escape), Settings: the
+# categories; Down to Camera, Return (the labels show the values: Distance 100%, Field of View 58). Distance +3 (130%),
+# Down, Field of View +4 (Original -> 60 -> 65 -> 70 -> 75); Down to Low Latency, Down does nothing. Back (Camera selected),
+# Up to Display, Return, Back, Down to Camera, Return: the changed values shown. Back, Back saves and returns to the options
+# menu. Back: gameplay with the new camera: the orbit distance 130 % of the game's (requested 919 units) and the projection 75
+# degrees horizontally (vertical 0.8149 rad at the screen's 16:9). The next run (pc_settings_view_persist) starts from this file.
 
 [scenario]
-description = "PC page 2: scrolling, Camera Distance and Field of View sliders, applied to the camera, saved"
-seconds = 200
+description = "Camera page: Distance and Field of View, applied to the camera, saved"
+seconds = 147
 saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
 args = ["--kuf_trace_modern_camera=true", "--kuf_trace_projection=true", "--kuf_trace_camera_orbit=true"]
 script = """
@@ -21,55 +19,45 @@ script = """
 1100 press Return
 1300 repeat 60 until gameplay press Return
 @gameplay+250 log mark before_menu
-@gameplay+300 press Escape
-@gameplay+400 press Down
-@gameplay+450 press Down
+@gameplay+310 press Escape
+@gameplay+410 press Down
+@gameplay+440 press Down
+@gameplay+470 press Down
 @gameplay+500 press Down
-@gameplay+550 press Down
-@gameplay+650 press Return
-@gameplay+800 press Down
-@gameplay+830 press Down
-@gameplay+860 press Down
-@gameplay+890 press Down
-@gameplay+920 press Down
+@gameplay+570 press Return
+@gameplay+690 capture categories
+@gameplay+730 press Down
+@gameplay+760 press Return
+@gameplay+820 capture camera_defaults
+@gameplay+860 press Right
+@gameplay+890 press Right
+@gameplay+920 press Right
 @gameplay+950 press Down
-@gameplay+980 press Down
-@gameplay+1010 press Down
-@gameplay+1110 press Return
-@gameplay+1200 capture categories
-@gameplay+1230 press Down
-@gameplay+1260 press Return
-@gameplay+1330 capture camera_defaults
-@gameplay+1360 press Right
-@gameplay+1390 press Right
-@gameplay+1420 press Right
-@gameplay+1450 press Down
-@gameplay+1480 press Right
-@gameplay+1510 press Right
-@gameplay+1540 press Right
-@gameplay+1570 press Right
-@gameplay+1640 capture camera_changed
-@gameplay+1670 press Down
-@gameplay+1700 press Down
-@gameplay+1730 press Down
-@gameplay+1760 press Down
-@gameplay+1830 capture camera_last_row
-@gameplay+1860 press Escape
-@gameplay+1890 press Down
-@gameplay+1920 press Return
-@gameplay+2010 capture display_page
-@gameplay+2040 press Escape
-@gameplay+2070 press Up
-@gameplay+2100 press Return
-@gameplay+2170 capture camera_again
-@gameplay+2200 press Escape
-@gameplay+2230 press Escape
-@gameplay+2320 capture settings_page
-@gameplay+2350 press Escape
-@gameplay+2440 press Escape
-@gameplay+2590 log mark after_menu
-@gameplay+2640 capture gameplay_view
-@gameplay+2840 log mark end
+@gameplay+980 press Right
+@gameplay+1010 press Right
+@gameplay+1040 press Right
+@gameplay+1070 press Right
+@gameplay+1140 capture camera_changed
+@gameplay+1180 press Down
+@gameplay+1210 press Down
+@gameplay+1240 press Down
+@gameplay+1270 press Down
+@gameplay+1340 capture camera_last_row
+@gameplay+1380 press Escape
+@gameplay+1440 press Up
+@gameplay+1470 press Return
+@gameplay+1530 capture display_page
+@gameplay+1570 press Escape
+@gameplay+1630 press Down
+@gameplay+1660 press Return
+@gameplay+1720 capture camera_again
+@gameplay+1760 press Escape
+@gameplay+1820 press Escape
+@gameplay+1940 capture options
+@gameplay+1980 press Escape
+@gameplay+2140 log mark after_menu
+@gameplay+2210 capture gameplay_view
+@gameplay+2450 log mark end
 """
 capture_frames = []
 expect_saves_unchanged = true

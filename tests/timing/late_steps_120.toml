@@ -1,0 +1,106 @@
+# M18 (docs/PERFORMANCE.md 12.3): the bench_explore route at 120 fps in 2560x1440 at Render Native. With frames drawn
+# closer together after a late hand-off (the tick's scene build is 3-7 ms here) the first step still used the full
+# period, so the last frame of most ticks was dropped as late: 16-31 % of the ticks before the fix, 0.4-0.9 % after
+# (tests/timing/k44_check.py --summary-only allows 2 %). The route sometimes makes an in-game save (on either
+# build): the test saves are copies, so no saves-unchanged check here.
+[scenario]
+description = "M18: 120 fps in 2560x1440, the last frame step of a tick is not dropped after a late hand-off"
+seconds = 225
+saves_from_dir = "build/m6-saves/celine-shadows-depths-1"
+args = ["--kuf_frame_rate=120", "--kuf_display_size=2560x1440", "--kuf_pc_settings=display.render_scale=0"]
+capture_frames = []
+script = """
+500 tap Return
+700 press Return
+850 press Return
+1000 press Down
+1100 press Return
+1101 log load_request
+1300 repeat 10 until gameplay press Return
+@gameplay+0 log gameplay_enter
+@gameplay+200 capture gameplay
+@gameplay+600 log window_start
+@gameplay+300 down W
+@gameplay+480 up W
+@gameplay+490 down L
+@gameplay+515 up L
+@gameplay+530 down W
+@gameplay+710 up W
+@gameplay+720 down J
+@gameplay+745 up J
+@gameplay+760 down W
+@gameplay+940 up W
+@gameplay+950 down L
+@gameplay+975 up L
+@gameplay+990 down W
+@gameplay+1170 up W
+@gameplay+1180 down L
+@gameplay+1205 up L
+@gameplay+1220 down W
+@gameplay+1400 up W
+@gameplay+1410 down J
+@gameplay+1435 up J
+@gameplay+1450 down W
+@gameplay+1630 up W
+@gameplay+1640 down L
+@gameplay+1665 up L
+@gameplay+1680 down W
+@gameplay+1860 up W
+@gameplay+1870 down J
+@gameplay+1895 up J
+@gameplay+1910 down W
+@gameplay+2090 up W
+@gameplay+2100 down L
+@gameplay+2125 up L
+@gameplay+2140 down W
+@gameplay+2320 up W
+@gameplay+2330 down L
+@gameplay+2355 up L
+@gameplay+2370 down W
+@gameplay+2550 up W
+@gameplay+2560 down J
+@gameplay+2585 up J
+@gameplay+2600 down W
+@gameplay+2780 up W
+@gameplay+2790 down L
+@gameplay+2815 up L
+@gameplay+2830 down W
+@gameplay+3010 up W
+@gameplay+3020 down J
+@gameplay+3045 up J
+@gameplay+3060 down W
+@gameplay+3240 up W
+@gameplay+3250 down L
+@gameplay+3275 up L
+@gameplay+3290 down W
+@gameplay+3470 up W
+@gameplay+3480 down L
+@gameplay+3505 up L
+@gameplay+3520 down W
+@gameplay+3700 up W
+@gameplay+3710 down J
+@gameplay+3735 up J
+@gameplay+3750 down W
+@gameplay+3930 up W
+@gameplay+3940 down L
+@gameplay+3965 up L
+@gameplay+3980 down W
+@gameplay+4160 up W
+@gameplay+4170 down J
+@gameplay+4195 up J
+@gameplay+4210 down W
+@gameplay+4390 up W
+@gameplay+4400 down L
+@gameplay+4425 up L
+@gameplay+4440 down W
+@gameplay+4620 up W
+@gameplay+4630 down L
+@gameplay+4655 up L
+@gameplay+4670 down W
+@gameplay+4850 up W
+@gameplay+4860 down J
+@gameplay+4885 up J
+@gameplay+4900 down W
+@gameplay+4800 log window_end
+"""
+log_expect = ["[kuf-input] context: gameplay", "window_end"]
